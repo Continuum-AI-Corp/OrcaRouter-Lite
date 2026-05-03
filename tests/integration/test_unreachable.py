@@ -70,6 +70,7 @@ async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
 
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
     from packages.db import session as session_mod
     factory = async_sessionmaker(engine, expire_on_commit=False)
     session_mod._session_factory = factory
