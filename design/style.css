@@ -725,7 +725,12 @@ select {
   color: white;
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 4px 12px var(--brand-glow);
 }
-.btn-primary:hover { background: var(--brand-deep); box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 6px 18px var(--brand-glow); }
+/* Color is repeated on :hover so the rule beats the base `a:hover`
+   selector (specificity 0,1,1) when the button is rendered as an
+   `<a>` (e.g. the "Get free credit" CTA links to orcarouter.ai/register).
+   Without this, hover flips text to var(--brand-deep) on a blue
+   background and becomes unreadable. */
+.btn-primary:hover { background: var(--brand-deep); color: white; box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 6px 18px var(--brand-glow); }
 .btn-ghost {
   background: var(--surface);
   border-color: var(--border);
@@ -738,7 +743,8 @@ select {
   color: var(--err);
   border-color: var(--err-soft);
 }
-.btn-danger:hover { background: var(--err-soft); border-color: var(--err); }
+/* Same `a:hover` override defense as .btn-primary above. */
+.btn-danger:hover { background: var(--err-soft); color: var(--err); border-color: var(--err); }
 .btn-sm { padding: 5px 10px; font-size: 12.5px; }
 .btn-full { width: 100%; padding: 11px 14px; font-size: 14px; }
 
