@@ -74,9 +74,11 @@ async def test_hosted_status_unconfigured_shows_signup_url(unconfigured_client):
     assert body["configured"] is False
     assert body["source"] is None
     assert body["base_url"] == "https://api.orcarouter.ai/v1"
-    # The sign-up URL is what the dashboard's "Get free $5 credit" button
-    # opens — must point at orcarouter.ai (not openrouter, not anything else).
-    assert "orcarouter.ai" in body["signup_url"]
+    # Sign-up URL points at the canonical /register page on orcarouter.ai
+    # (not /signup or any third-party site). The dashboard's "Get free
+    # credit" button opens this URL — getting it wrong sends users to a
+    # 404 or worse.
+    assert body["signup_url"] == "https://www.orcarouter.ai/register"
     assert body["provider_name"] == "orcarouter"
 
 

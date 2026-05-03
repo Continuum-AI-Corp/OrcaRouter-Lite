@@ -17,31 +17,6 @@ from packages.db.models.request_log import RequestLog
 
 router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
 
-# Curated "promote me" list for the unreachable-models tile. The full catalog
-# is 100+ models; surfacing all of them buries the conversion message. These
-# are the flagship/popular IDs developers actually wish they had keys for.
-# Order matters — first one in this list that's unreachable is shown first.
-_PROMOTED_MODEL_IDS: tuple[str, ...] = (
-    "claude-3-5-sonnet-latest",
-    "claude-3-5-haiku-latest",
-    "claude-3-opus-latest",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "o1",
-    "o1-mini",
-    "o3-mini",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "mistral-large-latest",
-    "command-r-plus",
-    "llama-3.1-405b-instruct",
-    "llama-3.3-70b-versatile",
-    "grok-2-latest",
-)
-
 
 def _percentile(values: list[int], pct: float) -> int:
     if not values:
@@ -339,8 +314,14 @@ async def unreachable_models(
             "unreachable": [],
         }
 
+    # Top-N promoted IDs from orcarouter.ai (cached, with static fallback).
+    # We over-fetch by 5× so the post-filter list still has `limit` entries
+    # even when the user's existing keys cover several of the promoted IDs.
+    from app.orcarouter_models import get_promoted_model_ids
+    promoted_ids = await get_promoted_model_ids(limit=max(limit * 5, limit))
+
     unreachable: list[dict] = []
-    for model_id in _PROMOTED_MODEL_IDS:
+    for model_id in promoted_ids:
         m = CATALOG_BY_ID.get(model_id)
         if m is None:
             continue

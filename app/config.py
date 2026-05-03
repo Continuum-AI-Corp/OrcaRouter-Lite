@@ -53,13 +53,15 @@ class Settings(BaseSettings):
     # ── Hosted-as-upstream (standard fallback) ──
     # When configured (env or via dashboard), every catalog model gets an extra
     # deployment routed through hosted — so requests for a model the user has
-    # no local key for still succeed. Free $5 trial credit available via the
+    # no local key for still succeed. Free trial credit available via the
     # signup URL surfaced in the Lite dashboard's "Hosted fallback" card.
     orcarouter_api_key: str | None = None
     orcarouter_base_url: str = "https://api.orcarouter.ai/v1"
-    orcarouter_signup_url: str = (
-        "https://www.orcarouter.ai/signup?ref=lite-dashboard&trial=5usd"
-    )
+    orcarouter_signup_url: str = "https://www.orcarouter.ai/register"
+    # Source of truth for the "Models you can't reach" tile's curated
+    # top list. Fetched lazily, cached in-process for ~1h, with a static
+    # fallback if the remote is unreachable.
+    orcarouter_models_url: str = "https://www.orcarouter.ai/models"
 
     # ── Body limit (for image / file attachments) ──
     max_body_bytes: int = 100 * 1024 * 1024

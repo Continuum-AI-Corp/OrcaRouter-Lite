@@ -22,6 +22,11 @@ def _reset_module_state() -> Generator[None, None, None]:
         router_cache.invalidate_router()
     except Exception:
         pass
+    try:
+        from app import orcarouter_models
+        orcarouter_models.reset_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture

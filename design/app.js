@@ -32,7 +32,7 @@ const state = {
   latency: { by_provider: [] },
   savings: { saved_microcents: 0, savings_percent: 0, hosted_auto: null },
   models: [],
-  hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/signup?ref=lite-dashboard&trial=5usd", provider_name: "orcarouter" },
+  hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", provider_name: "orcarouter" },
   unreachable: { hosted_configured: false, unreachable: [] },
   windowDays: 7,
   lang: "python",
@@ -440,7 +440,7 @@ function renderHostedCard() {
   const providersSignup = $("#providers-hosted-signup");
   const providersCard = $("#providers-hosted-card");
 
-  const url = state.hosted.signup_url || "https://www.orcarouter.ai/signup?ref=lite-dashboard&trial=5usd";
+  const url = state.hosted.signup_url || "https://www.orcarouter.ai/register";
   if (signupBtn) signupBtn.href = url;
   if (providersSignup) providersSignup.href = url;
 

@@ -54,6 +54,68 @@ async def fresh_client(tmp_sqlite_url, monkeypatch):
     session_mod._session_factory = None
 
 
+async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
+    """The unreachable tile must reflect what orcarouter.ai actually
+    promotes (top-N from /models), not a list compiled into the source.
+    Stub the fetcher and verify the endpoint surfaces THOSE IDs."""
+    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
+    from app import config as cfg
+    cfg.get_settings.cache_clear()
+
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from packages.db import session as session_mod
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_mod._session_factory = factory
+
+    from app.seed import seed_initial_state
+    async with factory() as s:
+        seed = await seed_initial_state(s)
+
+    # Pretend orcarouter.ai/models returns these IDs as its top picks.
+    # All three are flagship IDs hardcoded in catalog.py (or in litellm's
+    # core catalog), so they're guaranteed-present regardless of litellm
+    # version and the endpoint can resolve provider/price for each.
+    promoted = [
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-haiku-latest",
+        "gpt-4o-mini",
+    ]
+    from app import orcarouter_models
+    orcarouter_models.reset_cache()
+
+    async def fake_fetch(url: str, timeout: float = 5.0) -> list[str]:
+        return promoted
+
+    monkeypatch.setattr(orcarouter_models, "_fetch_remote", fake_fetch)
+
+    from app.main import create_app
+    app = create_app()
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {seed.api_key}"},
+    ) as c:
+        r = await c.get("/v1/analytics/unreachable?limit=5")
+        body = r.json()
+        ids = [m["id"] for m in body["unreachable"]]
+        # The order from the remote should be preserved (it's a "top
+        # picks" list), with unreachable filtering applied.
+        assert ids == promoted, f"expected promoted top list, got {ids}"
+
+    await engine.dispose()
+    session_mod._session_factory = None
+    orcarouter_models.reset_cache()
+
+
 async def test_unreachable_with_no_keys_lists_flagship_models(fresh_client):
     """A bare-bones Lite install with no provider keys can't reach any
     flagship model — the endpoint should return a non-empty list to power
