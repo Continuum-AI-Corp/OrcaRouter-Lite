@@ -181,6 +181,13 @@ async def get_promoted_model_ids(*, limit: int = 10, force_refresh: bool = False
     return ids[:limit]
 
 
+def static_fallback_ids() -> tuple[str, ...]:
+    """Public accessor for the curated fallback list, used by callers
+    that want to top up after a filter pass (e.g. when remote IDs are
+    unknown to the local catalog)."""
+    return _STATIC_FALLBACK_IDS
+
+
 def reset_cache() -> None:
     """Test hook — wipe the in-process cache."""
     _cache.clear()

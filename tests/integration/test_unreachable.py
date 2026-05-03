@@ -54,6 +54,79 @@ async def fresh_client(tmp_sqlite_url, monkeypatch):
     session_mod._session_factory = None
 
 
+async def test_unreachable_backfills_from_static_when_remote_ids_unknown(tmp_sqlite_url, monkeypatch):
+    """Codex P2: when orcarouter.ai promotes IDs that this Lite build's
+    catalog doesn't know (newer model names, vendor-specific aliases),
+    every entry would be filtered out in the catalog lookup loop and
+    the conversion tile would regress to empty. After filtering, if
+    we have fewer than `limit` entries, top up from the static
+    fallback list — same flagships the previous hardcoded build always
+    showed."""
+    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
+    from app import config as cfg
+    cfg.get_settings.cache_clear()
+
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db import session as session_mod
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_mod._session_factory = factory
+
+    from app.seed import seed_initial_state
+    async with factory() as s:
+        seed = await seed_initial_state(s)
+
+    # Remote returns IDs that DEFINITELY aren't in the litellm catalog —
+    # simulating a Lite build behind on its catalog vs orcarouter.ai's
+    # promoted top-N.
+    from app import orcarouter_models
+    orcarouter_models.reset_cache()
+
+    async def fake_fetch(url: str, timeout: float = 5.0) -> list[str]:
+        return [
+            "totally-fake-future-model-2099",
+            "another-unknown-id",
+            "vendor-x/private-fine-tune",
+        ]
+
+    monkeypatch.setattr(orcarouter_models, "_fetch_remote", fake_fetch)
+
+    from app.main import create_app
+    app = create_app()
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {seed.api_key}"},
+    ) as c:
+        r = await c.get("/v1/analytics/unreachable?limit=5")
+        body = r.json()
+        ids = [m["id"] for m in body["unreachable"]]
+        # Tile must NOT be empty — backfill from static fallback should
+        # populate it with curated flagships even when every remote ID
+        # was unknown to the local catalog.
+        assert len(ids) >= 3, (
+            f"expected backfill from static fallback, got {len(ids)} entries: {ids}"
+        )
+        # The backfilled IDs must be flagship models from the static
+        # curated list (not random catalog entries).
+        assert "claude-3-5-sonnet-latest" in ids or "gpt-4o" in ids, (
+            f"expected flagship IDs from static fallback, got {ids}"
+        )
+
+    await engine.dispose()
+    session_mod._session_factory = None
+    orcarouter_models.reset_cache()
+
+
 async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
     """The unreachable tile must reflect what orcarouter.ai actually
     promotes (top-N from /models), not a list compiled into the source.
@@ -108,9 +181,12 @@ async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
         r = await c.get("/v1/analytics/unreachable?limit=5")
         body = r.json()
         ids = [m["id"] for m in body["unreachable"]]
-        # The order from the remote should be preserved (it's a "top
-        # picks" list), with unreachable filtering applied.
-        assert ids == promoted, f"expected promoted top list, got {ids}"
+        # Remote-promoted IDs must appear at the front in order (it's a
+        # "top picks" list). The remaining slots up to `limit` are
+        # backfilled from the static curated list.
+        assert ids[: len(promoted)] == promoted, (
+            f"expected promoted top list at front, got {ids}"
+        )
 
     await engine.dispose()
     session_mod._session_factory = None

@@ -317,16 +317,19 @@ async def unreachable_models(
     # Top-N promoted IDs from orcarouter.ai (cached, with static fallback).
     # We over-fetch by 5× so the post-filter list still has `limit` entries
     # even when the user's existing keys cover several of the promoted IDs.
-    from app.orcarouter_models import get_promoted_model_ids
+    from app.orcarouter_models import get_promoted_model_ids, static_fallback_ids
     promoted_ids = await get_promoted_model_ids(limit=max(limit * 5, limit))
 
     unreachable: list[dict] = []
-    for model_id in promoted_ids:
+    seen: set[str] = set()
+
+    def _try_add(model_id: str) -> None:
+        if len(unreachable) >= limit or model_id in seen:
+            return
         m = CATALOG_BY_ID.get(model_id)
-        if m is None:
-            continue
-        if m.provider in configured_providers:
-            continue
+        if m is None or m.provider in configured_providers:
+            return
+        seen.add(model_id)
         unreachable.append(
             {
                 "id": m.id,
@@ -338,8 +341,21 @@ async def unreachable_models(
                 "supports_json_mode": m.supports_json_mode,
             }
         )
+
+    for model_id in promoted_ids:
+        _try_add(model_id)
         if len(unreachable) >= limit:
             break
+
+    # Backfill from the static curated list if the remote returned IDs
+    # we don't recognize (newer Lite catalog mismatch) or its top-N was
+    # too short. The tile must always populate when models are actually
+    # unreachable — empty would regress vs the previous hardcoded list.
+    if len(unreachable) < limit:
+        for model_id in static_fallback_ids():
+            _try_add(model_id)
+            if len(unreachable) >= limit:
+                break
 
     return {
         "hosted_configured": False,
