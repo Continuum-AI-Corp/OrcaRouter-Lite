@@ -82,6 +82,39 @@ def test_parse_response_returns_empty_for_garbage():
     assert _parse_response("application/json", "not json at all") == []
 
 
+def test_parse_response_next_data_with_other_attributes_before_id():
+    """Codex P2: the __NEXT_DATA__ regex must match regardless of where
+    `id="__NEXT_DATA__"` appears among the script's attributes. Real
+    Next.js pages frequently emit `nonce` (CSP), `crossorigin`, or
+    `type` before `id`, and missing those silently flips the
+    unreachable tile to the static fallback for a full TTL."""
+    from app.orcarouter_models import _parse_response
+    next_payload = {"props": {"pageProps": {"data": [{"id": "after-nonce-1"}, {"id": "after-nonce-2"}]}}}
+    variants = [
+        # nonce first
+        f'<script nonce="abc123" id="__NEXT_DATA__" type="application/json">{json.dumps(next_payload)}</script>',
+        # type first
+        f'<script type="application/json" id="__NEXT_DATA__">{json.dumps(next_payload)}</script>',
+        # multiple attributes before id
+        f'<script crossorigin nonce="x" type="application/json" id="__NEXT_DATA__">{json.dumps(next_payload)}</script>',
+    ]
+    for html in variants:
+        wrapped = f'<html><body>{html}</body></html>'
+        assert _parse_response("text/html", wrapped) == ["after-nonce-1", "after-nonce-2"], (
+            f"Failed to extract from variant: {html[:80]}..."
+        )
+
+
+def test_parse_response_does_not_match_data_id_attribute():
+    """Guard against accidental matches on `data-id="__NEXT_DATA__"` —
+    that's not a `__NEXT_DATA__` script element. Word-boundary check
+    must require whitespace before `id=`."""
+    from app.orcarouter_models import _parse_response
+    # `data-id` is not the same attribute as `id`.
+    text = '<html><script data-id="__NEXT_DATA__">{"data":[{"id":"should-not-match"}]}</script></html>'
+    assert _parse_response("text/html", text) == []
+
+
 async def test_get_promoted_model_ids_uses_remote_when_fetch_succeeds(monkeypatch):
     from app import orcarouter_models
 

@@ -41,9 +41,17 @@ _CACHE_TTL_SECONDS = 60 * 60  # 1 hour
 _FETCH_TIMEOUT_SECONDS = 5.0
 
 # Marketing pages built with Next.js embed their server-rendered data
-# in this script tag. Cheap to look for, expensive to miss.
+# in this script tag. Cheap to look for, expensive to miss. The regex
+# tolerates other attributes before `id=` (CSP `nonce`, `crossorigin`,
+# `type=...`, etc.) — Next.js pages with strict CSP routinely emit a
+# nonce attribute first, and missing those silently flips the
+# unreachable tile to the static fallback for a full TTL.
+#
+# `\s` before `id=` ensures we don't match `data-id="__NEXT_DATA__"`
+# (different attribute) — there must be whitespace separating the
+# `id` attribute from whatever precedes it inside the script tag.
 _NEXT_DATA_RE = re.compile(
-    r'<script\s+id="__NEXT_DATA__"[^>]*>(.+?)</script>',
+    r'<script\b[^>]*\sid="__NEXT_DATA__"[^>]*>(.+?)</script>',
     re.DOTALL,
 )
 
