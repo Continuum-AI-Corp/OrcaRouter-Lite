@@ -14,7 +14,6 @@ rendering — orcarouter.ai going down must not break the Lite dashboard.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -50,9 +49,11 @@ _NEXT_DATA_RE = re.compile(
 
 # Process-wide cache. Keyed by URL so swapping the setting at runtime
 # (e.g. tests with monkeypatched config) doesn't return stale data from
-# a different source.
+# a different source. No lock: a duplicate fetch on a cold-start race
+# is harmless (same idempotent GET, last write wins) and a module-level
+# `asyncio.Lock()` is fragile across pytest-asyncio's function-scoped
+# event loops.
 _cache: dict[str, tuple[float, list[str]]] = {}
-_lock = asyncio.Lock()
 
 
 def _extract_ids(payload: Any) -> list[str]:
@@ -132,8 +133,15 @@ def _parse_response(content_type: str, text: str) -> list[str]:
 
 
 async def _fetch_remote(url: str, timeout: float = _FETCH_TIMEOUT_SECONDS) -> list[str]:
-    """Single request. Tests monkeypatch this to avoid network."""
-    async with httpx.AsyncClient(timeout=timeout) as c:
+    """Single request. Tests monkeypatch this to avoid network.
+
+    Follows redirects — `httpx.AsyncClient` defaults to
+    `follow_redirects=False`, and `raise_for_status()` raises on 3xx, so
+    a healthy source behind a canonical-host or trailing-slash redirect
+    would silently flip the unreachable tile to the static fallback for
+    a full TTL.
+    """
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
         r = await c.get(url, headers={"Accept": "application/json"})
         r.raise_for_status()
         return _parse_response(r.headers.get("Content-Type", ""), r.text)
@@ -155,18 +163,14 @@ async def get_promoted_model_ids(*, limit: int = 10, force_refresh: bool = False
         if cached and (now - cached[0]) < _CACHE_TTL_SECONDS:
             return cached[1][:limit]
 
-    async with _lock:
-        cached = _cache.get(url)
-        if cached and not force_refresh and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
-            return cached[1][:limit]
-        try:
-            ids = await _fetch_remote(url)
-            if not ids:
-                raise ValueError("empty model list from remote")
-        except Exception:
-            ids = list(_STATIC_FALLBACK_IDS)
-        _cache[url] = (time.monotonic(), ids)
-        return ids[:limit]
+    try:
+        ids = await _fetch_remote(url)
+        if not ids:
+            raise ValueError("empty model list from remote")
+    except Exception:
+        ids = list(_STATIC_FALLBACK_IDS)
+    _cache[url] = (time.monotonic(), ids)
+    return ids[:limit]
 
 
 def reset_cache() -> None:

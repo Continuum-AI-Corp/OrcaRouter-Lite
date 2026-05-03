@@ -50,6 +50,9 @@ include = ["app*", "packages*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "real_remote: opt out of the network-isolation autouse fixture (for tests of the real fetcher path)",
+]
 
 [tool.ruff]
 target-version = "py311"

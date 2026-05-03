@@ -149,6 +149,55 @@ async def test_get_promoted_model_ids_respects_limit(monkeypatch):
     assert ids == ["m-0", "m-1", "m-2", "m-3", "m-4"]
 
 
+@pytest.mark.real_remote
+async def test_fetch_remote_follows_redirects():
+    """Codex P2: httpx.AsyncClient defaults to follow_redirects=False and
+    raise_for_status() raises on 3xx, so a healthy source behind a
+    canonical-host or trailing-slash redirect would silently fall back
+    to the static list and cache that for an hour.
+
+    Use httpx.MockTransport to simulate the redirect chain and confirm
+    the fetcher follows it and parses the final response."""
+    from app import orcarouter_models
+
+    requests_seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(str(request.url))
+        if request.url.path == "/models":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://www.orcarouter.ai/models/"},
+            )
+        if request.url.path == "/models/":
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "after-redirect-1"}, {"id": "after-redirect-2"}]},
+                headers={"Content-Type": "application/json"},
+            )
+        return httpx.Response(404)
+
+    # Replace the httpx.AsyncClient construction with one using our mock
+    # transport. Easiest path: temporarily swap the AsyncClient class.
+    real_client_cls = httpx.AsyncClient
+
+    def patched_client_cls(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client_cls(*args, **kwargs)
+
+    import unittest.mock
+    with unittest.mock.patch.object(httpx, "AsyncClient", patched_client_cls):
+        ids = await orcarouter_models._fetch_remote("https://www.orcarouter.ai/models")
+
+    assert ids == ["after-redirect-1", "after-redirect-2"], (
+        f"expected redirect to be followed, got {ids}. "
+        f"requests seen: {requests_seen}"
+    )
+    assert len(requests_seen) == 2, (
+        f"expected redirect chain of length 2, got {requests_seen}"
+    )
+
+
 async def test_get_promoted_model_ids_uses_configured_url(monkeypatch):
     """Operator can swap orcarouter.ai/models for a different mirror via
     settings without code changes."""
