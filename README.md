@@ -1,5 +1,7 @@
 # OrcaRouter Lite
 
+**English** | [简体中文](./README.zh.md) | [日本語](./README.ja.md) | [한국어](./README.ko.md) | [Deutsch](./README.de.md) | [Italiano](./README.it.md) | [Français](./README.fr.md) | [Español](./README.es.md) | [العربية](./README.ar.md)
+
 **Self-hosted LLM router with a managed safety net.**
 OpenAI-compatible. BYOK. Single-workspace. Streaming. `model="auto"`.
 
