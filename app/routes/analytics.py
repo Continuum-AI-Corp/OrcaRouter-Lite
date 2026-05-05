@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app._time_util import iso_utc
 from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.router_cache import HOSTED_PROVIDER_NAME, hosted_key_source, usable_providers_from_db
@@ -53,7 +54,7 @@ async def recent_requests(
             "latency_ms": r.latency_ms,
             "status_code": r.status_code,
             "error_type": r.error_type,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "created_at": iso_utc(r.created_at),
         }
         for r in rows
     ]

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app._time_util import iso_utc
 from app.deps import get_db, get_key_context
 from packages.auth.hashing import generate_api_key
 from packages.auth.types import KeyContext
@@ -38,9 +39,9 @@ async def list_keys(
                 "name": r.name,
                 "key_prefix": r.key_prefix,
                 "is_active": r.is_active,
-                "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
-                "revoked_at": r.revoked_at.isoformat() if r.revoked_at else None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "last_used_at": iso_utc(r.last_used_at),
+                "revoked_at": iso_utc(r.revoked_at),
+                "created_at": iso_utc(r.created_at),
             }
             for r in rows
         ]

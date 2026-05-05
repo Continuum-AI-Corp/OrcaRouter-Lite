@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import router_cache
+from app._time_util import iso_utc
 from app.auto_routing import (
     choose_auto_model,
     litellm_routing_strategy,
@@ -363,8 +364,8 @@ def _serialize_override(row: QualityScoreOverride) -> dict:
         "model_id": row.model_id,
         "score": row.score,
         "note": row.note,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": iso_utc(row.created_at),
+        "updated_at": iso_utc(row.updated_at),
     }
 
 
