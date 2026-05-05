@@ -22,10 +22,18 @@ const I18N = {
   ar: { "auth.tagline":"مفتوح المصدر. مستأجر واحد.","auth.welcome":"مرحبًا بعودتك","auth.subtitle":"ألصق مفتاح sk-orca-* المطبوع في سجلات الخادم عند التشغيل الأول. يُخزَّن فقط في هذا المتصفح عبر localStorage.","auth.api_key":"مفتاح API","auth.continue":"متابعة","nav.search":"بحث","nav.overview":"نظرة عامة","nav.providers":"المزوّدون","nav.routing":"توجيه الطلبات","nav.analytics":"التحليلات","nav.api_keys":"مفاتيح API","nav.help_docs":"المساعدة والوثائق","nav.sign_out":"تسجيل الخروج","status.connected":"متصل","status.disconnected":"غير متصل","auth.checking":"جارٍ التحقق…","auth.welcome_aboard":"مرحبًا بك.","auth.key_invalid":"هذا المفتاح لم يعمل. تحقّق من البادئة sk-orca-…","tab.overview.title":"نظرة عامة","tab.overview.sub":"موجّه LLM أحادي المستأجر بنظرة سريعة.","tab.providers.title":"مفاتيح المزوّدين","tab.providers.sub":"BYOK — مشفّرة أثناء التخزين وتُستخدم لاستدعاء نماذج LLM الخارجية.","tab.routing.title":"التوجيه","tab.routing.sub":"كيف يختار model='auto' النموذج المناسب لكل طلب.","tab.analytics.title":"التحليلات","tab.analytics.sub":"الإنفاق والزمن والسجل المحلي للطلبات فقط.","tab.keys.title":"مفاتيح API","tab.keys.sub":"رموز مصادقة العملاء في مساحة Lite هذه." },
   ko: { "auth.tagline":"오픈 소스. 단일 테넌트.","auth.welcome":"다시 오신 것을 환영합니다","auth.subtitle":"첫 실행 시 서버 로그에 출력된 sk-orca-* 키를 붙여넣으세요. 이 브라우저의 localStorage에만 저장됩니다.","auth.api_key":"API 키","auth.continue":"계속","nav.search":"검색","nav.overview":"개요","nav.providers":"공급자","nav.routing":"경로 지정","nav.analytics":"분석","nav.api_keys":"API 키","nav.help_docs":"도움말 및 문서","nav.sign_out":"로그아웃","status.connected":"연결됨","status.disconnected":"연결 끊김","auth.checking":"확인 중…","auth.welcome_aboard":"환영합니다.","auth.key_invalid":"키가 올바르지 않습니다. sk-orca- 접두사를 확인하세요…","tab.overview.title":"개요","tab.overview.sub":"싱글 테넌트 LLM 라우터를 한눈에 확인하세요.","tab.providers.title":"공급자 키","tab.providers.sub":"BYOK — 저장 시 암호화되며 상위 LLM 호출에 사용됩니다.","tab.routing.title":"라우팅","tab.routing.sub":"model='auto'가 요청별로 적절한 모델을 고르는 방식입니다.","tab.analytics.title":"분석","tab.analytics.sub":"로컬 전용 비용, 지연 시간, 요청 기록.","tab.keys.title":"API 키","tab.keys.sub":"Lite 워크스페이스에서 클라이언트를 인증하는 토큰." },
 };
+// Provider ids must match catalog provider ids (packages/litellm_adapter/catalog.py
+// `_PROVIDER_BY_LITELLM_KEY`) and Settings env-key fields (app/config.py
+// `_PROVIDERS_FROM_ENV`). Labels follow the provider's own brand spelling so
+// operators recognize them without ambiguity — "xAI" with the lowercase x is
+// deliberate (Grok's parent company), distinct from "Groq" the inference
+// hardware company.
 const PROVIDERS_KNOWN = [
   { id: "openai",      label: "OpenAI"      },
   { id: "anthropic",   label: "Anthropic"   },
   { id: "google",      label: "Google"      },
+  { id: "xai",         label: "xAI (Grok)"  },
+  { id: "deepseek",    label: "DeepSeek"    },
   { id: "groq",        label: "Groq"        },
   { id: "together",    label: "Together"    },
   { id: "fireworks",   label: "Fireworks"   },
@@ -314,17 +322,25 @@ function renderProviders() {
     state.providers.forEach((p) => {
       const tr = document.createElement("tr");
       tr.className = "row-in";
+      // Env-sourced keys come from .env / process env, not the DB.
+      // Disabling delete avoids a confusing "no-op" — the row would
+      // come right back on next load because the env var is still set.
+      // Operator can still PUT a DB-sourced key for the same provider
+      // to override the env value (the runtime resolver picks DB > env).
+      const isEnv = p.source === "env";
+      const sourceBadge = isEnv
+        ? '<span class="pill muted" title="Set via .env / environment variable. Edit the env file and restart to change.">env</span>'
+        : '';
+      const removeBtn = isEnv
+        ? `<span class="muted small" title="Remove the OPENAI_API_KEY (or equivalent) from .env and restart the server.">env-managed</span>`
+        : `<button class="btn btn-ghost btn-sm btn-danger del-prov" data-prov="${escapeHtml(p.provider)}">Remove</button>`;
       tr.innerHTML = `
-        <td><strong>${escapeHtml(p.provider)}</strong></td>
+        <td><strong>${escapeHtml(p.provider)}</strong> ${sourceBadge}</td>
         <td><code>${escapeHtml(p.key_prefix || "—")}</code></td>
         <td>${p.is_enabled
           ? '<span class="pill ok">Enabled</span>'
           : '<span class="pill muted">Disabled</span>'}</td>
-        <td class="th-actions">
-          <button class="btn btn-ghost btn-sm btn-danger del-prov" data-prov="${escapeHtml(p.provider)}">
-            Remove
-          </button>
-        </td>
+        <td class="th-actions">${removeBtn}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -354,12 +370,28 @@ function renderProviders() {
 function renderQuickAdd() {
   const wrap = $("#provider-quickadd");
   if (!wrap) return;
-  const configured = new Set(state.providers.map((p) => p.provider));
+  // DB-sourced providers are "fully configured" — disable the chip so
+  // the operator doesn't accidentally re-PUT and clobber a known-good key.
+  // ENV-sourced providers stay clickable: clicking pre-fills the form so
+  // the operator can write a DB row that overrides the env value (matches
+  // the runtime resolver's DB > env precedence).
+  const dbConfigured = new Set(
+    state.providers.filter((p) => p.source === "db").map((p) => p.provider)
+  );
+  const envConfigured = new Set(
+    state.providers.filter((p) => p.source === "env").map((p) => p.provider)
+  );
   wrap.innerHTML = `<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Quick-add:</span>` +
     PROVIDERS_KNOWN.map((p) => {
-      const isSet = configured.has(p.id);
-      return `<button class="chip ${isSet ? "configured" : ""}" data-prov-pick="${p.id}" ${isSet ? "disabled" : ""}>
-        ${escapeHtml(p.label)}
+      const isDb = dbConfigured.has(p.id);
+      const isEnv = envConfigured.has(p.id);
+      const cls = isDb ? "configured" : (isEnv ? "env-override" : "");
+      const disabled = isDb ? "disabled" : "";
+      const title = isEnv
+        ? `${p.label} is set via .env. Click to override with a custom key (writes a DB row that takes precedence).`
+        : "";
+      return `<button class="chip ${cls}" data-prov-pick="${p.id}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
+        ${escapeHtml(p.label)}${isEnv ? " <span class=\"small muted\">(env, override)</span>" : ""}
       </button>`;
     }).join("");
   $$("[data-prov-pick]").forEach((b) =>

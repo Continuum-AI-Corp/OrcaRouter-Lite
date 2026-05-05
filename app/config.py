@@ -9,6 +9,18 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Providers we accept from env vars. Must stay in sync with:
+#   - the matching `<provider>_api_key` fields on Settings below
+#   - `PROVIDERS_KNOWN` in design/app.js (dashboard quick-add chips)
+#   - `_PROVIDER_BY_LITELLM_KEY` in packages/litellm_adapter/catalog.py
+#     (which decides the runtime provider id for catalog entries)
+#
+# xAI / DeepSeek were missing here pre-2026-05, leaving their catalog
+# models silently un-routable: the catalog had grok-4 + deepseek-v3 etc,
+# but Settings didn't read XAI_API_KEY / DEEPSEEK_API_KEY, and the
+# dashboard had no chip for them. Operators couldn't configure without
+# raw curl PUT (or hit the wrong provider — famously: "grok" PUT'd into
+# "groq", which is a different company).
 _PROVIDERS_FROM_ENV = (
     "openai",
     "anthropic",
@@ -16,6 +28,8 @@ _PROVIDERS_FROM_ENV = (
     "groq",
     "together",
     "fireworks",
+    "xai",          # Grok 2/3/4 series. NOTE: NOT the same as `groq`.
+    "deepseek",     # deepseek-chat / -reasoner / -v3 / -v3.2.
 )
 
 
@@ -43,12 +57,17 @@ class Settings(BaseSettings):
     api_key_pepper: str = ""
 
     # ── Provider keys via env (alternative to UI-stored keys) ──
+    # Keep in sync with `_PROVIDERS_FROM_ENV` above. Pydantic-settings reads
+    # case-insensitively (config: `case_sensitive=False`), so XAI_API_KEY,
+    # xai_api_key, etc all hit the same field.
     openai_api_key: str | None = None
     anthropic_api_key: str | None = None
     google_api_key: str | None = None
     groq_api_key: str | None = None
     together_api_key: str | None = None
     fireworks_api_key: str | None = None
+    xai_api_key: str | None = None
+    deepseek_api_key: str | None = None
 
     # ── Hosted-as-upstream (standard fallback) ──
     # When configured (env or via dashboard), every catalog model gets an extra

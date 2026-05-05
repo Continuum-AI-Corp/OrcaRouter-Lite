@@ -1,13 +1,48 @@
-"""Provider keys CRUD — BYOK credentials for upstream LLM providers."""
+"""Provider keys CRUD — BYOK credentials for upstream LLM providers.
+
+Single-tenant invariant: at most ONE active key per provider. Two
+sources, both honored by the runtime router with DB taking precedence:
+
+  1. DB rows in `provider_keys` (set via dashboard PUT, encrypted at rest).
+  2. Environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+     loaded by `Settings` and exposed via `settings.env_provider_keys()`.
+
+The list endpoint surfaces BOTH so operators can see what's actually
+configured. Without that, an operator who set keys in `.env` would see
+an empty providers page in the dashboard, assume nothing is wired up,
+and either re-set keys (creating a confusing duplicate) or worry that
+their `auto` chats are silently failing — when in reality the env-sourced
+key is serving traffic just fine.
+
+Env-sourced rows carry `source: "env"`. Editing an env entry from the
+dashboard writes a new DB row (which then takes precedence — matches
+the runtime resolver in `router_cache.py:58`). Deleting the DB row
+falls back to the env value transparently. Env entries themselves
+aren't deletable from this API; the operator must edit `.env` and
+restart to remove an env-set key (12-factor: env config lives in env).
+
+Delete is a HARD delete, not a soft tombstone. Reasoning:
+  - BYOK keys aren't user data; there's no audit/recovery story.
+  - Soft-delete + new-PUT historically created ghost rows: query
+    filtered `is_deleted=0`, missed the tombstone, INSERT'd a new
+    row, leaving N tombstones piled up forever.
+  - Hard delete keeps the table at most 1 row per provider, matching
+    the single-tenant 1-key-per-provider invariant.
+
+Migration note: existing dev DBs may carry tombstones from before this
+change. The PUT path opportunistically wipes them when an operator
+sets a new key for the same provider.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete as sql_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import router_cache
+from app.config import get_settings
 from app.deps import get_db, get_key_context
 from packages.auth.encryption import encrypt_credential
 from packages.auth.types import KeyContext
@@ -18,14 +53,26 @@ router = APIRouter(prefix="/v1/providers", tags=["providers"])
 
 class SetProviderKey(BaseModel):
     api_key: str
-    label: str = "default"
 
 
 class ProviderKeyOut(BaseModel):
     provider: str
-    label: str
     key_prefix: str
     is_enabled: bool
+    # "db" = stored in provider_keys table (editable + deletable from dashboard)
+    # "env" = loaded from .env / process env (read-only here; edit .env to change)
+    source: str = "db"
+
+
+def _mask_key(api_key: str) -> str:
+    """Display-safe key prefix. Long keys show first 8 + last 4; short
+    keys show 2 + 2 to give the operator some hint of which account
+    they're looking at without exposing enough to be useful as a credential."""
+    if len(api_key) > 12:
+        return api_key[:8] + "..." + api_key[-4:]
+    if len(api_key) > 4:
+        return api_key[:2] + "..." + api_key[-2:]
+    return "..."
 
 
 @router.get("")
@@ -38,17 +85,35 @@ async def list_providers(
             select(ProviderKey).where(ProviderKey.is_deleted == 0)
         )
     ).scalars().all()
-    return {
-        "providers": [
+
+    db_providers = {r.provider for r in rows}
+    out: list[dict] = [
+        ProviderKeyOut(
+            provider=r.provider,
+            key_prefix=r.key_prefix,
+            is_enabled=r.is_enabled,
+            source="db",
+        ).model_dump()
+        for r in rows
+    ]
+
+    # Surface env-configured keys the runtime is already using. DB takes
+    # precedence (matches the runtime resolver in router_cache.py:58
+    # `db_provider_keys.get(provider) or env_keys.get(provider)`), so
+    # we only add env entries for providers NOT already covered by a DB row.
+    for prov, raw_key in get_settings().env_provider_keys().items():
+        if prov in db_providers:
+            continue
+        out.append(
             ProviderKeyOut(
-                provider=r.provider,
-                label=r.label,
-                key_prefix=r.key_prefix,
-                is_enabled=r.is_enabled,
+                provider=prov,
+                key_prefix=_mask_key(raw_key),
+                is_enabled=True,
+                source="env",
             ).model_dump()
-            for r in rows
-        ]
-    }
+        )
+
+    return {"providers": out}
 
 
 @router.put("/{provider}")
@@ -61,6 +126,19 @@ async def set_provider_key(
     if not body.api_key.strip():
         raise HTTPException(status_code=422, detail="api_key cannot be empty")
 
+    # Wipe any soft-deleted ghost rows for this provider before upsert.
+    # Migration aid: pre-PR dev DBs might carry tombstones from old soft-delete
+    # behavior. Without this cleanup, the upsert query below — which filters
+    # `is_deleted=0` — would miss the ghost and INSERT a new row, leaving
+    # the tombstone piled up. After this PR, DELETE is a hard delete so no
+    # new tombstones can form, but old ones still need scrubbing.
+    await db.execute(
+        sql_delete(ProviderKey).where(
+            ProviderKey.provider == provider,
+            ProviderKey.is_deleted == 1,
+        )
+    )
+
     existing = (
         await db.execute(
             select(ProviderKey).where(
@@ -71,19 +149,17 @@ async def set_provider_key(
     ).scalar_one_or_none()
 
     encrypted = encrypt_credential(body.api_key)
-    prefix_visible = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "..."
+    prefix_visible = _mask_key(body.api_key)
 
     if existing is not None:
         existing.encrypted_key = encrypted
         existing.key_prefix = prefix_visible
-        existing.label = body.label
         existing.is_enabled = True
     else:
         existing = ProviderKey(
             provider=provider,
             encrypted_key=encrypted,
             key_prefix=prefix_visible,
-            label=body.label,
         )
         db.add(existing)
 
@@ -92,9 +168,9 @@ async def set_provider_key(
 
     return ProviderKeyOut(
         provider=existing.provider,
-        label=existing.label,
         key_prefix=existing.key_prefix,
         is_enabled=existing.is_enabled,
+        source="db",
     ).model_dump()
 
 
@@ -104,18 +180,33 @@ async def delete_provider_key(
     _kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    row = (
-        await db.execute(
-            select(ProviderKey).where(
-                ProviderKey.provider == provider,
-                ProviderKey.is_deleted == 0,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Provider key not found")
+    """Hard-delete the DB row for this provider. After this, runtime
+    resolution falls back to the env value (if `.env` has one) or
+    treats the provider as unconfigured.
 
-    row.is_deleted = 1
+    Returns 204 even if no DB row existed — the operator's intent
+    ('no DB-managed key for this provider') is satisfied either way.
+    Removing an env-only entry isn't supported here: edit `.env` and
+    restart the server (env config is file-managed by design).
+    """
+    result = await db.execute(
+        sql_delete(ProviderKey).where(ProviderKey.provider == provider)
+    )
     await db.commit()
+    if result.rowcount == 0:
+        # No DB row, but the operator may have meant the env-sourced one.
+        # Surface the situation explicitly instead of silently 204'ing —
+        # otherwise a dashboard "Remove" click on an env row appears to
+        # succeed yet the key remains active on next page load.
+        if provider in get_settings().env_provider_keys():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{provider}' is configured via environment variable "
+                    f"({provider.upper()}_API_KEY). Remove it from your .env "
+                    f"and restart the server to deconfigure."
+                ),
+            )
+        raise HTTPException(status_code=404, detail="Provider key not found")
     router_cache.invalidate_router()
     return Response(status_code=204)

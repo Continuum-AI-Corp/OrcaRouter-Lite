@@ -41,6 +41,47 @@ def test_settings_env_provider_keys_returns_dict(isolated_env, monkeypatch):
     assert keys == {"openai": "sk-1", "groq": "sk-2"}
 
 
+def test_settings_reads_extended_provider_keys(isolated_env, monkeypatch):
+    """xAI / DeepSeek were missing from Settings before, leaving their
+    catalog models unroutable. Regression test: each var must wire to
+    the matching field AND surface via env_provider_keys() with the
+    catalog provider id (NOT the env var name — `xai` not `XAI`).
+
+    The xAI test in particular doubles as a guard against the famous
+    'grok vs groq' typo: `XAI_API_KEY` must produce provider id `xai`,
+    so the runtime can't route grok-* models to a Groq endpoint."""
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-grok")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-test")
+    from app.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.xai_api_key == "xai-test-grok"
+    assert s.deepseek_api_key == "sk-ds-test"
+
+    keys = s.env_provider_keys()
+    assert keys == {
+        "xai": "xai-test-grok",
+        "deepseek": "sk-ds-test",
+    }
+    assert "xai" in keys, "XAI_API_KEY must surface as 'xai' not 'XAI' or 'grok'"
+    assert "groq" not in keys, "XAI_API_KEY must NOT alias to groq (different company)"
+
+
+def test_settings_xai_and_groq_are_separate_providers(isolated_env, monkeypatch):
+    """Belt-and-suspenders for the grok/groq footgun: setting both env
+    vars must populate two distinct provider entries in env_provider_keys.
+    A previous bug surfaced as operators PUTting xai keys into the groq
+    provider via the dashboard (groq was the only chip available)."""
+    monkeypatch.setenv("XAI_API_KEY", "xai-grok-key")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_groq-key")
+    from app.config import Settings
+
+    s = Settings(_env_file=None)
+    keys = s.env_provider_keys()
+    assert keys == {"xai": "xai-grok-key", "groq": "gsk_groq-key"}
+    assert s.xai_api_key != s.groq_api_key
+
+
 def test_settings_database_url_override(isolated_env, monkeypatch):
     """DATABASE_URL env var overrides the SQLite default."""
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/db")
