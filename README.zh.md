@@ -1,70 +1,70 @@
 # OrcaRouter Lite
 
-**具有托管安全网的自托管 LLM 路由器。**
-兼容 OpenAI。自带。单一工作区。流媒体。 `型号=“汽车”`。
+**带托管安全网的自托管 LLM 路由器。**
+兼容 OpenAI。BYOK。单工作区。流式传输。`model="auto"`。
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![测试](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
-[![模型](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
-[![许可证](https://img.shields.io/badge/license-MIT-blue)](#license)
+[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 ## 语言
 
-- [英文](./README.md)
-- [日本语](./README.ja.md)
+- [English](./README.md)
+- [日本語](./README.ja.md)
 - [中文](./README.zh.md)
 - [한국어](./README.ko.md)
-- [德语](./README.de.md)
-- [法语](./README.fr.md)
-- [西班牙语](./README.es.md)
-- [意大利语](./README.it.md)
+- [Deutsch](./README.de.md)
+- [Français](./README.fr.md)
+- [Español](./README.es.md)
+- [Italiano](./README.it.md)
 - [Русский](./README.ru.md)
-- [葡萄牙语](./README.pt.md)
+- [Português](./README.pt.md)
 - [Tiếng Việt](./README.vi.md)
 - [हिन्दी](./README.hi.md)
 
-OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源单工作区版本。在您的笔记本电脑上运行它，将其运送到您的产品中，或者直接使用托管的“api.orcarouter.ai”来处理您不想管理密钥的长尾模型。
+OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源单工作区版本。在你的笔记本上运行它，把它打包进你的产品里，或者直接使用托管的 `api.orcarouter.ai` 来覆盖那些你不想自己管理密钥的长尾模型。
 
-> **为什么选择我们？** LiteLLM 是一个图书馆； OpenRouter 是闭源托管的；奥拉马仅限本地。我们是**具有托管回退功能的自托管服务器**——这句话没有人可以说。
+> **为什么选我们？** LiteLLM 是一个库；OpenRouter 是闭源的托管服务；Ollama 仅限本地。我们是**带托管 fallback 的自托管服务器**——这句话其他人都说不出来。
 
-## 60 秒快速入门
+## 60 秒快速开始
 
-OrcaRouter的两种使用方法：
+使用 OrcaRouter 的两种方式：
 
-### 路径 A — 自托管 (BYOK)
+### 路径 A —— 自托管 (BYOK)
 
-在您自己的机器上运行 Lite；带上您自己的提供商密钥。
+在你自己的机器上运行 Lite；自带 provider 密钥。
 
 ```bash
 git clone https://github.com/Continuum-AI-Corp/OrcaRouter-Lite.git
 cd OrcaRouter-Lite
 cp .env.example .env
-# add at least one: OPENAI_API_KEY=sk-...  (or ORCAROUTER_API_KEY=...)
+# 至少添加一个: OPENAI_API_KEY=sk-...  (或 ORCAROUTER_API_KEY=...)
 
 docker compose up
 # logs: ✓ orcarouter-lite ready. API key: sk-orca-abc123...
 ```
 
-基本 URL：“http://localhost:8000/v1”。使用启动时打印的“sk-orca-*”密钥。
+Base URL：`http://localhost:8000/v1`。使用启动时打印出来的 `sk-orca-*` 密钥。
 
-### 路径 B — 托管（需要帐户）
+### 路径 B —— 托管（需要账号）
 
-没有克隆，没有码头工人。注册、获取密钥、将任何 OpenAI SDK 指向托管的。
+无需 clone，无需 docker。注册、获取密钥，将任意 OpenAI SDK 指向托管服务。
 
 ```bash
-# 1. Register at https://www.orcarouter.ai and copy your sk-orca-* key
-# 2. Use https://api.orcarouter.ai/v1 as the base URL
+# 1. 在 https://www.orcarouter.ai 注册并复制你的 sk-orca-* 密钥
+# 2. 使用 https://api.orcarouter.ai/v1 作为 base URL
 ```
 
-**需要帐户。** Hosted 处理路由、计费和提供商的长尾 - 在您的 OrcaRouter 帐户上按令牌计费。请参阅[docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)。
+**需要账号。** 托管服务负责路由、计费以及 provider 长尾——按 token 在你的 OrcaRouter 账户上计费。详见 [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)。
 
-### 然后从任何 OpenAI SDK 调用它
+### 然后从任意 OpenAI SDK 调用
 
-下面的示例使用路径 A 的本地主机基本 URL — 如果您位于路径 B，则交换为“https://api.orcarouter.ai/v1”。
+下面的示例使用路径 A 的 localhost base URL —— 如果你在路径 B，请替换为 `https://api.orcarouter.ai/v1`。
 
-<详情>
-<摘要><b>Python</b></摘要>
+<details>
+<summary><b>Python</b></summary>
 
 ```python
 from openai import OpenAI
@@ -74,14 +74,14 @@ client = OpenAI(
     api_key="sk-orca-abc123...",
 )
 r = client.chat.completions.create(
-    model="auto",  # or "gpt-4o-mini", "claude-3-5-sonnet-latest", ...
+    model="auto",  # 或 "gpt-4o-mini", "claude-3-5-sonnet-latest", ...
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(r.choices[0].message.content)
 ```
 </details>
 
-<详情>
+<details>
 <summary><b>Node.js</b></summary>
 
 ```js
@@ -100,8 +100,8 @@ console.log(r.choices[0].message.content);
 ```
 </details>
 
-<详情>
-<摘要><b>卷曲</b></摘要>
+<details>
+<summary><b>curl</b></summary>
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -111,25 +111,25 @@ curl http://localhost:8000/v1/chat/completions \
 ```
 </details>
 
-打开仪表板的“http://localhost:8000/” — 提供程序、路由、分析、密钥（仅限路径 A）。
+打开 `http://localhost:8000/` 进入仪表板 —— providers、路由、分析、密钥（仅路径 A）。
 
-＃＃ 为什么？
+## 为什么？
 
-| |精简版 | LiteLLM 库 |开放路由器|奥拉玛 |
+| | OrcaRouter Lite | LiteLLM 库 | OpenRouter | Ollama |
 |---|---|---|---|---|
-|自托管服务器| ✓ |作为图书馆| ✗ | ✓ |
-|兼容 OpenAI | ✓ | ✓ | ✓ | ✓ |
-|多提供商（OpenAI/Anthropic/Google/...）| ✓ | ✓ | ✓ | ✗ |
-|内置仪表板| ✓ | ✗ | ✓ | ✗ |
-| `model="auto"`（最便宜的功能）| ✓ | ✗ | ✗ |不适用 |
-|流媒体 | ✓ | ✓ | ✓ | ✓ |
-|自带 | ✓ | ✓ | ✗ |不适用 |
-|托管作为后备| ✓ | ✗ |不适用 | ✗ |
-|无需 Postgres/无需 Redis | ✓ |不适用 |不适用 | ✓ |
+| 自托管服务器 | ✓ | 作为库 | ✗ | ✓ |
+| 兼容 OpenAI | ✓ | ✓ | ✓ | ✓ |
+| 多 provider（OpenAI/Anthropic/Google/…）| ✓ | ✓ | ✓ | ✗ |
+| 内置仪表板 | ✓ | ✗ | ✓ | ✗ |
+| `model="auto"`（最便宜的合适模型）| ✓ | ✗ | ✗ | n/a |
+| 流式传输 | ✓ | ✓ | ✓ | ✓ |
+| BYOK | ✓ | ✓ | ✗ | n/a |
+| 托管作为 fallback | ✓ | ✗ | n/a | ✗ |
+| 不需要 Postgres / 不需要 Redis | ✓ | n/a | n/a | ✓ |
 
-## `model="auto"` — 标题功能
+## `model="auto"` —— 招牌特性
 
-发送 `model="auto"` ，OrcaRouter 会在您配置的提供程序中选择最便宜的模型，以满足请求的功能要求（工具、愿景、JSON 模式）。无需手动路由规则；没有速度限制的体操；代码中没有“if x: ...”成本优化。
+发送 `model="auto"`，OrcaRouter 会在你已配置的 providers 中挑选**最便宜**且能满足请求能力要求（tools、vision、JSON 模式）的模型。无需手写路由规则；无需折腾速率限制；代码里也无需 `if x: ...` 的成本优化。
 
 ```python
 client.chat.completions.create(
@@ -139,28 +139,28 @@ client.chat.completions.create(
         {"type": "image_url", "image_url": {"url": "data:..."}},
     ]}],
 )
-# → routes to the cheapest VISION-capable model your keys cover
+# → 路由到你的密钥所覆盖的、最便宜的支持 VISION 的模型
 ```
 
-解析后的模型通过“x-orca-resolved-model”响应标头暴露给调用者，以便您可以记录/显示实际使用的内容。
+被选中的模型会通过 `x-orca-resolved-model` 响应头回传给调用方，方便你记录或展示实际使用的模型。
 
-## 作为上游托管（Lite + 托管）
+## 托管作为上游（Lite + 托管）
 
-已经运行 Lite 了？将“ORCAROUTER_API_KEY”设置为来自 [www.orcarouter.ai](https://www.orcarouter.ai) 的“sk-orca-*”，托管成为路由链中的又一个提供商 - 涵盖本地密钥不具备的模型：
+已经在跑 Lite 了？把 `ORCAROUTER_API_KEY` 设为来自 [www.orcarouter.ai](https://www.orcarouter.ai) 的 `sk-orca-*`，托管就成了路由链中的另一个 provider —— 覆盖那些你的本地密钥拿不到的模型：
 
 ```bash
 # .env
 ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
-使用案例：
-- **先试后买** — 无需本地提供商密钥
-- **本地日志记录** — 托管处理路由，Lite 存储仪表板的 RequestLog 行
-- **故障转移** — 本地提供商失败，托管是安全网
+使用场景：
+- **先试后买** —— 不需要本地 provider 密钥
+- **本地日志** —— 托管负责路由，Lite 把 RequestLog 写入数据库供仪表板使用
+- **故障转移** —— 本地 provider 失败时，托管作为安全网兜底
 
-## 流媒体
+## 流式传输
 
-与 OpenAI 兼容的 SSE 格式，具有标准的“data: ... \n\n” 框架和终端“[DONE]”哨兵 — 适用于已从 OpenAI 流式传输的任何 SDK。
+兼容 OpenAI 的 SSE 格式，使用标准的 `data: ... \n\n` 帧格式以及结尾的 `[DONE]` 标记 —— 任何已经从 OpenAI 流式读取的 SDK 都可以即插即用。
 
 ```python
 for chunk in client.chat.completions.create(
@@ -171,41 +171,41 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-## 型号目录
+## 模型目录
 
-启动时从 [LiteLLM 社区维护的定价数据库](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 加载 100 多个聊天模型 - 无需手动维护模型列表。每个条目都公开：
+启动时会从 [LiteLLM 社区维护的定价数据库](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 加载 100+ 个聊天模型 —— 没有需要手动维护的模型清单。每条记录都包含：
 
-- `id`（例如`gpt-4o`、`claude-3-5-sonnet-latest`）
-- `provider`（映射到您配置的键）
-- 功能标志：`supports_tools`、`supports_vision`、`supports_json_mode`
-- 每个代币的输入/输出成本（驱动储蓄小部件 + `model="auto"`）
+- `id`（如 `gpt-4o`、`claude-3-5-sonnet-latest`）
+- `provider`（映射到你已配置的密钥）
+- 能力标志：`supports_tools`、`supports_vision`、`supports_json_mode`
+- 每 token 的输入/输出成本（驱动节省组件 + `model="auto"`）
 
-`GET /v1/models` returns the OpenAI-format catalogue.
+`GET /v1/models` 返回 OpenAI 格式的目录。
 
-## 部署到其他地方
+## 部署到其他平台
 
-|平台|一键|
+| 平台 | 一键部署 |
 |---|---|
-|铁路| [![在铁路上部署](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
-|渲染 |连接存储库，根目录 = `.` |
-|裸 Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...`（图片即将推出）|
+| Render | 连接代码仓库，根目录 = `.` |
+| 裸 Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...`（镜像即将发布）|
 
-## 盒子里有什么
+## 盒子里都有什么
 
-- `POST /v1/chat/completions` — 代理 + 流 + `model="auto"` + 跨提供商提示缓存
-- `GET /v1/models` — 可发现的模型目录（来自 `litellm.model_cost` 的 100 多个模型）
-- `GET/PUT/DELETE /v1/providers/{provider}` — 设置/列出/撤销加密的提供者密钥
-- `GET/PUT /v1/routing` — 更改策略（`平衡`/`最便宜`/`最快`/`质量`）
-- `GET /v1/analytics/{recent,spend,latency, savings,unreachable}` — 本地分析，没有遥测功能
-- `GET /v1/hosted` — 托管回退状态（驱动仪表板的“获取 5 美元免费信用卡”卡）
-- `GET/POST/DELETE /v1/keys/...` — 列出/旋转/撤销 API 密钥
-- 单页仪表板位于`/`
-- 默认情况下使用 SQLite； Postgres 通过“DATABASE_URL”选择加入； Redis 可选
+- `POST /v1/chat/completions` —— 代理 + 流式传输 + `model="auto"` + 跨 provider 提示缓存
+- `GET  /v1/models` —— 可发现的模型目录（来自 `litellm.model_cost` 的 100+ 模型）
+- `GET/PUT/DELETE /v1/providers/{provider}` —— 设置 / 列出 / 撤销加密的 provider 密钥
+- `GET/PUT /v1/routing` —— 切换策略（`balanced` / `cheapest` / `fastest` / `quality`)
+- `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` —— 本地分析数据，没有任何遥测离开容器
+- `GET  /v1/hosted` —— 托管 fallback 状态（驱动仪表板上的 "Get $5 free credit" 卡片）
+- `GET/POST/DELETE /v1/keys/...` —— 列出 / 轮换 / 撤销 API 密钥
+- 单页仪表板挂在 `/`
+- 默认 SQLite；可通过 `DATABASE_URL` 切换 Postgres；Redis 可选
 
-### 跨提供商提示缓存
+### 跨 provider 提示缓存
 
-确定性请求（“温度 = 0”或固定的“种子”）由缓存重复提供 - 适用于**每个**提供者，而不仅仅是 Anthropic。当设置“REDIS_URL”时，后端是 Redis，否则是进程内 LRU。缓存命中会立即返回“x-orca-cache: HIT”，成本为 0 美元。
+确定性请求（`temperature=0` 或固定 `seed`）在重复调用时由缓存返回 —— 适用于**所有** provider，不只是 Anthropic。设置了 `REDIS_URL` 时后端是 Redis，否则使用进程内 LRU。命中缓存会即时返回 `x-orca-cache: HIT`，且费用为 $0。
 
 ```bash
 $ curl ... -d '{"model":"auto","messages":[...], "temperature": 0}' -i
@@ -213,33 +213,33 @@ HTTP/1.1 200 OK
 x-orca-cache: MISS
 x-orca-resolved-model: gpt-4o-mini
 
-$ curl ...  # same payload again
+$ curl ...  # 同样的 payload 再来一次
 HTTP/1.1 200 OK
-x-orca-cache: HIT          ← served from cache, no upstream call
+x-orca-cache: HIT          ← 来自缓存，无上游调用
 ```
 
-### 储蓄小部件
+### 节省组件
 
-`GET /v1/analytics/savings?baseline=gpt-4o&days=7` reports what your traffic would have cost on always-GPT-4 vs what it actually cost. The dashboard shows it as a tile.
+`GET /v1/analytics/savings?baseline=gpt-4o&days=7` 报告你的流量在「永远走 GPT-4」时会花多少钱，对比实际花费多少。仪表板会以一张磁贴的形式展示。
 
 ### 集成
 
-[Continue.dev](./integrations/continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel]的直接配置AI SDK](./integrations/vercel_ai.ts)，以及任何使用 OpenAI 聊天完成协议的工具。请参阅[`integrations/`](./integrations/)。
+为 [Continue.dev](./integrations/continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel AI SDK](./integrations/vercel_ai.ts) 以及任何使用 OpenAI Chat Completions 协议的工具提供即插即用的配置。详见 [`integrations/`](./integrations/)。
 
-## 故意不做的事情
+## 刻意不做的事情
 
-这是**单工作区**版本。根据设计，不：
+这是**单工作区**版本。按设计不包含：
 - 多租户、RBAC、SSO
 - 计费、钱包、积分、合作伙伴计划
-- 管理控制台、审核日志、信任和安全
-- 多pod部署/Kubernetes
-- 用于警报的电子邮件/Slack/Webhooks
+- 管理控制台、审计日志、信任与安全
+- 多 pod 部署 / Kubernetes
+- 用于告警的邮件 / Slack / webhook
 
-对于这些，请参阅托管产品或（即将推出的）Teams 版本。
+如需这些，请看托管产品或（即将推出的）Teams 版本。
 
 ## 测试
 
-构建测试优先。这里发布的每个行为都首先经过失败的测试。
+测试先行构建。这里发布的每一个行为都先有一个失败的测试。
 
 ```bash
 pip install -e ".[dev]"
@@ -247,29 +247,29 @@ PYTHONPATH=. pytest -v
 # 127 passed
 ```
 
-|切片 |测试 |什么 |
+| 切片 | 测试数 | 内容 |
 |---|---|---|
-| 1. 配置 | 5 | env 加载，默认值，`env_provider_keys()` |
-| 2. 种子 | 3 |引导工作区 + API 密钥 + RoutingConfig，幂等 |
-| 3. Auth中间件| 4 |不记名令牌验证，丢失/无效时返回 401 |
-| 4.应用工厂| 3 | /health，错误信封，/v1/* 门控 |
-| 5. 提供者密钥 CRUD | 5 |静态加密，明文永不往返 |
-| 6.路由器缓存| 13 | env+DB+托管部署程序集优先 |
-| 7.聊天完成| 5 | OpenAI 格式、RequestLog、验证 |
-| 8. 分析 | 4 |最近/支出/延迟 p50/p99 |
-| 9. /v1/{模型、按键、路由} | 8 |列表/创建/撤销+策略更新 |
-| 10. 流媒体 | 4 | SSE 格式，`[DONE]` 哨兵，日志写回 |
-| 11.目录| 7 | 100 多种型号、功能标志、定价 |
-| 12. `模型=“自动”` | 21 | 21能力检测，最便宜的满足需求（单元+集成）|
-| 13. 节省成本| 9 |节省与始终 GPT-4 基线 + 托管自动比较 |
-| 14.提示缓存| 15 | 15跨提供商精确匹配缓存+聊天集成|
-| 15. 基准 | 4 | Summary() + render_markdown() 聚合 |
-| 16. 托管状态 | 7 | `/v1/hosted` 配置源 + 注册 URL 表面 |
-| 17. 托管自动储蓄 | 3 |综合目录上的“_hosted_auto_ savings”边缘情况 |
-| 18. 无法到达的模型 | 7 |当托管打开时，“您无法访问的模型”磁贴会清除 |
-| **总计** | **127** | |
+| 1. 配置 | 5 | env 加载、默认值、`env_provider_keys()` |
+| 2. Seed | 3 | 引导工作区 + API 密钥 + RoutingConfig，幂等 |
+| 3. 鉴权中间件 | 4 | bearer-token 校验，缺失/无效返回 401 |
+| 4. 应用工厂 | 3 | /health、错误信封、/v1/* 网关 |
+| 5. Provider 密钥 CRUD | 5 | 静态加密，明文不会往返 |
+| 6. 路由器缓存 | 13 | env+DB+托管 deployment 装配，按优先级 |
+| 7. 聊天补全 | 5 | OpenAI 格式、RequestLog、校验 |
+| 8. 分析 | 4 | recent / spend / latency p50/p99 |
+| 9. /v1/{models,keys,routing} | 8 | 列出/创建/撤销 + 策略更新 |
+| 10. 流式传输 | 4 | SSE 格式、`[DONE]` 标记、日志回写 |
+| 11. 目录 | 7 | 100+ 模型、能力标志、定价 |
+| 12. `model="auto"` | 21 | 能力检测、最便宜且满足需求（单元 + 集成）|
+| 13. 成本节省 | 9 | 节省 vs 永远 GPT-4 基线 + 托管自动对比 |
+| 14. 提示缓存 | 15 | 跨 provider 精确匹配缓存 + 聊天集成 |
+| 15. 基准测试 | 4 | summarize() + render_markdown() 聚合 |
+| 16. 托管状态 | 7 | `/v1/hosted` 配置来源 + 注册 URL |
+| 17. 托管自动节省 | 3 | 合成目录上的 `_hosted_auto_savings` 边界用例 |
+| 18. 不可达模型 | 7 | 当托管开启时，「你够不到的模型」磁贴会清空 |
+| **合计** | **127** | |
 
-＃＃ 建筑学
+## 架构
 
 ```
 app/
@@ -300,20 +300,20 @@ packages/
 
 ## 路线图
 
-- [x] OpenAI 兼容的聊天完成
-- [x] 流媒体 (SSE)
-- [x] `model="auto"` 最便宜的路由
-- [x] 托管为上游
-- [x] 静态加密 BYOK
+- [x] 兼容 OpenAI 的聊天补全
+- [x] 流式传输 (SSE)
+- [x] `model="auto"` 最便宜且合适的路由
+- [x] 托管作为上游
+- [x] 静态加密的 BYOK
 - [x] 本地分析仪表板
-- [x] CI（GitHub 操作）
-- [x] 跨提供商提示缓存
-- [x]Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK集成
-- [x] 公共基准 + 储蓄索赔
-- [ ] 嵌入 + 图像生成代理
+- [x] CI（GitHub Actions）
+- [x] 跨 provider 提示缓存
+- [x] Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK 集成
+- [x] 公开基准 + 节省说明
+- [ ] Embeddings + 图像生成代理
 
-请参阅 [DEMO.md](./DEMO.md) 了解故障转移演示。
+故障转移演示请见 [DEMO.md](./DEMO.md)。
 
-＃＃ 执照
+## 许可证
 
-麻省理工学院。请参阅[许可证](./许可证)。
+MIT。详见 [LICENSE](./LICENSE)。
