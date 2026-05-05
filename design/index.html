@@ -98,6 +98,11 @@
           <span data-i18n="nav.api_keys">API keys</span>
           <kbd>5</kbd>
         </button>
+        <button data-tab="quality" class="nav-item" data-shortcut="6">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.39 7.36H22l-6.18 4.49L18.21 22 12 17.27 5.79 22l2.39-8.15L2 9.36h7.61z"/></svg>
+          <span data-i18n="nav.quality">Quality</span>
+          <kbd>6</kbd>
+        </button>
       </nav>
 
       <div class="sidebar-foot">
@@ -568,6 +573,84 @@
                 <tbody></tbody>
               </table>
             </div>
+          </article>
+        </section>
+
+        <!-- ─────────────── Quality scores panel ─────────────── -->
+        <section id="panel-quality" class="panel">
+          <article class="card" id="quality-setup-card" hidden>
+            <header class="card-head">
+              <div>
+                <h2 class="card-title">Set up quality scoring</h2>
+                <p class="card-sub">
+                  Strategy <code>quality</code> currently picks the most expensive model — a proxy that broke when newer flagships (Claude Opus 4.7, GPT-5.x) shipped at lower prices than older ones. Set an Artificial Analysis API key to route by real benchmark scores instead.
+                </p>
+              </div>
+            </header>
+            <div class="setup-steps">
+              <ol>
+                <li>Sign up free at <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">artificialanalysis.ai</a> and generate an API key (free tier: 1,000 req/day, plenty for 1h-cached usage).</li>
+                <li>Add it to your <code>.env</code> as <code>ARTIFICIAL_ANALYSIS_API_KEY=...</code> and restart.</li>
+                <li>Reload this page — scores will appear automatically.</li>
+              </ol>
+              <p class="callout-foot">
+                Without a key, <code>quality</code> falls back to the legacy cost-based behavior. <code>cheapest</code> / <code>balanced</code> / <code>fastest</code> are unaffected. You can still set <strong>manual overrides</strong> on individual models in the table below — those work without an AA key and take precedence when present.
+              </p>
+            </div>
+          </article>
+
+          <article class="card" id="quality-status-card" hidden>
+            <header class="card-head">
+              <div>
+                <h2 class="card-title">Quality scores</h2>
+                <p class="card-sub">
+                  <span id="quality-status-line">Loading…</span>
+                </p>
+              </div>
+              <button id="quality-refresh" class="btn btn-secondary" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Refresh from AA
+              </button>
+            </header>
+
+            <div class="callout" id="quality-preview" hidden>
+              <div class="callout-head">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                <strong>Right now, <code>model="auto"</code> would resolve to:</strong>
+              </div>
+              <div id="quality-preview-body"></div>
+            </div>
+          </article>
+
+          <article class="card" id="quality-table-card" hidden>
+            <header class="card-head">
+              <div>
+                <h2 class="card-title">Models</h2>
+                <p class="card-sub">
+                  Edit a row's <strong>Manual</strong> column to override the AA score for routing decisions. Manual values win over AA. Use this when your own evals disagree, or when AA hasn't scored a model yet.
+                </p>
+              </div>
+            </header>
+
+            <div class="table-wrap">
+              <table id="quality-table">
+                <thead><tr>
+                  <th>Model</th>
+                  <th>Provider</th>
+                  <th class="num">AA</th>
+                  <th class="num">Manual</th>
+                  <th class="num">Effective</th>
+                  <th class="num">$/M blended</th>
+                  <th>Status</th>
+                  <th class="th-actions"></th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <p class="card-foot small muted">
+              Powered by <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">Artificial Analysis</a> — Intelligence Index aggregates MMLU-Pro, GPQA, MATH, HumanEval, and other benchmarks. Attribution required.
+            </p>
           </article>
         </section>
       </div>

@@ -114,6 +114,7 @@ def choose_auto_model(
     strategy: str | None = None,
     preferred_models: list[str] | None = None,
     allowlist: list[str] | set[str] | None = None,
+    quality_scores: dict[str, float] | None = None,
     top_n: int = 5,
 ) -> list[str]:
     """Return up to `top_n` deployable models matching all `needs`, best first.
@@ -124,7 +125,11 @@ def choose_auto_model(
     without the user seeing an error.
 
     Selection rule by strategy:
-      - `quality`: highest blended cost (proxy for "biggest/most-capable")
+      - `quality`: highest quality_score first (when scores are non-empty),
+        cost as the tie-breaker. Falls back to "highest blended cost" when
+        no scores are provided — the legacy proxy that breaks for newer
+        flagships priced lower than older ones (Anthropic Opus 4.7 vs
+        Opus 4 from May 2024). Provide AA scores via `quality_scores=`.
       - everything else (`cheapest` / `balanced` / `fastest` / None): lowest
         blended cost. `fastest` shares the cheapest-capable rule because the
         catalog has no per-model latency data; ordering across deployments of
@@ -166,7 +171,20 @@ def choose_auto_model(
     if not eligible:
         return []
     if strategy == "quality":
-        eligible.sort(key=lambda m: (-_blended_cost(m), m.id))
+        # When AA scores (or operator overrides) are available, sort by
+        # score descending. Cost is a tie-breaker (most expensive among
+        # equally-scored models tends to be the flagship version vs a
+        # smaller variant). Unscored models drop to the bottom of the
+        # quality ranking but stay eligible — better to surface them
+        # than to disappear them on a transient AA outage.
+        if quality_scores:
+            eligible.sort(
+                key=lambda m: (-quality_scores.get(m.id, 0.0), -_blended_cost(m), m.id)
+            )
+        else:
+            # Legacy fallback: cost-as-quality-proxy. Wrong for modern
+            # pricing but stable when no benchmark data is available.
+            eligible.sort(key=lambda m: (-_blended_cost(m), m.id))
     else:
         eligible.sort(key=lambda m: (_blended_cost(m), m.id))
     return [m.id for m in eligible[:top_n]]

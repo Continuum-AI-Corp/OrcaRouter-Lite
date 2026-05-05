@@ -22,6 +22,7 @@ from app import prompt_cache, router_cache
 from app.auto_routing import choose_auto_model, required_capabilities
 from app.config import get_settings
 from app.deps import get_db, get_key_context
+from app.quality_scores import resolve_quality_scores
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
@@ -223,6 +224,18 @@ async def chat_completions(
                     "configured key. No deployable provider found."
                 ),
             )
+        # When strategy is "quality", merge AA's Intelligence Index with
+        # any manual operator overrides from the dashboard. Manual >  AA >
+        # nothing. Empty dict (no AA key + no overrides) → resolver falls
+        # back to the legacy cost-based proxy. Skipped for non-quality
+        # strategies so we don't pay the cost on cheapest/balanced/fastest
+        # calls that don't use the scores.
+        quality_scores: dict[str, float] | None = None
+        if strategy == "quality":
+            quality_scores = await resolve_quality_scores(
+                db=db, workspace_id=str(kc.workspace_id),
+            )
+
         # Pass the key's allowlist into the resolver so it filters BEFORE
         # the top-N truncation. Without this, an allowed model ranked at
         # position 6+ would be silently dropped by top_n=5 and the user
@@ -234,6 +247,7 @@ async def chat_completions(
             strategy=strategy,
             preferred_models=preferred_models,
             allowlist=kc.model_allowlist,
+            quality_scores=quality_scores,
         )
         if not candidates:
             # Empty result has two distinct causes — distinguish them so the
@@ -252,6 +266,7 @@ async def chat_completions(
                     strategy=strategy,
                     preferred_models=preferred_models,
                     allowlist=None,
+                    quality_scores=quality_scores,
                     top_n=1,
                 )
                 if any_capable:

@@ -27,6 +27,11 @@ def _reset_module_state() -> Generator[None, None, None]:
         orcarouter_models.reset_cache()
     except Exception:
         pass
+    try:
+        from packages.litellm_adapter import quality_index
+        quality_index.reset_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

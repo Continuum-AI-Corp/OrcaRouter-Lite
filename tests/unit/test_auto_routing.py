@@ -276,6 +276,98 @@ def test_choose_model_caps_results_at_top_n():
     assert chosen == ["m0", "m1", "m2"]
 
 
+def test_quality_strategy_uses_quality_scores_when_provided():
+    """The motivating bug: with cost-based proxy, `claude-opus-4-20250514`
+    ($5.7e-5) outranks `claude-opus-4-7` ($1.9e-5, 3x cheaper). With
+    real AA scores, 4-7 (score 57) must win over the older Opus 4."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        # Old Opus 4: more expensive, lower benchmark score.
+        CatalogModel("claude-opus-4-old", "anthropic", "anthropic/",
+                     True, False, False, 1.5e-5, 7.5e-5),
+        # New Opus 4.7: cheaper but stronger.
+        CatalogModel("claude-opus-4-7", "anthropic", "anthropic/",
+                     True, False, False, 5e-6, 2.5e-5),
+    ]
+    deployable = {"claude-opus-4-old", "claude-opus-4-7"}
+    quality_scores = {"claude-opus-4-7": 57.0, "claude-opus-4-old": 47.0}
+
+    chosen = choose_auto_model(
+        needs=set(), deployable=deployable, candidates=candidates,
+        strategy="quality", quality_scores=quality_scores,
+    )
+    assert chosen[0] == "claude-opus-4-7", (
+        "AA scores must override cost-as-quality-proxy"
+    )
+
+
+def test_quality_strategy_falls_back_to_cost_when_scores_empty():
+    """Backward compatibility: when no AA key is configured, scores arrive
+    as None or {} → quality reverts to the legacy 'most expensive first'
+    behavior. The system still works, just less accurately."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("expensive", "openai", "openai/", True, False, False, 1e-5, 3e-5),
+        CatalogModel("cheap", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+    ]
+    chosen_none = choose_auto_model(
+        needs=set(), deployable={"cheap", "expensive"}, candidates=candidates,
+        strategy="quality", quality_scores=None,
+    )
+    chosen_empty = choose_auto_model(
+        needs=set(), deployable={"cheap", "expensive"}, candidates=candidates,
+        strategy="quality", quality_scores={},
+    )
+    assert chosen_none[0] == "expensive"
+    assert chosen_empty[0] == "expensive"
+
+
+def test_quality_unscored_models_drop_below_scored():
+    """Models with no AA score (e.g. niche providers AA doesn't track)
+    aren't excluded from quality routing — they just rank below any
+    scored model. Better than disappearing them."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("scored-low", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+        CatalogModel("unscored-expensive", "openai", "openai/", True, False, False, 1e-5, 3e-5),
+        CatalogModel("scored-high", "openai", "openai/", True, False, False, 1e-6, 3e-6),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"scored-low", "unscored-expensive", "scored-high"},
+        candidates=candidates,
+        strategy="quality",
+        quality_scores={"scored-high": 57.0, "scored-low": 30.0},
+    )
+    # Top 3: scored-high (57), scored-low (30), unscored-expensive (0).
+    assert chosen == ["scored-high", "scored-low", "unscored-expensive"]
+
+
+def test_quality_cost_breaks_score_ties():
+    """Equal AA scores → break the tie by cost desc (more expensive
+    among equally-scored models tends to be the flagship variant
+    rather than a smaller distillation)."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("flagship", "openai", "openai/", True, False, False, 1e-5, 3e-5),
+        CatalogModel("distill", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(), deployable={"flagship", "distill"}, candidates=candidates,
+        strategy="quality",
+        quality_scores={"flagship": 57.0, "distill": 57.0},
+    )
+    assert chosen[0] == "flagship", "tie-break: more expensive wins"
+
+
 def test_choose_model_default_top_n_is_5():
     """Default cap of 5 keeps the LiteLLM fallbacks list at a reasonable length."""
     from app.auto_routing import choose_auto_model

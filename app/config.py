@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     # ── Body limit (for image / file attachments) ──
     max_body_bytes: int = 100 * 1024 * 1024
 
+    # ── Quality scoring (Artificial Analysis) ──
+    # API key from https://artificialanalysis.ai (free tier: 1000 req/day).
+    # When set, model="auto" with strategy="quality" picks the model with
+    # the highest Intelligence Index from AA's benchmark aggregator instead
+    # of the most expensive (the legacy proxy that broke when Anthropic /
+    # OpenAI started pricing newer flagships LOWER than older ones).
+    # Empty string disables AA scoring; quality strategy degrades to the
+    # cost-based fallback. Attribution to AA is displayed in the dashboard
+    # whenever scores are in use, per their free-tier terms.
+    artificial_analysis_api_key: str = ""
+    artificial_analysis_models_url: str = (
+        "https://artificialanalysis.ai/api/v2/data/llms/models"
+    )
+
     # ── Router behavior (LiteLLM Router cooldown + cascade) ──
     # How long a deployment stays cooled-down after a failure. LiteLLM's
     # default is 1 second, which is effectively no cooldown — a dead model

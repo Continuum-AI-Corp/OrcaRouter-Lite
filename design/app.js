@@ -9,8 +9,8 @@ const LOCALE_KEY = "orca-lite-locale";
 const SUPPORTED_LOCALES = ["en", "zh", "hi", "es", "pt", "ru", "ja", "de", "fr", "it", "ar", "ko"];
 const LOCALE_LABELS = { en: "English", zh: "中文", hi: "हिन्दी", es: "Español", pt: "Português", ru: "Русский", ja: "日本語", de: "Deutsch", fr: "Français", it: "Italiano", ar: "العربية", ko: "한국어" };
 const I18N = {
-  en: { "auth.tagline":"Open Source. Single Tenant.","auth.welcome":"Welcome back","auth.subtitle":"Paste the sk-orca-* key printed in your server logs on first run. Stored only in this browser via localStorage.","auth.api_key":"API key","auth.continue":"Continue","nav.search":"Search","nav.overview":"Overview","nav.providers":"Providers","nav.routing":"Routing","nav.analytics":"Analytics","nav.api_keys":"API keys","nav.help_docs":"Help & docs","nav.sign_out":"Sign out","status.connected":"Connected","status.disconnected":"Disconnected","auth.checking":"Checking…","auth.welcome_aboard":"Welcome aboard.","auth.key_invalid":"That key didn't work. Double-check the prefix sk-orca-…","tab.overview.title":"Overview","tab.overview.sub":"Your single-tenant LLM router at a glance.","tab.providers.title":"Provider keys","tab.providers.sub":"BYOK — encrypted at rest, used to call upstream LLMs.","tab.routing.title":"Routing","tab.routing.sub":"How model='auto' picks the right model for each request.","tab.analytics.title":"Analytics","tab.analytics.sub":"Local-only spend, latency and request history.","tab.keys.title":"API keys","tab.keys.sub":"Tokens that authenticate clients against this Lite workspace." },
-  zh: { "auth.tagline":"开源。单租户。","auth.welcome":"欢迎回来","auth.subtitle":"粘贴首次运行时服务器日志中的 sk-orca-* 密钥。仅保存在此浏览器 localStorage。","auth.api_key":"API 密钥","auth.continue":"继续","nav.search":"搜索","nav.overview":"概览","nav.providers":"供应商","nav.routing":"路由","nav.analytics":"分析","nav.api_keys":"API 密钥","nav.help_docs":"帮助与文档","nav.sign_out":"退出登录","status.connected":"已连接","status.disconnected":"已断开","auth.checking":"正在检查…","auth.welcome_aboard":"欢迎使用。","auth.key_invalid":"该密钥无效，请检查前缀 sk-orca-…","tab.overview.title":"概览","tab.overview.sub":"一览你的单租户 LLM 路由器。","tab.providers.title":"供应商密钥","tab.providers.sub":"BYOK — 静态加密存储，用于调用上游 LLM。","tab.routing.title":"路由","tab.routing.sub":"model='auto' 如何为每个请求选择合适模型。","tab.analytics.title":"分析","tab.analytics.sub":"仅本地的花费、延迟和请求历史。","tab.keys.title":"API 密钥","tab.keys.sub":"用于在此 Lite 工作区中验证客户端的令牌。" },
+  en: { "auth.tagline":"Open Source. Single Tenant.","auth.welcome":"Welcome back","auth.subtitle":"Paste the sk-orca-* key printed in your server logs on first run. Stored only in this browser via localStorage.","auth.api_key":"API key","auth.continue":"Continue","nav.search":"Search","nav.overview":"Overview","nav.providers":"Providers","nav.routing":"Routing","nav.analytics":"Analytics","nav.api_keys":"API keys","nav.help_docs":"Help & docs","nav.sign_out":"Sign out","status.connected":"Connected","status.disconnected":"Disconnected","auth.checking":"Checking…","auth.welcome_aboard":"Welcome aboard.","auth.key_invalid":"That key didn't work. Double-check the prefix sk-orca-…","tab.overview.title":"Overview","tab.overview.sub":"Your single-tenant LLM router at a glance.","tab.providers.title":"Provider keys","tab.providers.sub":"BYOK — encrypted at rest, used to call upstream LLMs.","tab.routing.title":"Routing","tab.routing.sub":"How model='auto' picks the right model for each request.","tab.analytics.title":"Analytics","tab.analytics.sub":"Local-only spend, latency and request history.","tab.keys.title":"API keys","tab.keys.sub":"Tokens that authenticate clients against this Lite workspace.","nav.quality":"Quality","tab.quality.title":"Quality scores","tab.quality.sub":"Real benchmark scores for the quality routing strategy. Pulls from Artificial Analysis." },
+  zh: { "auth.tagline":"开源。单租户。","auth.welcome":"欢迎回来","auth.subtitle":"粘贴首次运行时服务器日志中的 sk-orca-* 密钥。仅保存在此浏览器 localStorage。","auth.api_key":"API 密钥","auth.continue":"继续","nav.search":"搜索","nav.overview":"概览","nav.providers":"供应商","nav.routing":"路由","nav.analytics":"分析","nav.api_keys":"API 密钥","nav.help_docs":"帮助与文档","nav.sign_out":"退出登录","status.connected":"已连接","status.disconnected":"已断开","auth.checking":"正在检查…","auth.welcome_aboard":"欢迎使用。","auth.key_invalid":"该密钥无效，请检查前缀 sk-orca-…","tab.overview.title":"概览","tab.overview.sub":"一览你的单租户 LLM 路由器。","tab.providers.title":"供应商密钥","tab.providers.sub":"BYOK — 静态加密存储，用于调用上游 LLM。","tab.routing.title":"路由","tab.routing.sub":"model='auto' 如何为每个请求选择合适模型。","tab.analytics.title":"分析","tab.analytics.sub":"仅本地的花费、延迟和请求历史。","tab.keys.title":"API 密钥","tab.keys.sub":"用于在此 Lite 工作区中验证客户端的令牌。","nav.quality":"质量","tab.quality.title":"质量分数","tab.quality.sub":"真实 benchmark 分数驱动 quality 路由策略,数据来自 Artificial Analysis。" },
   hi: { "auth.tagline":"ओपन सोर्स। सिंगल टेनेंट।","auth.welcome":"वापसी पर स्वागत है","auth.subtitle":"पहले रन पर सर्वर लॉग में छपी sk-orca-* कुंजी पेस्ट करें। यह केवल इस ब्राउज़र के localStorage में रहेगी।","auth.api_key":"API कुंजी","auth.continue":"जारी रखें","nav.search":"खोज","nav.overview":"अवलोकन","nav.providers":"प्रदाता","nav.routing":"रूटिंग","nav.analytics":"एनालिटिक्स","nav.api_keys":"API कुंजियाँ","nav.help_docs":"सहायता और दस्तावेज़","nav.sign_out":"साइन आउट","status.connected":"कनेक्टेड","status.disconnected":"डिस्कनेक्टेड","auth.checking":"जाँच हो रही है…","auth.welcome_aboard":"स्वागत है।","auth.key_invalid":"यह कुंजी काम नहीं कर रही। sk-orca- प्रीफिक्स जाँचें…","tab.overview.title":"ओवरव्यू","tab.overview.sub":"आपका सिंगल-टेनेंट LLM राउटर एक नज़र में।","tab.providers.title":"प्रोवाइडर कुंजियाँ","tab.providers.sub":"BYOK — स्टोरेज में एन्क्रिप्टेड, अपस्ट्रीम LLM कॉल के लिए उपयोग।","tab.routing.title":"रूटिंग","tab.routing.sub":"model='auto' हर अनुरोध के लिए सही मॉडल कैसे चुनता है।","tab.analytics.title":"एनालिटिक्स","tab.analytics.sub":"केवल स्थानीय खर्च, लेटेंसी और अनुरोध इतिहास।","tab.keys.title":"API कुंजियाँ","tab.keys.sub":"इस Lite वर्कस्पेस पर क्लाइंट प्रमाणित करने वाले टोकन।" },
   es: { "auth.tagline":"Código abierto. Inquilino único.","auth.welcome":"Bienvenido de nuevo","auth.subtitle":"Pega la clave sk-orca-* mostrada en los logs del servidor en el primer inicio. Solo se guarda en este navegador mediante localStorage.","auth.api_key":"Clave API","auth.continue":"Continuar","nav.search":"Buscar","nav.overview":"Resumen","nav.providers":"Proveedores","nav.routing":"Enrutamiento","nav.analytics":"Analíticas","nav.api_keys":"Claves API","nav.help_docs":"Ayuda y documentación","nav.sign_out":"Cerrar sesión","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Bienvenido.","auth.key_invalid":"Esa clave no funcionó. Verifica el prefijo sk-orca-…","tab.overview.title":"Resumen","tab.overview.sub":"Tu enrutador LLM de inquilino único de un vistazo.","tab.providers.title":"Claves de proveedor","tab.providers.sub":"BYOK — cifradas en reposo, usadas para llamar a LLMs upstream.","tab.routing.title":"Enrutamiento","tab.routing.sub":"Cómo model='auto' elige el modelo adecuado para cada solicitud.","tab.analytics.title":"Analíticas","tab.analytics.sub":"Gasto, latencia e historial de solicitudes solo local.","tab.keys.title":"Claves API","tab.keys.sub":"Tokens que autentican clientes en este espacio Lite." },
   pt: { "auth.tagline":"Código aberto. Locatário único.","auth.welcome":"Bem-vindo de volta","auth.subtitle":"Cole a chave sk-orca-* exibida nos logs do servidor na primeira execução. Armazenada apenas neste navegador via localStorage.","auth.api_key":"Chave API","auth.continue":"Continuar","nav.search":"Pesquisar","nav.overview":"Visão geral","nav.providers":"Provedores","nav.routing":"Roteação","nav.analytics":"Análises","nav.api_keys":"Chaves API","nav.help_docs":"Ajuda e docs","nav.sign_out":"Sair","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Boas-vindas.","auth.key_invalid":"Essa chave não funcionou. Verifique o prefixo sk-orca-…","tab.overview.title":"Visão geral","tab.overview.sub":"Seu roteador LLM single-tenant em um relance.","tab.providers.title":"Chaves de provedor","tab.providers.sub":"BYOK — criptografadas em repouso, usadas para chamar LLMs upstream.","tab.routing.title":"Roteamento","tab.routing.sub":"Como model='auto' escolhe o modelo certo para cada solicitação.","tab.analytics.title":"Análises","tab.analytics.sub":"Gasto, latência e histórico de solicitações apenas locais.","tab.keys.title":"Chaves API","tab.keys.sub":"Tokens que autenticam clientes neste workspace Lite." },
@@ -37,6 +37,7 @@ const TAB_META = {
   routing:   { title: "tab.routing.title",   sub: "tab.routing.sub" },
   analytics: { title: "tab.analytics.title", sub: "tab.analytics.sub" },
   keys:      { title: "tab.keys.title",      sub: "tab.keys.sub" },
+  quality:   { title: "tab.quality.title",   sub: "tab.quality.sub" },
 };
 
 const state = {
@@ -51,6 +52,9 @@ const state = {
   models: [],
   hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", provider_name: "orcarouter" },
   unreachable: { hosted_configured: false, unreachable: [] },
+  // Quality scoring (Artificial Analysis Intelligence Index + manual overrides)
+  quality: { aa_index: { configured: false, source: "missing-key", matched_count: 0 }, models: [], override_count: 0 },
+  qualityPreview: null,
   windowDays: 7,
   lang: "python",
   locale: "en",
@@ -253,6 +257,12 @@ function setTab(tab) {
       renderOverview();
       renderHostedCard();
       renderUnreachable();
+    });
+  }
+  if (tab === "quality") {
+    Promise.all([loadQuality(), loadQualityPreview()]).then(() => {
+      renderQuality();
+      renderQualityPreview();
     });
   }
 }
@@ -767,6 +777,202 @@ function bindKeyForm() {
 }
 
 /* ==========================================================================
+   QUALITY (AA Intelligence Index + manual overrides)
+   ========================================================================== */
+async function loadQuality() {
+  try {
+    const data = await api("/v1/quality");
+    state.quality = data;
+  } catch (e) {
+    toast(`Couldn't load quality scores: ${e.message}`, "err");
+  }
+}
+
+async function loadQualityPreview() {
+  try {
+    state.qualityPreview = await api("/v1/quality/auto-preview");
+  } catch (e) {
+    state.qualityPreview = null;
+  }
+}
+
+function renderQuality() {
+  const aa = state.quality?.aa_index || {};
+  const setupCard = $("#quality-setup-card");
+  const statusCard = $("#quality-status-card");
+  const tableCard = $("#quality-table-card");
+
+  // Setup card is informational when no AA key — manual overrides still
+  // work standalone, so the table card is always shown. Status card
+  // (which surfaces AA freshness) is only meaningful when AA is wired up.
+  const isConfigured = aa.source !== "missing-key";
+  setupCard.hidden = isConfigured;
+  statusCard.hidden = !isConfigured;
+  tableCard.hidden = false;
+
+  // Status line — only when AA is configured (the card itself is hidden
+  // otherwise, but populating defensively avoids a blank flash on toggle).
+  if (isConfigured) {
+    const sourceLabel = {
+      "live":         '<span class="pill ok">live</span>',
+      "stale-cache":  '<span class="pill warn">stale (AA unreachable)</span>',
+      "stale-db":     '<span class="pill warn">stale (DB snapshot)</span>',
+      "error":        '<span class="pill err">error</span>',
+      "missing-key":  '<span class="pill muted">no API key</span>',
+    }[aa.source] || `<span class="pill">${escapeHtml(aa.source || "unknown")}</span>`;
+
+    $("#quality-status-line").innerHTML = (
+      `${sourceLabel} · matched <strong>${aa.matched_count || 0}</strong> of `
+      + `${aa.raw_count || 0} AA models to your catalog · `
+      + `<strong>${state.quality.override_count || 0}</strong> manual override`
+      + `${state.quality.override_count === 1 ? "" : "s"}`
+    );
+  }
+
+  renderQualityTable();
+}
+
+function renderQualityTable() {
+  const tbody = $("#quality-table tbody");
+  tbody.innerHTML = "";
+  const rows = state.quality?.models || [];
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">
+      No models in catalog.
+    </td></tr>`;
+    return;
+  }
+
+  // Show top 60 by effective score; full table is 500+ entries which is
+  // overwhelming. Add a search/filter later if needed.
+  rows.slice(0, 60).forEach((m) => {
+    const tr = document.createElement("tr");
+    tr.className = "row-in";
+    const aaCell = m.aa_score == null
+      ? '<span class="muted">—</span>'
+      : `<span title="Artificial Analysis Intelligence Index">${m.aa_score.toFixed(0)}</span>`;
+    const manualCell = m.manual_score == null
+      ? `<button class="btn btn-ghost btn-sm set-override" data-id="${escapeHtml(m.id)}" data-aa="${m.aa_score ?? ""}">Set</button>`
+      : `<strong>${m.manual_score.toFixed(0)}</strong>`;
+    const effectiveCell = m.effective_score == null
+      ? '<span class="muted">unscored</span>'
+      : `<strong>${m.effective_score.toFixed(0)}</strong>`;
+    const blendedPerM = (m.blended_cost * 1_000_000).toFixed(2);
+    const statusCell = m.deployable
+      ? '<span class="pill ok">deployable</span>'
+      : '<span class="pill muted">no key</span>';
+    const actions = m.manual_score != null
+      ? `<button class="btn btn-ghost btn-sm reset-override" data-id="${escapeHtml(m.id)}" title="Revert to AA score">Reset</button>`
+      : "";
+
+    tr.innerHTML = `
+      <td><code>${escapeHtml(m.id)}</code></td>
+      <td>${escapeHtml(m.provider)}</td>
+      <td class="num">${aaCell}</td>
+      <td class="num">${manualCell}</td>
+      <td class="num">${effectiveCell}</td>
+      <td class="num">$${blendedPerM}</td>
+      <td>${statusCell}</td>
+      <td class="th-actions">${actions}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  $$(".set-override").forEach((b) =>
+    b.addEventListener("click", () => promptOverride(b.dataset.id, b.dataset.aa))
+  );
+  $$(".reset-override").forEach((b) =>
+    b.addEventListener("click", () => resetOverride(b.dataset.id))
+  );
+}
+
+function renderQualityPreview() {
+  const wrap = $("#quality-preview");
+  const body = $("#quality-preview-body");
+  if (!state.qualityPreview) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const p = state.qualityPreview;
+  if (!p.primary) {
+    body.innerHTML = `<p class="muted">No deployable model satisfies the current capability requirements. Configure a provider key on the Providers page.</p>`;
+    return;
+  }
+  const scoreText = p.primary_score != null
+    ? `<span class="pill ok">score ${p.primary_score.toFixed(0)}</span>`
+    : `<span class="pill muted">unscored</span>`;
+  const fbList = p.fallbacks && p.fallbacks.length
+    ? `<div class="small muted">→ falls back to: ${p.fallbacks.map((f) => `<code>${escapeHtml(f)}</code>`).join(", ")}</div>`
+    : "";
+  body.innerHTML = `
+    <div><code>${escapeHtml(p.primary)}</code> ${scoreText}</div>
+    <div class="small muted">strategy: <code>${escapeHtml(p.strategy)}</code> · scoring: <code>${escapeHtml(p.scoring_source)}</code></div>
+    ${fbList}
+  `;
+}
+
+async function promptOverride(modelId, aaHint) {
+  const seed = aaHint && aaHint !== "" ? aaHint : "";
+  const raw = prompt(
+    `Set manual quality score for ${modelId} (0-100):`
+    + (seed ? `\n\nAA score is currently: ${seed}` : ""),
+    seed,
+  );
+  if (raw == null) return;
+  const score = Number(raw);
+  if (!Number.isFinite(score) || score < 0 || score > 100) {
+    toast("Score must be a number between 0 and 100", "err");
+    return;
+  }
+  const note = prompt("Optional note (why are you overriding?):", "") || null;
+  try {
+    await api(`/v1/quality/overrides/${encodeURIComponent(modelId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ score, note }),
+    });
+    toast(`Override set for ${modelId}`, "ok");
+    await Promise.all([loadQuality(), loadQualityPreview()]);
+    renderQuality();
+    renderQualityPreview();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+async function resetOverride(modelId) {
+  if (!confirm(`Reset ${modelId} to its AA score?`)) return;
+  try {
+    await api(`/v1/quality/overrides/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+    toast(`Reset ${modelId}`, "ok");
+    await Promise.all([loadQuality(), loadQualityPreview()]);
+    renderQuality();
+    renderQualityPreview();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+function bindQualityRefresh() {
+  const btn = $("#quality-refresh");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      await api("/v1/quality/refresh", { method: "POST" });
+      toast("Refreshed scores from Artificial Analysis", "ok");
+      await Promise.all([loadQuality(), loadQualityPreview()]);
+      renderQuality();
+      renderQualityPreview();
+    } catch (e) {
+      toast(`Refresh failed: ${e.message}`, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+/* ==========================================================================
    MODELS
    ========================================================================== */
 async function loadModels() {
@@ -1155,6 +1361,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindRouting();
   bindWindowSeg();
   bindKeyForm();
+  bindQualityRefresh();
   bindHelp();
   bindPalette();
   bindKeyboard();

@@ -297,7 +297,6 @@ async def test_auto_with_allowlist_picks_only_allowed_model(auto_client, monkeyp
     early allowlist check (since "auto" is never literally in any allowlist),
     making auto unusable for any rate-limited / scoped key."""
     from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from packages.db import session as session_mod
     from packages.db.models.api_key import ApiKey
@@ -425,6 +424,7 @@ async def test_auto_returns_422_not_403_when_allowlist_set_but_no_capable_model(
         seed = await seed_initial_state(s)
         # Set an allowlist so the 403/422 distinction is exercised.
         from sqlalchemy import select
+
         from packages.db.models.api_key import ApiKey
         rows = (await s.execute(select(ApiKey))).scalars().all()
         rows[0].model_allowlist = ["gpt-4o-mini"]
