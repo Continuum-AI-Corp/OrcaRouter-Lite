@@ -180,6 +180,12 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
       4. Family match: any catalog id that starts with `normalized + "-"`
          (covers the case where AA gives a base name and the catalog
          has dated/versioned variants like "claude-opus-4-7-20260416")
+      5. Last-segment match: half the catalog stores models under
+         provider namespaces (`accounts/fireworks/models/qwen3-235b-a22b`,
+         `Qwen/Qwen3-235B-A22B-Instruct-2507-tput`). Without unwrapping
+         the namespace AND case-folding for compare, the entire Llama 4
+         / Qwen3 / Yi / Phi / Mistral-via-Together family silently drops
+         from AA matching.
 
     Returns the first matching catalog id, or None.
     """
@@ -208,6 +214,39 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
         candidates = [c for c in catalog_ids if c.startswith(family_prefix)]
         if candidates:
             return sorted(candidates)[0]
+    # Last-segment match (case-insensitive) for namespaced catalog ids.
+    # Catalog stores half its entries under provider namespaces — match
+    # against the post-slash trailing segment so AA's "Qwen3 235B" finds
+    # `accounts/fireworks/models/qwen3-235b-a22b`. We try exact-segment
+    # first, then segment-family, both in case-insensitive form.
+    bare_lower = bare.lower()
+    bare_family_lower = bare_lower + "-"
+    exact_segment_hits: list[str] = []
+    family_segment_hits: list[str] = []
+    for cid in catalog_ids:
+        if "/" not in cid:
+            continue   # already covered by exact / family above
+        last = cid.split("/")[-1].lower()
+        if last == bare_lower:
+            exact_segment_hits.append(cid)
+        elif last.startswith(bare_family_lower):
+            family_segment_hits.append(cid)
+    if exact_segment_hits:
+        return sorted(exact_segment_hits)[0]
+    if family_segment_hits:
+        return sorted(family_segment_hits)[0]
+    # Same last-segment scan with dotted alternates — covers namespaced
+    # catalog ids that also use dotted versions (eg unlikely but possible
+    # `Qwen/Qwen3.5-...`).
+    for alt in _dotted_version_variants(bare):
+        alt_lower = alt.lower()
+        alt_family_lower = alt_lower + "-"
+        for cid in catalog_ids:
+            if "/" not in cid:
+                continue
+            last = cid.split("/")[-1].lower()
+            if last == alt_lower or last.startswith(alt_family_lower):
+                return cid
     return None
 
 

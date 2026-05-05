@@ -134,6 +134,58 @@ def test_match_catalog_id_dotted_fallback_does_not_break_dashed_models():
     assert _match_catalog_id("claude-opus-4-7", catalog) == "claude-opus-4-7"
 
 
+def test_match_catalog_id_namespaced_last_segment_match():
+    """Half the catalog stores models under provider namespaces
+    (`accounts/fireworks/models/qwen3-235b-a22b`,
+    `meta-llama/Llama-4-Scout-17B-16E-Instruct`,
+    `Qwen/Qwen3-235B-A22B-Instruct-2507-tput`). Without unwrapping the
+    namespace AND case-folding, AA's "Qwen3 235B" → `qwen3-235b` and
+    "Llama 4 Scout" → `llama-4-scout` silently miss every Fireworks /
+    HuggingFace-style entry — entire Llama 4, Qwen3, Yi, Phi families
+    drop out of AA scoring."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {
+        "accounts/fireworks/models/qwen3-235b-a22b",
+        "Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "accounts/fireworks/models/llama4-maverick-instruct-basic",
+        # A non-namespaced model that should still take exact-match
+        # priority over any namespaced family-segment cousin.
+        "qwen3-235b",
+    }
+    # Plain bare match still wins (exact > namespaced)
+    assert _match_catalog_id("qwen3-235b", catalog) == "qwen3-235b"
+
+    # Namespaced family match — last segment starts with `qwen3-32b-`?
+    # No exact match here; family-segment hits the namespaced row.
+    assert _match_catalog_id(
+        "qwen3-235b-a22b",
+        {"accounts/fireworks/models/qwen3-235b-a22b"},
+    ) == "accounts/fireworks/models/qwen3-235b-a22b"
+
+    # Llama 4 Scout: catalog stores it under meta-llama/ namespace with
+    # mixed case — the lowercase last-segment family scan must catch it.
+    assert _match_catalog_id(
+        "llama-4-scout",
+        {"meta-llama/Llama-4-Scout-17B-16E-Instruct"},
+    ) == "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+
+
+def test_match_catalog_id_last_segment_does_not_override_exact_match():
+    """An exact match in the bare-id namespace must always win over a
+    namespaced family-segment hit. Otherwise `Mistral Large` could be
+    routed to a random `accounts/...` namespaced variant when the
+    canonical bare entry is also in the catalog."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {
+        "mistral-large",                                # canonical bare
+        "accounts/fireworks/models/mistral-large-2407", # namespaced family
+    }
+    assert _match_catalog_id("mistral-large", catalog) == "mistral-large"
+
+
 # ── three-axis aggregation: max quality, max TPS, min TTFT ─────────────
 
 
