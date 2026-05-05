@@ -32,6 +32,11 @@ def _reset_module_state() -> Generator[None, None, None]:
         quality_index.reset_cache()
     except Exception:
         pass
+    try:
+        from app import quality_scores
+        quality_scores.reset_metrics_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

@@ -1,5 +1,5 @@
-"""Artificial Analysis quality scores — used to rank models in the
-`quality` routing strategy.
+"""Artificial Analysis quality + latency metrics — used to rank models in
+the `quality`, `balanced`, and `fastest` routing strategies.
 
 The strategy was historically implemented as "pick the most expensive
 deployable model" — a fine proxy when newer flagships cost more than
@@ -8,6 +8,17 @@ older ones. Anthropic and OpenAI broke that assumption (Opus 4.7 is
 no longer tracks capability. AA's Intelligence Index is a real
 benchmark-aggregator score (MMLU-Pro, GPQA, MATH, HumanEval, etc.),
 updated as new models ship and stable across providers.
+
+PR 4 extends this from quality-only to three independent metrics:
+  - quality (intelligence_index, max across reasoning variants)
+  - TPS (median_output_tokens_per_second, max across variants)
+  - TTFT (median_time_to_first_token_seconds, min across variants)
+
+Why per-axis aggregation rules: TPS is stable across reasoning effort
+(same token-emission speed) so max picks the best representative.
+TTFT explodes with reasoning effort (1.77s → 32s for GPT-5.5 across
+variants), so min picks the model's "fast mode" — what an operator
+choosing `fastest` actually wants.
 
 Three-layer cache:
   1. In-process dict (1h TTL) — fast, dies with the process
@@ -21,6 +32,11 @@ back to cost-based, which is known wrong). Rotating the AA key
 invalidates DB rows via the `api_key_hash` column so a snapshot taken
 under one account doesn't get served under another.
 
+Per-axis snapshot preservation: if a fresh AA fetch returns one axis
+empty (eg AA renamed `median_output_tokens_per_second`), the saver
+keeps the old axis's data instead of overwriting with `{}`. Prevents
+upstream regressions from disabling a routing strategy.
+
 Attribution: when scores are surfaced (dashboard, header, debug log),
 display "Powered by Artificial Analysis" linking to artificialanalysis.ai
 per their free-tier terms.
@@ -28,11 +44,13 @@ per their free-tier terms.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -50,13 +68,47 @@ _STALE_GRACE_SECONDS = 24 * 60 * 60   # 24h: keep serving last good value
 
 @dataclass(frozen=True)
 class QualityIndex:
-    """One AA fetch result. `scores` is keyed by our canonical model IDs."""
+    """One AA fetch result. Maps are keyed by our canonical model IDs.
+
+    Field naming: `scores` is the legacy alias for `quality_scores`,
+    preserved so existing callers (`idx.scores`) keep working. Internal
+    code prefers `quality_scores` for symmetry with `tps_scores` /
+    `ttft_scores`.
+
+    `matched_count` is the union (size of distinct catalog IDs covered
+    by ANY axis). Per-axis counts are exposed separately for callers
+    that need to distinguish "AA gave us quality but no TPS" from
+    "AA gave us neither".
+    """
 
     scores: dict[str, float]
     fetched_at: float                 # monotonic seconds
     source: str                       # "live" | "stale-cache" | "missing-key" | "error"
     raw_count: int                    # how many AA entries were considered
-    matched_count: int                # how many mapped to a known catalog ID
+    matched_count: int                # union(三轴): distinct catalog IDs in any axis
+    tps_scores: dict[str, float] = field(default_factory=dict)
+    ttft_scores: dict[str, float] = field(default_factory=dict)
+    matched_count_quality: int = 0
+    matched_count_tps: int = 0
+    matched_count_ttft: int = 0
+
+
+@dataclass(frozen=True)
+class _AARawMetrics:
+    """Raw AA payload after parse + per-axis variant aggregation.
+
+    Internal to this module — exposed via QualityIndex for downstream
+    consumers. Doesn't contain manual-override merging; that's the
+    caller's job (see `app/quality_scores.py:resolve_model_metrics`).
+    """
+
+    quality_scores: dict[str, float]
+    tps_scores: dict[str, float]
+    ttft_scores: dict[str, float]
+    raw_count: int
+    matched_count_quality: int
+    matched_count_tps: int
+    matched_count_ttft: int
 
 
 # Process-wide cache, keyed by API key (so swapping the key in tests
@@ -66,7 +118,7 @@ _cache: dict[str, QualityIndex] = {}
 
 # Strip parenthetical qualifiers like "(max)", "(xhigh)", "(high)",
 # "(low)", "(Non-reasoning, high)" — these mark reasoning-effort variants
-# of the same underlying model. We aggregate by taking MAX score.
+# of the same underlying model. We aggregate per axis (max/max/min).
 _QUALIFIER_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
@@ -117,30 +169,53 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
     return None
 
 
-def _build_score_map(aa_payload: list[dict[str, Any]], catalog_ids: set[str]) -> tuple[dict[str, float], int, int]:
-    """Project AA's response into {our_catalog_id: max_score}.
+def _num(v: Any) -> float | None:
+    """Coerce AA's numeric fields. Rejects bool, non-numeric, NaN, inf,
+    and negatives. Even one bad value (NaN) would poison min/max
+    aggregation and the downstream min-max normalization."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not math.isfinite(v) or v < 0:
+        return None
+    return float(v)
 
-    AA may include the same base model multiple times under different
-    reasoning-effort qualifiers — we keep the highest score per
-    canonical catalog id. Returns (scores, raw_count, matched_count).
+
+def _build_metrics_map(
+    aa_payload: list[dict[str, Any]], catalog_ids: set[str]
+) -> _AARawMetrics:
+    """Project AA's response into three per-axis maps.
+
+    Aggregation rules per axis:
+      - quality: max across variants (highest intelligence_index)
+      - tps: max across variants (output token rate is stable; max picks the best)
+      - ttft: min across variants (TTFT explodes with reasoning effort;
+        min picks the model's non-reasoning "fast mode")
+
+    Each axis is aggregated independently — we do NOT lock to same-row
+    pairing. If we did, GPT-5.5 picked for `fastest` would carry its
+    max-quality variant's TTFT (32s) instead of its true fast-mode TTFT
+    (1.77s).
+
+    AA fields:
+      - intelligence_index: under entry["evaluations"] (nested)
+      - median_output_tokens_per_second: at entry top-level
+      - median_time_to_first_token_seconds: at entry top-level
+
+    Live-verified against the real AA API on 2026-05-05; field paths
+    and variant aggregate behavior confirmed before this code was written.
     """
-    accum: dict[str, float] = {}
+    quality_scores: dict[str, float] = {}
+    tps_scores: dict[str, float] = {}
+    ttft_scores: dict[str, float] = {}
     raw_count = 0
-    matched_count = 0
 
     for entry in aa_payload:
         if not isinstance(entry, dict):
             continue
         raw_count += 1
-        # AA exposes display names in the `name` field. Some entries may
-        # also have a `slug` or `id`; prefer `name` since it matches the
-        # leaderboard the operator sees.
+
         name = entry.get("name") or entry.get("slug") or entry.get("id")
         if not isinstance(name, str) or not name:
-            continue
-        evals = entry.get("evaluations") or {}
-        score = evals.get("artificial_analysis_intelligence_index")
-        if score is None or not isinstance(score, (int, float)):
             continue
 
         normalized = _normalize_aa_id(name)
@@ -148,20 +223,49 @@ def _build_score_map(aa_payload: list[dict[str, Any]], catalog_ids: set[str]) ->
         if catalog_id is None:
             continue
 
-        prior = accum.get(catalog_id)
-        if prior is None or score > prior:
-            accum[catalog_id] = float(score)
-            if prior is None:
-                matched_count += 1
+        # AA's `evaluations` is normally a dict but we've seen
+        # malformed responses pass a list or null; verify before .get().
+        evals = entry.get("evaluations")
+        if not isinstance(evals, dict):
+            evals = {}
 
-    return accum, raw_count, matched_count
+        quality = _num(evals.get("artificial_analysis_intelligence_index"))
+        tps = _num(entry.get("median_output_tokens_per_second"))
+        ttft = _num(entry.get("median_time_to_first_token_seconds"))
+
+        # Per-axis aggregate. Each axis keeps the most-useful variant
+        # value: max for quality+throughput (higher = better), min for
+        # TTFT (lower = faster, picks the non-reasoning variant).
+        if quality is not None:
+            prior = quality_scores.get(catalog_id)
+            if prior is None or quality > prior:
+                quality_scores[catalog_id] = quality
+        if tps is not None:
+            prior = tps_scores.get(catalog_id)
+            if prior is None or tps > prior:
+                tps_scores[catalog_id] = tps
+        if ttft is not None:
+            prior = ttft_scores.get(catalog_id)
+            if prior is None or ttft < prior:
+                ttft_scores[catalog_id] = ttft
+
+    return _AARawMetrics(
+        quality_scores=quality_scores,
+        tps_scores=tps_scores,
+        ttft_scores=ttft_scores,
+        raw_count=raw_count,
+        matched_count_quality=len(quality_scores),
+        matched_count_tps=len(tps_scores),
+        matched_count_ttft=len(ttft_scores),
+    )
 
 
 class _AAFetchUnusable(Exception):
     """Raised when an AA fetch returns nothing usable — schema mismatch,
-    empty data array, or all entries unmatched. Distinct from a transport
-    error so the caller can route it through the same stale-fallback path
-    instead of persisting an empty score map over a known-good snapshot.
+    empty data array, or all entries unmatched on every axis. Distinct
+    from a transport error so the caller can route it through the
+    stale-fallback path instead of persisting an empty score map over
+    a known-good snapshot.
     """
 
 
@@ -202,12 +306,52 @@ def _api_key_hash(api_key: str) -> str:
 @dataclass(frozen=True)
 class _LoadedSnapshot:
     """A DB-loaded snapshot. Carries wall-clock age so the freshness
-    check at the call site doesn't mix monotonic and wall-clock times."""
-    scores: dict[str, float]
+    check at the call site doesn't mix monotonic and wall-clock times.
+
+    Per-axis fields populated from the new scores_json shape; legacy
+    flat snapshots (quality-only, pre-PR4) hydrate quality_scores from
+    the flat dict and leave tps/ttft empty + their counts at 0.
+    """
+    quality_scores: dict[str, float]
+    tps_scores: dict[str, float]
+    ttft_scores: dict[str, float]
     source: str
     raw_count: int
-    matched_count: int
+    matched_count_quality: int
+    matched_count_tps: int
+    matched_count_ttft: int
     wall_age_seconds: float   # how long ago the row was written, per the DB clock
+
+
+def _parse_snapshot_blob(parsed: Any) -> tuple[
+    dict[str, float], dict[str, float], dict[str, float], int, int, int, int
+]:
+    """Detect new vs legacy scores_json shape and extract per-axis maps.
+
+    New shape: {"quality": {...}, "tps": {...}, "ttft": {...}, "meta": {...}}
+    Legacy shape: {"model_id": float, ...} (quality-only, pre-PR4)
+
+    Returns (quality, tps, ttft, raw_count, mc_quality, mc_tps, mc_ttft).
+    """
+    if not isinstance(parsed, dict):
+        return ({}, {}, {}, 0, 0, 0, 0)
+
+    if "quality" in parsed and isinstance(parsed.get("quality"), dict) and "meta" in parsed:
+        meta = parsed.get("meta") or {}
+        quality = {k: float(v) for k, v in (parsed.get("quality") or {}).items()}
+        tps = {k: float(v) for k, v in (parsed.get("tps") or {}).items()}
+        ttft = {k: float(v) for k, v in (parsed.get("ttft") or {}).items()}
+        return (
+            quality, tps, ttft,
+            int(meta.get("raw_count", 0) or 0),
+            int(meta.get("matched_count_quality", 0) or 0),
+            int(meta.get("matched_count_tps", 0) or 0),
+            int(meta.get("matched_count_ttft", 0) or 0),
+        )
+
+    # Legacy flat: {"model_id": float, ...} = quality only.
+    quality = {k: float(v) for k, v in parsed.items() if isinstance(v, (int, float))}
+    return (quality, {}, {}, len(quality), len(quality), 0, 0)
 
 
 async def _load_db_snapshot(
@@ -237,9 +381,11 @@ async def _load_db_snapshot(
         ).scalar_one_or_none()
         if row is None:
             return None
-        scores = json.loads(row.scores_json)
-        if not isinstance(scores, dict):
-            return None
+        parsed = json.loads(row.scores_json)
+        (
+            quality, tps, ttft,
+            raw_count_meta, mc_q, mc_t, mc_f,
+        ) = _parse_snapshot_blob(parsed)
         # Compute wall-clock age. `updated_at` is server-default `func.now()`
         # so it's UTC on both SQLite and Postgres; coerce naive (SQLite) to
         # UTC for consistent arithmetic.
@@ -248,11 +394,18 @@ async def _load_db_snapshot(
         if row_ts.tzinfo is None:
             row_ts = row_ts.replace(tzinfo=timezone.utc)
         age = max(0.0, (wall_now - row_ts).total_seconds())
+        # Prefer the DB column for raw_count (authoritative for legacy rows
+        # written before meta carried it); fall back to meta if column 0.
+        raw_count = int(row.raw_count) or raw_count_meta
         return _LoadedSnapshot(
-            scores={k: float(v) for k, v in scores.items()},
+            quality_scores=quality,
+            tps_scores=tps,
+            ttft_scores=ttft,
             source=row.source,
-            raw_count=int(row.raw_count),
-            matched_count=int(row.matched_count),
+            raw_count=raw_count,
+            matched_count_quality=mc_q,
+            matched_count_tps=mc_t,
+            matched_count_ttft=mc_f,
             wall_age_seconds=age,
         )
     except Exception:
@@ -260,11 +413,24 @@ async def _load_db_snapshot(
 
 
 async def _save_db_snapshot(
-    db: "AsyncSession", workspace_id: str, api_key_hash: str, idx: QualityIndex
+    db: "AsyncSession",
+    workspace_id: str,
+    api_key_hash: str,
+    source: str,
+    metrics: _AARawMetrics,
 ) -> None:
     """Upsert the snapshot for this workspace + key. Never raises —
     persisting is best-effort; the in-process cache is still the
     authoritative source for the current request.
+
+    Writes new scores_json shape:
+      {"quality": {...}, "tps": {...}, "ttft": {...},
+       "meta": {raw_count, matched_count_quality, _tps, _ttft}}
+
+    Updates the legacy `matched_count` column to union(三轴 keys) so the
+    "X of Y AA models indexed" UI string still reads as the count of
+    catalog IDs with at least one indexed axis (NOT max — max would
+    misleadingly under-report when axes cover different model sets).
 
     Uses `session.merge()` for the upsert: portable across SQLite /
     Postgres / MySQL, race-safe under multi-worker fan-out (vs the
@@ -272,7 +438,23 @@ async def _save_db_snapshot(
     workers fetch AA simultaneously and both try to insert).
     """
     try:
-        scores_json = json.dumps(idx.scores, separators=(",", ":"))
+        blob = {
+            "quality": metrics.quality_scores,
+            "tps": metrics.tps_scores,
+            "ttft": metrics.ttft_scores,
+            "meta": {
+                "raw_count": metrics.raw_count,
+                "matched_count_quality": metrics.matched_count_quality,
+                "matched_count_tps": metrics.matched_count_tps,
+                "matched_count_ttft": metrics.matched_count_ttft,
+            },
+        }
+        scores_json = json.dumps(blob, separators=(",", ":"))
+        union_count = len(
+            set(metrics.quality_scores)
+            | set(metrics.tps_scores)
+            | set(metrics.ttft_scores)
+        )
         # `merge` syncs a detached/new instance with whatever is in the DB,
         # keyed by primary key. Inserts when missing, updates when present.
         # Works identically across all SQLAlchemy-supported dialects.
@@ -282,9 +464,9 @@ async def _save_db_snapshot(
         await db.merge(QualityScoreSnapshot(
             workspace_id=workspace_id,
             api_key_hash=api_key_hash,
-            source=idx.source,
-            raw_count=idx.raw_count,
-            matched_count=idx.matched_count,
+            source=source,
+            raw_count=metrics.raw_count,
+            matched_count=union_count,
             scores_json=scores_json,
         ))
         await db.commit()
@@ -298,6 +480,56 @@ async def _save_db_snapshot(
             pass
 
 
+async def _persist_with_axis_preservation(
+    db: "AsyncSession",
+    workspace_id: str,
+    api_key_hash: str,
+    source: str,
+    new: _AARawMetrics,
+) -> _AARawMetrics:
+    """Save a fresh fetch, preserving any axis that came back empty
+    by reusing the previous snapshot's data for that axis.
+
+    Why: AA upstream regressions (renamed field, partial outage) can
+    return e.g. quality intact but TPS empty. Without this, the saver
+    overwrites the good TPS map with `{}` and disables `fastest`
+    routing on the next request.
+
+    Snapshot PK is composite `(workspace_id, api_key_hash)`. Both
+    must filter the load — preserving an axis from a different AA
+    account's snapshot would silently mix benchmark data across keys.
+
+    Returns the merged metrics that were persisted (so callers can
+    promote the merged version into the in-process cache).
+    """
+    old = await _load_db_snapshot(db, workspace_id, api_key_hash)
+    merged = new
+    if old is not None:
+        # Per-axis: if NEW lost coverage but OLD had it, keep OLD's
+        # values for that axis. Only the axis that regressed is held;
+        # axes with fresh data are taken from NEW.
+        if new.matched_count_quality == 0 and old.matched_count_quality > 0:
+            merged = dataclasses.replace(
+                merged,
+                quality_scores=dict(old.quality_scores),
+                matched_count_quality=old.matched_count_quality,
+            )
+        if new.matched_count_tps == 0 and old.matched_count_tps > 0:
+            merged = dataclasses.replace(
+                merged,
+                tps_scores=dict(old.tps_scores),
+                matched_count_tps=old.matched_count_tps,
+            )
+        if new.matched_count_ttft == 0 and old.matched_count_ttft > 0:
+            merged = dataclasses.replace(
+                merged,
+                ttft_scores=dict(old.ttft_scores),
+                matched_count_ttft=old.matched_count_ttft,
+            )
+    await _save_db_snapshot(db, workspace_id, api_key_hash, source, merged)
+    return merged
+
+
 async def get_quality_index(
     *,
     catalog_ids: set[str],
@@ -305,7 +537,7 @@ async def get_quality_index(
     workspace_id: str = "default",
     force_refresh: bool = False,
 ) -> QualityIndex:
-    """Return the current AA score map for our catalog.
+    """Return the current AA metrics map for our catalog.
 
     Read order:
       1. In-process cache (1h TTL) — fastest, single-process scope.
@@ -314,7 +546,8 @@ async def get_quality_index(
          pass `db=None` and skip this layer.
       3. AA `/api/v2/data/llms/models` — fresh truth, 1000 req/day quota.
 
-    Write order on AA success: in-process cache + DB snapshot (best-effort).
+    Write order on AA success: in-process cache + DB snapshot
+    (best-effort, with per-axis preservation).
 
     On AA failure: serve stale from in-process (within 24h grace), then
     from DB (no upper bound — old data is better than no data here).
@@ -329,8 +562,10 @@ async def get_quality_index(
     s = get_settings()
     api_key = s.artificial_analysis_api_key
     if not api_key:
-        return QualityIndex(scores={}, fetched_at=0.0, source="missing-key",
-                             raw_count=0, matched_count=0)
+        return QualityIndex(
+            scores={}, fetched_at=0.0, source="missing-key",
+            raw_count=0, matched_count=0,
+        )
 
     url = s.artificial_analysis_models_url
     key_hash = _api_key_hash(api_key)
@@ -355,16 +590,22 @@ async def get_quality_index(
         ):
             # Promote DB row into in-process cache. The in-process layer
             # uses monotonic time, so set `fetched_at = now` (treats this
-            # request as the start of a fresh in-process TTL window). Net
-            # effect: cross-restart freshness can extend by up to 1h
-            # beyond the original wall-clock TTL — acceptable in exchange
-            # for a cold-start AA quota saved.
+            # request as the start of a fresh in-process TTL window).
             promoted = QualityIndex(
-                scores=db_snapshot.scores,
+                scores=db_snapshot.quality_scores,
                 fetched_at=now,
                 source=db_snapshot.source,
                 raw_count=db_snapshot.raw_count,
-                matched_count=db_snapshot.matched_count,
+                matched_count=len(
+                    set(db_snapshot.quality_scores)
+                    | set(db_snapshot.tps_scores)
+                    | set(db_snapshot.ttft_scores)
+                ),
+                tps_scores=db_snapshot.tps_scores,
+                ttft_scores=db_snapshot.ttft_scores,
+                matched_count_quality=db_snapshot.matched_count_quality,
+                matched_count_tps=db_snapshot.matched_count_tps,
+                matched_count_ttft=db_snapshot.matched_count_ttft,
             )
             _cache[key_hash] = promoted
             return promoted
@@ -378,33 +619,48 @@ async def get_quality_index(
             # let it overwrite a good DB snapshot with `{}`; route through
             # the stale-fallback path instead.
             raise _AAFetchUnusable("AA returned empty data array")
-        scores, raw_count, matched_count = _build_score_map(raw, catalog_ids)
-        if matched_count == 0:
-            # AA gave us data but none of it mapped to our catalog. This
-            # signals a normalization regression (AA renamed everything)
-            # rather than a healthy fetch — persisting `{}` would silently
-            # disable quality routing on the next restart. Fall back to
-            # stale instead.
+        metrics = _build_metrics_map(raw, catalog_ids)
+        # Treat as unusable only if ALL THREE axes are empty AND we have
+        # no preservable old snapshot. Per-axis preservation in the
+        # saver covers the case where one axis regressed.
+        any_axis = (
+            metrics.matched_count_quality
+            or metrics.matched_count_tps
+            or metrics.matched_count_ttft
+        )
+        if not any_axis:
             raise _AAFetchUnusable(
-                f"AA returned {raw_count} entries but 0 mapped to catalog"
+                f"AA returned {metrics.raw_count} entries but 0 mapped "
+                f"to catalog on any axis"
             )
+        if db is not None:
+            metrics = await _persist_with_axis_preservation(
+                db, workspace_id, key_hash, "live", metrics,
+            )
+        union = len(
+            set(metrics.quality_scores)
+            | set(metrics.tps_scores)
+            | set(metrics.ttft_scores)
+        )
         idx = QualityIndex(
-            scores=scores, fetched_at=now, source="live",
-            raw_count=raw_count, matched_count=matched_count,
+            scores=metrics.quality_scores,
+            fetched_at=now,
+            source="live",
+            raw_count=metrics.raw_count,
+            matched_count=union,
+            tps_scores=metrics.tps_scores,
+            ttft_scores=metrics.ttft_scores,
+            matched_count_quality=metrics.matched_count_quality,
+            matched_count_tps=metrics.matched_count_tps,
+            matched_count_ttft=metrics.matched_count_ttft,
         )
         _cache[key_hash] = idx
-        if db is not None:
-            await _save_db_snapshot(db, workspace_id, key_hash, idx)
         return idx
     except Exception:
         # Stale fallbacks, in order of freshness.
         cached = _cache.get(key_hash)
         if cached is not None and (now - cached.fetched_at) < _STALE_GRACE_SECONDS:
-            return QualityIndex(
-                scores=cached.scores, fetched_at=cached.fetched_at,
-                source="stale-cache",
-                raw_count=cached.raw_count, matched_count=cached.matched_count,
-            )
+            return dataclasses.replace(cached, source="stale-cache")
         if db_snapshot is not None:
             # DB row is older than the in-process TTL but we serve it
             # anyway — better than disabling quality routing entirely.
@@ -412,14 +668,25 @@ async def get_quality_index(
             # they're on stale data; no upper bound on age here because
             # the alternative (cost-based) is known wrong, not just stale.
             return QualityIndex(
-                scores=db_snapshot.scores,
+                scores=db_snapshot.quality_scores,
                 fetched_at=now,  # we just learned this from DB; re-anchor in-process
                 source="stale-db",
                 raw_count=db_snapshot.raw_count,
-                matched_count=db_snapshot.matched_count,
+                matched_count=len(
+                    set(db_snapshot.quality_scores)
+                    | set(db_snapshot.tps_scores)
+                    | set(db_snapshot.ttft_scores)
+                ),
+                tps_scores=db_snapshot.tps_scores,
+                ttft_scores=db_snapshot.ttft_scores,
+                matched_count_quality=db_snapshot.matched_count_quality,
+                matched_count_tps=db_snapshot.matched_count_tps,
+                matched_count_ttft=db_snapshot.matched_count_ttft,
             )
-        return QualityIndex(scores={}, fetched_at=now, source="error",
-                             raw_count=0, matched_count=0)
+        return QualityIndex(
+            scores={}, fetched_at=now, source="error",
+            raw_count=0, matched_count=0,
+        )
 
 
 def reset_cache() -> None:

@@ -432,6 +432,15 @@ function bindRouting() {
       try {
         await api("/v1/routing", { method: "PUT", body: JSON.stringify({ strategy: val }) });
         toast(`Routing strategy: ${val}`, "ok");
+        // Refresh the Quality preview so the operator sees the new
+        // strategy's primary pick immediately. The preview reads workspace
+        // strategy server-side (NOT a query param — avoids a race where the
+        // dashboard's local default `balanced` overrides the just-saved
+        // value before loadRouting() finishes on initial load).
+        try {
+          await loadQualityPreview();
+          renderQualityPreview();
+        } catch (_) { /* preview is non-critical, never block strategy change */ }
         syncOnboarding();
       } catch (err) {
         state.routing.strategy = prev;
@@ -844,7 +853,7 @@ function renderQualityTable() {
   tbody.innerHTML = "";
   const rows = state.quality?.models || [];
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">
+    tbody.innerHTML = `<tr><td colspan="10" class="muted" style="text-align:center;padding:24px">
       No models in catalog.
     </td></tr>`;
     return;
@@ -864,6 +873,14 @@ function renderQualityTable() {
     const effectiveCell = m.effective_score == null
       ? '<span class="muted">unscored</span>'
       : `<strong>${m.effective_score.toFixed(0)}</strong>`;
+    // TPS / TTFT come from AA latency benchmarks — null when AA hasn't
+    // indexed this model on that axis. Used by the `fastest` strategy.
+    const tpsCell = m.tps == null
+      ? '<span class="muted">—</span>'
+      : `<span title="Output tokens per second (AA median, max across reasoning variants)">${m.tps.toFixed(0)}</span>`;
+    const ttftCell = m.ttft == null
+      ? '<span class="muted">—</span>'
+      : `<span title="Time to first token in seconds (AA median, min across variants — non-reasoning fast mode)">${m.ttft.toFixed(2)}s</span>`;
     const blendedPerM = (m.blended_cost * 1_000_000).toFixed(2);
     const statusCell = m.deployable
       ? '<span class="pill ok">deployable</span>'
@@ -878,6 +895,8 @@ function renderQualityTable() {
       <td class="num">${aaCell}</td>
       <td class="num">${manualCell}</td>
       <td class="num">${effectiveCell}</td>
+      <td class="num">${tpsCell}</td>
+      <td class="num">${ttftCell}</td>
       <td class="num">$${blendedPerM}</td>
       <td>${statusCell}</td>
       <td class="th-actions">${actions}</td>
@@ -906,15 +925,37 @@ function renderQualityPreview() {
     body.innerHTML = `<p class="muted">No deployable model satisfies the current capability requirements. Configure a provider key on the Providers page.</p>`;
     return;
   }
+  // primary_score is already an int 0-100 from the server (cheapest = null
+  // because raw token cost has no meaningful 0-100 mapping).
   const scoreText = p.primary_score != null
-    ? `<span class="pill ok">score ${p.primary_score.toFixed(0)}</span>`
+    ? `<span class="pill ok">score ${p.primary_score}</span>`
     : `<span class="pill muted">unscored</span>`;
   const fbList = p.fallbacks && p.fallbacks.length
     ? `<div class="small muted">→ falls back to: ${p.fallbacks.map((f) => `<code>${escapeHtml(f)}</code>`).join(", ")}</div>`
     : "";
+
+  // Per-axis breakdown — surfaces the same numbers the ranker used to
+  // decide. Without this, `fastest` looks opaque ("primary X, score 73"
+  // tells you nothing about WHY it won). Renders as
+  // "tps: raw=145.0 (78/100), ttft: raw=0.41s (88/100)" etc.
+  const breakdown = p.primary_score_breakdown || {};
+  const breakdownEntries = Object.entries(breakdown);
+  const breakdownLine = breakdownEntries.length
+    ? `<div class="small muted">${breakdownEntries.map(([axis, vals]) => {
+        const raw = vals && vals.raw != null
+          ? `${typeof vals.raw === "number" ? vals.raw.toLocaleString(undefined, {maximumFractionDigits: 2}) : escapeHtml(String(vals.raw))}`
+          : "—";
+        const norm = vals && vals.normalized != null
+          ? ` (${(vals.normalized * 100).toFixed(0)}/100)`
+          : "";
+        return `<code>${escapeHtml(axis)}</code>: ${raw}${norm}`;
+      }).join(" · ")}</div>`
+    : "";
+
   body.innerHTML = `
     <div><code>${escapeHtml(p.primary)}</code> ${scoreText}</div>
-    <div class="small muted">strategy: <code>${escapeHtml(p.strategy)}</code> · scoring: <code>${escapeHtml(p.scoring_source)}</code></div>
+    <div class="small muted">strategy: <code>${escapeHtml(p.strategy)}</code> · scoring: ${escapeHtml(p.scoring_source)}</div>
+    ${breakdownLine}
     ${fbList}
   `;
 }

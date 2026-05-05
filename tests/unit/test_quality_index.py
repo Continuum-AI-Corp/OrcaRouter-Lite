@@ -93,15 +93,15 @@ def test_match_catalog_id_no_match():
     assert _match_catalog_id("totally-fake", {"gpt-4o"}) is None
 
 
-# ── score aggregation: max across reasoning-effort variants ───────────
+# ── three-axis aggregation: max quality, max TPS, min TTFT ─────────────
 
 
-def test_build_score_map_takes_max_across_variants():
+def test_build_metrics_takes_max_quality_across_variants():
     """AA splits the same model into separate rows by reasoning effort
     (e.g. 'GPT-5.5 (xhigh)' = 60 vs 'GPT-5.5 (low)' = 51). Our routing
     picks a model_name not an effort, so we keep the highest score per
     base model — the operator can always set effort separately."""
-    from packages.litellm_adapter.quality_index import _build_score_map
+    from packages.litellm_adapter.quality_index import _build_metrics_map
 
     aa = [
         {"name": "GPT-5.5 (xhigh)",
@@ -112,16 +112,16 @@ def test_build_score_map_takes_max_across_variants():
          "evaluations": {"artificial_analysis_intelligence_index": 51}},
     ]
     catalog = {"gpt-5-5"}
-    scores, raw, matched = _build_score_map(aa, catalog)
-    assert scores == {"gpt-5-5": 60.0}, "must keep the max across variants"
-    assert raw == 3
-    assert matched == 1
+    m = _build_metrics_map(aa, catalog)
+    assert m.quality_scores == {"gpt-5-5": 60.0}, "must keep the max across variants"
+    assert m.raw_count == 3
+    assert m.matched_count_quality == 1
 
 
-def test_build_score_map_skips_unmatched():
+def test_build_metrics_skips_unmatched():
     """Models that don't map to any catalog id are dropped — no point
     surfacing scores we can't act on."""
-    from packages.litellm_adapter.quality_index import _build_score_map
+    from packages.litellm_adapter.quality_index import _build_metrics_map
 
     aa = [
         {"name": "Some Future Model X",
@@ -130,26 +130,112 @@ def test_build_score_map_skips_unmatched():
          "evaluations": {"artificial_analysis_intelligence_index": 57}},
     ]
     catalog = {"claude-opus-4-7"}
-    scores, raw, matched = _build_score_map(aa, catalog)
-    assert scores == {"claude-opus-4-7": 57.0}
-    assert raw == 2
-    assert matched == 1
+    m = _build_metrics_map(aa, catalog)
+    assert m.quality_scores == {"claude-opus-4-7": 57.0}
+    assert m.raw_count == 2
+    assert m.matched_count_quality == 1
 
 
-def test_build_score_map_skips_missing_score():
+def test_build_metrics_skips_missing_score():
     """AA entries without an intelligence_index field (e.g. brand-new
-    additions, deprecated rows) are skipped — better to omit than to
-    invent a fake score."""
-    from packages.litellm_adapter.quality_index import _build_score_map
+    additions, deprecated rows) are skipped on the quality axis — better
+    to omit than to invent a fake score. Other axes still apply."""
+    from packages.litellm_adapter.quality_index import _build_metrics_map
 
     aa = [
         {"name": "Claude Opus 4.7 (max)", "evaluations": {}},
         {"name": "GPT-5"},  # no evaluations at all
     ]
     catalog = {"claude-opus-4-7", "gpt-5"}
-    scores, _raw, matched = _build_score_map(aa, catalog)
-    assert scores == {}
-    assert matched == 0
+    m = _build_metrics_map(aa, catalog)
+    assert m.quality_scores == {}
+    assert m.matched_count_quality == 0
+
+
+def test_build_metrics_extracts_quality_tps_ttft_from_top_level():
+    """AA's payload puts intelligence_index nested under `evaluations`
+    but TPS / TTFT are at the entry top level. Verified against live
+    AA payload on 2026-05-05; getting this wrong silently drops the
+    latency data."""
+    from packages.litellm_adapter.quality_index import _build_metrics_map
+
+    aa = [{
+        "name": "Claude Sonnet 4.6",
+        "evaluations": {"artificial_analysis_intelligence_index": 65},
+        "median_output_tokens_per_second": 56,
+        "median_time_to_first_token_seconds": 1.0,
+    }]
+    m = _build_metrics_map(aa, {"claude-sonnet-4-6"})
+    assert m.quality_scores == {"claude-sonnet-4-6": 65.0}
+    assert m.tps_scores == {"claude-sonnet-4-6": 56.0}
+    assert m.ttft_scores == {"claude-sonnet-4-6": 1.0}
+
+
+def test_build_metrics_aggregates_variants_max_max_min():
+    """Per-axis aggregation: TPS=max (throughput stable across variants),
+    TTFT=min (model's non-reasoning fast mode = the latency operator
+    actually wants when picking `fastest`). Each axis is independent —
+    NOT same-row pairing — so the TTFT for `fastest` isn't bound to the
+    quality-max variant's slow-thinking value (32s for GPT-5.5 vs 1.77s
+    in fast mode)."""
+    from packages.litellm_adapter.quality_index import _build_metrics_map
+
+    aa = [
+        {"name": "GPT-5.5 (xhigh)",
+         "evaluations": {"artificial_analysis_intelligence_index": 60},
+         "median_output_tokens_per_second": 72,
+         "median_time_to_first_token_seconds": 32.17},
+        {"name": "GPT-5.5 (low)",
+         "evaluations": {"artificial_analysis_intelligence_index": 51},
+         "median_output_tokens_per_second": 77,
+         "median_time_to_first_token_seconds": 1.77},
+    ]
+    m = _build_metrics_map(aa, {"gpt-5-5"})
+    assert m.quality_scores == {"gpt-5-5": 60.0}, "max quality across variants"
+    assert m.tps_scores == {"gpt-5-5": 77.0}, "max TPS across variants"
+    assert m.ttft_scores == {"gpt-5-5": 1.77}, "MIN TTFT — fast-mode latency"
+
+
+def test_build_metrics_handles_nan_inf_negative_in_aa_values():
+    """AA occasionally returns NaN, inf, or negative numbers (broken
+    instrumentation, division by zero in their backend). Even one NaN
+    poisons the downstream min-max normalization, so the parser rejects
+    them at the boundary."""
+    from packages.litellm_adapter.quality_index import _build_metrics_map
+
+    aa = [{
+        "name": "GPT-4o",
+        "evaluations": {"artificial_analysis_intelligence_index": float("nan")},
+        "median_output_tokens_per_second": -5,
+        "median_time_to_first_token_seconds": float("inf"),
+    }]
+    m = _build_metrics_map(aa, {"gpt-4o"})
+    assert m.quality_scores == {}
+    assert m.tps_scores == {}
+    assert m.ttft_scores == {}
+
+
+def test_build_metrics_validates_evaluations_isinstance_dict():
+    """AA's `evaluations` is normally a dict but malformed responses can
+    pass a list / string / null. The parser must isinstance-check before
+    calling .get(), or one bad entry crashes the whole fetch."""
+    from packages.litellm_adapter.quality_index import _build_metrics_map
+
+    aa = [
+        # evaluations is a string — would AttributeError on .get()
+        {"name": "GPT-4o", "evaluations": "not a dict",
+         "median_output_tokens_per_second": 100,
+         "median_time_to_first_token_seconds": 0.5},
+        # evaluations is a list — would TypeError on .get()
+        {"name": "Claude Opus 4.7", "evaluations": ["weird"],
+         "median_output_tokens_per_second": 60,
+         "median_time_to_first_token_seconds": 1.0},
+    ]
+    m = _build_metrics_map(aa, {"gpt-4o", "claude-opus-4-7"})
+    # Quality dropped (no valid evaluations dict), latency still extracted.
+    assert m.quality_scores == {}
+    assert m.tps_scores == {"gpt-4o": 100.0, "claude-opus-4-7": 60.0}
+    assert m.ttft_scores == {"gpt-4o": 0.5, "claude-opus-4-7": 1.0}
 
 
 # ── end-to-end fetch with httpx mocked at the boundary ────────────────
@@ -533,11 +619,14 @@ async def test_empty_aa_response_does_not_poison_db_snapshot(monkeypatch, db_ses
         "empty AA fetch must not overwrite existing DB snapshot"
     )
 
-    # And the DB row must still hold the good data, not `{}`.
+    # And the DB row must still hold the good data, not `{}`. New
+    # snapshot shape nests per-axis maps under a typed envelope; the
+    # quality axis is what must be preserved across the empty fetch.
     row = (await db_session.execute(select(QualityScoreSnapshot))).scalar_one()
     import json as _json
-    assert _json.loads(row.scores_json) == {"claude-opus-4-7": 57.0}, (
-        "DB snapshot must not have been overwritten with empty score map"
+    parsed = _json.loads(row.scores_json)
+    assert parsed.get("quality") == {"claude-opus-4-7": 57.0}, (
+        "DB snapshot quality axis must not have been overwritten with empty score map"
     )
 
 
@@ -625,3 +714,155 @@ async def test_get_quality_index_serves_stale_on_failure(monkeypatch):
     )
     assert idx_stale.source == "stale-cache"
     assert idx_stale.scores == {"claude-opus-4-7": 57.0}, "stale value preserved"
+
+
+# ── DB snapshot: new shape round-trip + legacy backward compat ─────────
+
+
+async def test_db_snapshot_round_trip_preserves_three_maps(monkeypatch, db_session):
+    """A live AA fetch carrying all three axes must round-trip through
+    the DB unchanged (the JSON envelope keeps quality + tps + ttft
+    independent so a partial refresh later can preserve the others)."""
+    from app import config as cfg
+    from packages.litellm_adapter import quality_index
+
+    quality_index.reset_cache()
+    monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "sk-aa-test")
+    cfg.get_settings.cache_clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _aa_response([{
+            "name": "Claude Opus 4.7 (max)",
+            "evaluations": {"artificial_analysis_intelligence_index": 57},
+            "median_output_tokens_per_second": 60,
+            "median_time_to_first_token_seconds": 1.2,
+        }])
+
+    _patch_aa_transport(monkeypatch, handler)
+
+    # Prime DB.
+    idx = await quality_index.get_quality_index(
+        catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
+    )
+    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.tps_scores == {"claude-opus-4-7": 60.0}
+    assert idx.ttft_scores == {"claude-opus-4-7": 1.2}
+    assert idx.matched_count_quality == 1
+    assert idx.matched_count_tps == 1
+    assert idx.matched_count_ttft == 1
+    # union(三轴 keys) — single model in all axes → 1
+    assert idx.matched_count == 1
+
+    # Drop in-memory cache, re-load from DB → same data.
+    quality_index.reset_cache()
+    idx2 = await quality_index.get_quality_index(
+        catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
+    )
+    assert idx2.source in ("live", "stale-db"), (
+        "DB hit should promote to in-process, not refetch AA — but live is also OK"
+    )
+    assert idx2.scores == {"claude-opus-4-7": 57.0}
+    assert idx2.tps_scores == {"claude-opus-4-7": 60.0}
+    assert idx2.ttft_scores == {"claude-opus-4-7": 1.2}
+
+
+async def test_db_snapshot_loader_handles_legacy_flat_quality_only_shape(
+    monkeypatch, db_session,
+):
+    """Dev databases written before PR4 have a flat scores_json
+    `{model_id: float}` (quality only). The loader detects shape and
+    hydrates the legacy data into the quality axis with empty TPS/TTFT,
+    so the snapshot still serves rather than crashing on KeyError."""
+    import json
+
+    from app import config as cfg
+    from packages.litellm_adapter import quality_index
+
+    quality_index.reset_cache()
+    monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "sk-aa-test")
+    cfg.get_settings.cache_clear()
+
+    from packages.db.models.quality_score_snapshot import QualityScoreSnapshot
+
+    # Manually plant a legacy-shape snapshot row, then make AA unreachable
+    # so the loader is forced through the DB path (not the live fetch).
+    legacy_blob = json.dumps({"claude-opus-4-7": 57.0, "gpt-4o": 70.0})
+    db_session.add(QualityScoreSnapshot(
+        workspace_id="default",
+        api_key_hash=quality_index._api_key_hash("sk-aa-test"),
+        source="live",
+        raw_count=2,
+        matched_count=2,
+        scores_json=legacy_blob,
+    ))
+    await db_session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+    _patch_aa_transport(monkeypatch, handler)
+
+    idx = await quality_index.get_quality_index(
+        catalog_ids={"claude-opus-4-7", "gpt-4o"},
+        db=db_session, workspace_id="default",
+    )
+    # Legacy shape detected → quality hydrated, TPS/TTFT empty (feature
+    # didn't exist when the row was written).
+    assert idx.scores == {"claude-opus-4-7": 57.0, "gpt-4o": 70.0}
+    assert idx.tps_scores == {}
+    assert idx.ttft_scores == {}
+    assert idx.matched_count_quality == 2
+
+
+async def test_persist_with_axis_preservation_keeps_old_quality_when_new_empty(
+    monkeypatch, db_session,
+):
+    """If AA upstream regresses (renamed `intelligence_index`) and a
+    fresh fetch carries TPS / TTFT but empty quality, the saver must
+    keep the old quality map. Otherwise quality routing silently dies
+    on the next request (no scores to rank by)."""
+    from app import config as cfg
+    from packages.litellm_adapter import quality_index
+
+    quality_index.reset_cache()
+    monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "sk-aa-test")
+    cfg.get_settings.cache_clear()
+
+    state = {"mode": "full"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["mode"] == "quality_lost":
+            # Quality field missing (or AA renamed it); TPS / TTFT still here.
+            return _aa_response([{
+                "name": "Claude Opus 4.7 (max)",
+                "evaluations": {},  # no quality score
+                "median_output_tokens_per_second": 65,
+                "median_time_to_first_token_seconds": 0.9,
+            }])
+        return _aa_response([{
+            "name": "Claude Opus 4.7 (max)",
+            "evaluations": {"artificial_analysis_intelligence_index": 57},
+            "median_output_tokens_per_second": 60,
+            "median_time_to_first_token_seconds": 1.2,
+        }])
+
+    _patch_aa_transport(monkeypatch, handler)
+
+    # Prime with full data.
+    idx_full = await quality_index.get_quality_index(
+        catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
+    )
+    assert idx_full.scores == {"claude-opus-4-7": 57.0}
+
+    # Simulate AA quality regression on next refresh.
+    quality_index.reset_cache()
+    state["mode"] = "quality_lost"
+    idx_after = await quality_index.get_quality_index(
+        catalog_ids={"claude-opus-4-7"},
+        db=db_session, workspace_id="default", force_refresh=True,
+    )
+    # Quality preserved from old snapshot, TPS/TTFT taken from new fetch.
+    assert idx_after.scores == {"claude-opus-4-7": 57.0}, (
+        "quality must be preserved when new fetch has empty quality axis"
+    )
+    assert idx_after.tps_scores == {"claude-opus-4-7": 65.0}, "TPS taken from new"
+    assert idx_after.ttft_scores == {"claude-opus-4-7": 0.9}, "TTFT taken from new"

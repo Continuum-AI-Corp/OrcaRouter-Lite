@@ -33,8 +33,9 @@ from app.auto_routing import (
 from app.deps import get_db, get_key_context
 from app.quality_scores import (
     fetch_aa_index,
+    invalidate_metrics_cache,
     load_overrides,
-    resolve_quality_scores,
+    resolve_model_metrics,
 )
 from packages.auth.types import KeyContext
 from packages.db.models.quality_score_override import QualityScoreOverride
@@ -58,11 +59,22 @@ def _serialize_aa_index(idx) -> dict[str, Any]:
     clients. The dashboard uses `raw_count` / `matched_count` for
     freshness signal; the `source` flag distinguishes live vs stale
     (in-process) vs stale (DB).
+
+    `matched_count` is the union (catalog IDs covered by ANY axis), so
+    the dashboard's "X of Y AA models indexed" string still reads as a
+    single useful number. `matched_count_breakdown` exposes the per-axis
+    counts for callers that want to distinguish quality vs latency
+    coverage.
     """
     return {
         "source": idx.source,
         "raw_count": idx.raw_count,
         "matched_count": idx.matched_count,
+        "matched_count_breakdown": {
+            "quality": idx.matched_count_quality,
+            "tps": idx.matched_count_tps,
+            "ttft": idx.matched_count_ttft,
+        },
         "configured": idx.source != "missing-key",
     }
 
@@ -108,6 +120,10 @@ async def quality_status(
                 "aa_score": aa_score,
                 "manual_score": manual_score,
                 "effective_score": effective,
+                # Latency metrics from AA — None when AA didn't cover this
+                # model on that axis. Dashboard renders "—" for None.
+                "tps": aa.tps_scores.get(m.id),
+                "ttft": aa.ttft_scores.get(m.id),
                 "supports_tools": m.supports_tools,
                 "supports_vision": m.supports_vision,
                 "supports_json_mode": m.supports_json_mode,
@@ -150,11 +166,46 @@ async def quality_refresh(
     this to get back online without waiting for natural expiry.
     On AA success, the new snapshot is also persisted to the DB so the
     next process restart inherits it.
+
+    Also drops the resolver-layer metrics cache so balanced/fastest
+    routing sees the fresh values on the very next request, not after
+    the 60s TTL.
     """
     aa = await fetch_aa_index(
         db=db, workspace_id=str(kc.workspace_id), force_refresh=True,
     )
+    invalidate_metrics_cache()  # global — AA fetch refreshes for all workspaces
     return {"aa_index": _serialize_aa_index(aa)}
+
+
+_VALID_STRATEGIES = {"cheapest", "balanced", "fastest", "quality"}
+
+# Human-readable scoring source per strategy + data-availability state.
+# Surfaced verbatim in the dashboard preview ("scoring: ...").
+#
+# The two fallback labels per strategy distinguish:
+#   - "*-cheapest-fallback":         AA data is configured but doesn't cover ANY
+#                                     model in this request's eligible set
+#                                     (deployable + capability + allowlist).
+#                                     Operator likely needs to widen the
+#                                     allowlist or add a manual quality override.
+#   - "*-no-data-fallback":          AA data is globally unavailable (no key
+#                                     configured, AA outage, no overrides).
+#                                     Operator should configure AA or accept
+#                                     cost-only routing.
+# Both fall back to cheapest of the eligible set; differentiating in the UI
+# tells the operator which knob to turn.
+_SCORING_SOURCE_LABELS = {
+    "balanced": "AA quality + catalog cost (50/50 normalized)",
+    "balanced-cheapest-fallback": "AA covers no eligible models — fell back to cheapest",
+    "balanced-no-data-fallback": "no AA quality data configured — fell back to cheapest",
+    "fastest": "AA TPS + AA TTFT (50/50 normalized)",
+    "fastest-cheapest-fallback": "AA covers no eligible models on TPS+TTFT — fell back to cheapest",
+    "fastest-no-data-fallback": "no AA latency data configured — fell back to cheapest",
+    "quality": "AA Intelligence Index + manual overrides",
+    "quality-cost-fallback": "no AA quality data — using cost-as-quality proxy (legacy)",
+    "cheapest": "blended cost (0.3 input + 0.7 output)",
+}
 
 
 @router.get("/auto-preview")
@@ -166,15 +217,25 @@ async def quality_auto_preview(
             "'json_mode'. Empty for plain chat."
         ),
     ),
+    strategy: str | None = Query(
+        None,
+        description=(
+            "Override the workspace's active strategy for this preview only. "
+            "Lets verification curl/tests compare all four strategies "
+            "without flipping the persisted routing config. Dashboard does "
+            "NOT pass this — it relies on the workspace strategy as the "
+            "authoritative source to avoid race conditions during initial load."
+        ),
+    ),
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Show what model `model='auto'` would resolve to right now under the
-    workspace's active strategy.
+    workspace's active strategy (or the `?strategy=` override, if given).
 
-    The dashboard re-fetches this on strategy change so the operator sees
-    the routing decision change live, instead of having to fire a real
-    chat completion to find out.
+    Returns the same scoring breakdown the ranker computed, so the
+    dashboard renders exactly the numbers that drove the decision (no
+    DRY drift from re-implementing normalize / weight in the route).
     """
     needs_set: set[str] = (
         {n.strip() for n in needs.split(",") if n.strip()} if needs else set()
@@ -182,9 +243,14 @@ async def quality_auto_preview(
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
-    strategy = (
+    workspace_strategy = (
         raw_strategy if isinstance(raw_strategy, str) and raw_strategy else "balanced"
     )
+    if strategy and strategy in _VALID_STRATEGIES:
+        effective_strategy = strategy
+    else:
+        effective_strategy = workspace_strategy
+
     raw_preferred = getattr(client, "preferred_models", None)
     preferred_models = raw_preferred if isinstance(raw_preferred, list) else []
 
@@ -193,48 +259,84 @@ async def quality_auto_preview(
     }
 
     quality_scores: dict[str, float] | None = None
-    if strategy == "quality":
-        quality_scores = await resolve_quality_scores(
+    tps_scores: dict[str, float] | None = None
+    ttft_scores: dict[str, float] | None = None
+    if effective_strategy in ("quality", "balanced", "fastest"):
+        metrics = await resolve_model_metrics(
             db=db, workspace_id=str(kc.workspace_id)
         )
+        quality_scores = metrics.quality_scores
+        tps_scores = metrics.tps_scores
+        ttft_scores = metrics.ttft_scores
 
-    candidates = choose_auto_model(
+    candidates, scoring = choose_auto_model(
         needs=needs_set,
         deployable=deployable,
         candidates=CATALOG,
-        strategy=strategy,
+        strategy=effective_strategy,
         preferred_models=preferred_models,
         allowlist=kc.model_allowlist,
         quality_scores=quality_scores,
+        tps_scores=tps_scores,
+        ttft_scores=ttft_scores,
     )
 
     primary = candidates[0] if candidates else None
     primary_model = CATALOG_BY_ID.get(primary) if primary else None
+    primary_detail = scoring.get(primary) if primary else None
+
+    # scoring_source: distinguish "ran the strategy as designed" vs
+    # "fell back to cheapest because the data wasn't there". Helps the
+    # operator interpret a primary that doesn't match their strategy
+    # selection (and could indicate a missing AA key vs a too-narrow
+    # allowlist that excludes everything AA covers).
+    if effective_strategy == "balanced":
+        if (primary_detail and primary_detail.breakdown
+                and "quality" in primary_detail.breakdown):
+            source_key = "balanced"
+        elif quality_scores:
+            # AA data is configured (and possibly covers OTHER models)
+            # but no eligible model in this request has it. Operator
+            # likely has an allowlist that excludes covered models.
+            source_key = "balanced-cheapest-fallback"
+        else:
+            source_key = "balanced-no-data-fallback"
+    elif effective_strategy == "fastest":
+        if (primary_detail and primary_detail.breakdown
+                and "tps" in primary_detail.breakdown):
+            source_key = "fastest"
+        elif tps_scores and ttft_scores:
+            source_key = "fastest-cheapest-fallback"
+        else:
+            source_key = "fastest-no-data-fallback"
+    elif effective_strategy == "quality":
+        source_key = "quality" if quality_scores else "quality-cost-fallback"
+    else:
+        source_key = "cheapest"
+
+    # Serialize ScoringDetail for JSON. dataclass with frozen=True doesn't
+    # JSON-encode automatically; pull fields explicitly to keep the wire
+    # format under our control (no leaky internal types).
+    primary_score = primary_detail.primary_score if primary_detail else None
+    primary_breakdown = primary_detail.breakdown if primary_detail else None
 
     return {
-        "strategy": strategy,
-        "litellm_routing_strategy": litellm_routing_strategy(strategy),
+        "strategy": effective_strategy,
+        "workspace_strategy": workspace_strategy,
+        "strategy_overridden": effective_strategy != workspace_strategy,
+        "litellm_routing_strategy": litellm_routing_strategy(effective_strategy),
         "needs": sorted(needs_set),
         "preferred_models": preferred_models,
         "deployable_count": len(deployable),
         "primary": primary,
-        "primary_score": (
-            quality_scores.get(primary) if (quality_scores and primary) else None
-        ),
+        "primary_score": primary_score,
+        "primary_score_breakdown": primary_breakdown,
         "primary_blended_cost": (
             _blended_cost(primary_model) if primary_model else None
         ),
         "fallbacks": candidates[1:] if len(candidates) > 1 else [],
         "fallbacks_count": max(0, len(candidates) - 1),
-        "scoring_source": (
-            "quality_scores"
-            if (strategy == "quality" and quality_scores)
-            else (
-                "cost-based-fallback"
-                if strategy == "quality"
-                else f"strategy:{strategy}"
-            )
-        ),
+        "scoring_source": _SCORING_SOURCE_LABELS.get(source_key, source_key),
     }
 
 
@@ -348,6 +450,9 @@ async def upsert_override(
                 )
             )
         ).scalar_one()
+    # Drop the resolver cache so balanced + quality routing see the new
+    # override on the very next request (otherwise stale up to 60s TTL).
+    invalidate_metrics_cache(workspace_id)
     return _serialize_override(row)
 
 
@@ -368,3 +473,4 @@ async def delete_override(
         )
     )
     await db.commit()
+    invalidate_metrics_cache(workspace_id)

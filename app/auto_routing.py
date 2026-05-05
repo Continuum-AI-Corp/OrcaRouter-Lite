@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from packages.litellm_adapter.catalog import CatalogModel
 
@@ -93,15 +94,68 @@ _OUTPUT_WEIGHT = 0.7
 
 
 # Map our user-facing strategy names to litellm.Router's `routing_strategy`.
-# `balanced` and `quality` use litellm's default (simple-shuffle, weighted by
-# RPM/TPM) — strategy intent is realised in `choose_auto_model` for `quality`,
-# and is a no-op for `balanced`. `None` means "don't pass routing_strategy".
+# We do the strategy-specific ordering ourselves in `choose_auto_model`
+# (balanced + fastest as of PR 4); litellm only sees the resulting fallback
+# chain. `latency-based-routing` is a no-op when each model has a single
+# deployment, which is our shape — so `fastest` is None too.
 STRATEGY_TO_LITELLM: dict[str, str | None] = {
     "balanced": None,
     "cheapest": "cost-based-routing",
-    "fastest": "latency-based-routing",
+    "fastest": None,
     "quality": None,
 }
+
+
+@dataclass(frozen=True)
+class ScoringDetail:
+    """Per-model scoring breakdown returned alongside ranked candidates.
+
+    Lets `/auto-preview` surface the same numbers the ranker used (no
+    DRY drift from re-implementing normalize / weight in the route).
+
+    `primary_score`:
+      - `None` for `cheapest` (single axis, raw cost has no 0-100 sense)
+      - 0-100 int for `quality` (raw AA intelligence_index, rounded)
+      - 0-100 int for `balanced` / `fastest` (combined × 100, rounded)
+
+    `breakdown`:
+      - `cheapest` → `{"cost": {"raw": float, "normalized": None}}`
+      - `quality`  → `{"quality": {"raw": float, "normalized": None}}`
+      - `balanced` → `{"quality": {raw, normalized}, "cost": {raw, normalized}}`
+      - `fastest`  → `{"tps": {raw, normalized}, "ttft": {raw, normalized}}`
+    """
+    primary_score: int | None
+    breakdown: dict[str, dict[str, float | None]]
+
+
+def _normalize(values: dict[str, float], model_ids: list[str]) -> dict[str, float]:
+    """min-max normalize to [0, 1] over models present in `values`.
+
+    Caller pre-filters: only model_ids that have data in this axis are
+    expected. range collapse (all equal) → all 1.0 so tiebreakers
+    decide. Empty input → empty output (let caller handle the empty
+    candidate set explicitly).
+    """
+    present = [values[mid] for mid in model_ids if mid in values]
+    if not present:
+        return {}
+    lo, hi = min(present), max(present)
+    if hi == lo:
+        return {mid: 1.0 for mid in model_ids if mid in values}
+    span = hi - lo
+    return {
+        mid: (values[mid] - lo) / span
+        for mid in model_ids if mid in values
+    }
+
+
+def _cheapest_breakdown(m: CatalogModel) -> ScoringDetail:
+    """Cheapest has a single raw axis (blended cost). No primary_score
+    because there's no meaningful 0-100 mapping for raw token cost."""
+    return ScoringDetail(
+        primary_score=None,
+        breakdown={"cost": {"raw": _blended_cost(m), "normalized": None}},
+    )
 
 
 def litellm_routing_strategy(strategy: str | None) -> str | None:
@@ -170,25 +224,44 @@ def choose_auto_model(
     preferred_models: list[str] | None = None,
     allowlist: list[str] | set[str] | None = None,
     quality_scores: dict[str, float] | None = None,
+    tps_scores: dict[str, float] | None = None,
+    ttft_scores: dict[str, float] | None = None,
     top_n: int = 5,
-) -> list[str]:
-    """Return up to `top_n` deployable models matching all `needs`, best first.
+) -> tuple[list[str], dict[str, ScoringDetail]]:
+    """Return up to `top_n` deployable models matching all `needs`, best first,
+    plus a per-model scoring breakdown for the survivors.
 
-    Empty list means no candidate satisfies the request. The first element is
-    the primary; subsequent elements are intended as LiteLLM Router fallbacks
-    so a 404 / cooldown on the primary cascades to the next-best candidate
-    without the user seeing an error.
+    Empty `(list, dict)` means no candidate satisfies the request. The first
+    list element is the primary; subsequent elements are intended as LiteLLM
+    Router fallbacks so a 404 / cooldown on the primary cascades to the
+    next-best candidate without the user seeing an error.
+
+    The scoring dict is keyed by **dedupe-survivor model_id** (the same
+    ones in the returned list). `/auto-preview` uses it to render the
+    breakdown without re-implementing the ranker (no DRY drift).
 
     Selection rule by strategy:
       - `quality`: highest quality_score first (when scores are non-empty),
-        cost as the tie-breaker. Falls back to "highest blended cost" when
-        no scores are provided — the legacy proxy that breaks for newer
-        flagships priced lower than older ones (Anthropic Opus 4.7 vs
-        Opus 4 from May 2024). Provide AA scores via `quality_scores=`.
-      - everything else (`cheapest` / `balanced` / `fastest` / None): lowest
-        blended cost. `fastest` shares the cheapest-capable rule because the
-        catalog has no per-model latency data; ordering across deployments of
-        the same model is handled by litellm's `latency-based-routing`.
+        cost as the tie-breaker. Unscored models drop to the bottom of the
+        quality ranking but stay eligible — better to surface them than to
+        disappear them on a transient AA outage. Falls back to
+        "highest blended cost" when no scores are provided (the legacy
+        proxy that breaks for newer flagships priced lower than older ones).
+      - `balanced`: 50/50 weighted normalize of quality (max=better) and
+        inverted cost (min=better). STRICT axis coverage: a model needs
+        BOTH axes to participate in ranking; cost is universal but quality
+        depends on AA + overrides. Models lacking quality data are dropped
+        from the candidate set entirely (NOT re-appended at the end —
+        keeping them in would let LiteLLM's fallback chain serve traffic
+        from a model the operator's strategy says shouldn't be eligible).
+        Operators who need to cover unscored models should use `cheapest`
+        or add a manual quality override.
+      - `fastest`: 50/50 weighted normalize of TPS (max=faster) and inverted
+        TTFT (min=faster). STRICT axis coverage: BOTH TPS and TTFT
+        required, same drop semantics as balanced. Without strict-both,
+        a single-axis model normalizes to 1.0 on its only axis and beats
+        a fully-scored model with mixed performance — reverse bias.
+      - `cheapest` / None: lowest blended cost.
 
     If `preferred_models` is non-empty AND at least one entry is deployable
     + capability-matching, the eligible set is restricted to that list. This
@@ -224,24 +297,137 @@ def choose_auto_model(
         allow_set = set(allowlist)
         eligible = [m for m in eligible if m.id in allow_set]
     if not eligible:
-        return []
+        return [], {}
+
+    # Per-strategy: sort `eligible` (which may shrink under strict-coverage)
+    # AND build a per-model `scoring_per_model` dict keyed by id. Dedupe +
+    # truncate at the end keeps the scoring entries for the survivors.
+    scoring_per_model: dict[str, ScoringDetail] = {}
+
     if strategy == "quality":
-        # When AA scores (or operator overrides) are available, sort by
-        # score descending. Cost is a tie-breaker (most expensive among
-        # equally-scored models tends to be the flagship version vs a
-        # smaller variant). Unscored models drop to the bottom of the
-        # quality ranking but stay eligible — better to surface them
-        # than to disappear them on a transient AA outage.
+        # PR #20 behavior preserved: scored models first by quality desc,
+        # unscored stay eligible at the bottom. NOT strict-coverage (a
+        # `quality` operator with partial AA still wants their unscored
+        # models routable as fallback rather than disappearing).
         if quality_scores:
             eligible.sort(
                 key=lambda m: (-quality_scores.get(m.id, 0.0), -_blended_cost(m), m.id)
             )
+            for m in eligible:
+                raw = quality_scores.get(m.id)
+                scoring_per_model[m.id] = ScoringDetail(
+                    primary_score=int(round(raw)) if raw is not None else None,
+                    breakdown={
+                        "quality": {
+                            "raw": float(raw) if raw is not None else None,
+                            "normalized": None,
+                        }
+                    },
+                )
         else:
-            # Legacy fallback: cost-as-quality-proxy. Wrong for modern
-            # pricing but stable when no benchmark data is available.
+            # Legacy: cost-as-quality-proxy when no benchmark data.
             eligible.sort(key=lambda m: (-_blended_cost(m), m.id))
-    else:
+            for m in eligible:
+                scoring_per_model[m.id] = _cheapest_breakdown(m)
+
+    elif strategy == "balanced":
+        # Strict coverage: model needs BOTH quality and cost. Drop unscored.
+        if quality_scores:
+            scored_models = [m for m in eligible if m.id in quality_scores]
+            if scored_models:
+                scored_ids = [m.id for m in scored_models]
+                cost_inv = {m.id: -_blended_cost(m) for m in scored_models}
+                c_norm = _normalize(cost_inv, scored_ids)
+                q_subset = {mid: quality_scores[mid] for mid in scored_ids}
+                q_norm = _normalize(q_subset, scored_ids)
+
+                def _bal_score(m: CatalogModel) -> float:
+                    return 0.5 * q_norm[m.id] + 0.5 * c_norm[m.id]
+
+                scored_models.sort(key=lambda m: (
+                    -_bal_score(m),
+                    _blended_cost(m),  # tiebreak 1: cheapest wins
+                    m.id,              # tiebreak 2: stable
+                ))
+                eligible = scored_models  # ← strict drop
+                for m in scored_models:
+                    scoring_per_model[m.id] = ScoringDetail(
+                        primary_score=int(round(_bal_score(m) * 100)),
+                        breakdown={
+                            "quality": {
+                                "raw": float(quality_scores[m.id]),
+                                "normalized": q_norm[m.id],
+                            },
+                            "cost": {
+                                "raw": _blended_cost(m),
+                                "normalized": c_norm[m.id],
+                            },
+                        },
+                    )
+            else:
+                # Strict-cov empty: fall back to cheapest within current
+                # eligible (already filtered for deployable / allowlist).
+                eligible.sort(key=lambda m: (_blended_cost(m), m.id))
+                for m in eligible:
+                    scoring_per_model[m.id] = _cheapest_breakdown(m)
+        else:
+            # No AA + no overrides → cheapest within eligible.
+            eligible.sort(key=lambda m: (_blended_cost(m), m.id))
+            for m in eligible:
+                scoring_per_model[m.id] = _cheapest_breakdown(m)
+
+    elif strategy == "fastest":
+        # Strict coverage: model needs BOTH TPS and TTFT.
+        tps_set = set(tps_scores or {})
+        ttft_set = set(ttft_scores or {})
+        both_set = tps_set & ttft_set
+        if both_set:
+            scored_models = [m for m in eligible if m.id in both_set]
+            if scored_models:
+                scored_ids = [m.id for m in scored_models]
+                tps_subset = {mid: tps_scores[mid] for mid in scored_ids}
+                tps_norm = _normalize(tps_subset, scored_ids)
+                # Lower TTFT = faster, so invert before normalizing so the
+                # normalized score points the same way as TPS (higher = better).
+                ttft_inv = {mid: -ttft_scores[mid] for mid in scored_ids}
+                ttft_norm = _normalize(ttft_inv, scored_ids)
+
+                def _fast_score(m: CatalogModel) -> float:
+                    return 0.5 * tps_norm[m.id] + 0.5 * ttft_norm[m.id]
+
+                scored_models.sort(key=lambda m: (
+                    -_fast_score(m),
+                    _blended_cost(m),
+                    m.id,
+                ))
+                eligible = scored_models  # ← strict drop
+                for m in scored_models:
+                    scoring_per_model[m.id] = ScoringDetail(
+                        primary_score=int(round(_fast_score(m) * 100)),
+                        breakdown={
+                            "tps": {
+                                "raw": float(tps_scores[m.id]),
+                                "normalized": tps_norm[m.id],
+                            },
+                            "ttft": {
+                                "raw": float(ttft_scores[m.id]),
+                                "normalized": ttft_norm[m.id],
+                            },
+                        },
+                    )
+            else:
+                eligible.sort(key=lambda m: (_blended_cost(m), m.id))
+                for m in eligible:
+                    scoring_per_model[m.id] = _cheapest_breakdown(m)
+        else:
+            eligible.sort(key=lambda m: (_blended_cost(m), m.id))
+            for m in eligible:
+                scoring_per_model[m.id] = _cheapest_breakdown(m)
+
+    else:  # cheapest / None
         eligible.sort(key=lambda m: (_blended_cost(m), m.id))
+        for m in eligible:
+            scoring_per_model[m.id] = _cheapest_breakdown(m)
 
     # Dedupe sibling versions: a model and its dated/numbered variants
     # ("gemini-2.0-flash-lite" + "...-001", "gpt-5-nano" + "...-2025-08-07")
@@ -257,4 +443,8 @@ def choose_auto_model(
         seen_bases.add(base)
         deduped.append(m)
 
-    return [m.id for m in deduped[:top_n]]
+    final = deduped[:top_n]
+    final_ids = [m.id for m in final]
+    # Filter scoring to survivors only — sibling-deduped models drop out.
+    scoring = {mid: scoring_per_model[mid] for mid in final_ids if mid in scoring_per_model}
+    return final_ids, scoring

@@ -377,7 +377,7 @@
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2v20M2 12h20"/></svg>
                 </div>
                 <div class="strategy-title">Balanced</div>
-                <p class="strategy-desc">Mix cost, latency &amp; quality. The sane default for most teams.</p>
+                <p class="strategy-desc">50/50 weighted blend of AA quality &amp; cost. The sane default for most teams.</p>
                 <span class="strategy-badge">Recommended</span>
               </label>
               <label class="strategy-card" data-value="cheapest">
@@ -394,7 +394,7 @@
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                 </div>
                 <div class="strategy-title">Fastest</div>
-                <p class="strategy-desc">Lowest p50 latency from recent traffic. Great for chat UIs.</p>
+                <p class="strategy-desc">Highest throughput + lowest first-token latency, from Artificial Analysis benchmarks. Great for chat UIs.</p>
               </label>
               <label class="strategy-card" data-value="quality">
                 <input type="radio" name="strategy" value="quality">
@@ -447,10 +447,10 @@
                     <th><code>model="auto"</code> picks</th>
                   </tr></thead>
                   <tbody>
-                    <tr><td><strong>balanced</strong></td><td><code>simple-shuffle</code> (RPM/TPM weighted)</td><td>cheapest capable</td></tr>
-                    <tr><td><strong>cheapest</strong></td><td><code>cost-based-routing</code></td><td>cheapest capable</td></tr>
-                    <tr><td><strong>fastest</strong></td><td><code>latency-based-routing</code></td><td>cheapest capable</td></tr>
-                    <tr><td><strong>quality</strong></td><td><code>simple-shuffle</code></td><td>most expensive capable (biggest)</td></tr>
+                    <tr><td><strong>balanced</strong></td><td><code>None</code> (we rank ourselves)</td><td>50/50 normalized AA quality &amp; inverted cost; strict two-axis coverage</td></tr>
+                    <tr><td><strong>cheapest</strong></td><td><code>cost-based-routing</code></td><td>cheapest capable (blended 0.3 input + 0.7 output cost)</td></tr>
+                    <tr><td><strong>fastest</strong></td><td><code>None</code> (we rank ourselves)</td><td>50/50 normalized AA TPS &amp; inverted TTFT; strict two-axis coverage</td></tr>
+                    <tr><td><strong>quality</strong></td><td><code>None</code> (we rank ourselves)</td><td>highest AA Intelligence Index (or manual override); unscored models rank below scored</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -640,6 +640,8 @@
                   <th class="num">AA</th>
                   <th class="num">Manual</th>
                   <th class="num">Effective</th>
+                  <th class="num" title="Output tokens per second (Artificial Analysis median, max across reasoning variants). — when AA hasn't indexed this model.">TPS</th>
+                  <th class="num" title="Time to first token in seconds (Artificial Analysis median, min across reasoning variants — the model's non-reasoning fast mode). — when AA hasn't indexed this model.">TTFT</th>
                   <th class="num">$/M blended</th>
                   <th>Status</th>
                   <th class="th-actions"></th>

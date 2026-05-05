@@ -28,7 +28,7 @@ from app.auto_routing import (
 )
 from app.config import get_settings
 from app.deps import get_db, get_key_context
-from app.quality_scores import resolve_quality_scores
+from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
@@ -293,23 +293,28 @@ async def chat_completions(
                     "configured key. No deployable provider found."
                 ),
             )
-        # When strategy is "quality", merge AA's Intelligence Index with
-        # any manual operator overrides from the dashboard. Manual >  AA >
-        # nothing. Empty dict (no AA key + no overrides) → resolver falls
-        # back to the legacy cost-based proxy. Skipped for non-quality
-        # strategies so we don't pay the cost on cheapest/balanced/fastest
-        # calls that don't use the scores.
+        # `quality`, `balanced`, `fastest` all want AA-derived metrics.
+        # `resolve_model_metrics` does the AA fetch + merges manual
+        # overrides for the quality axis (TPS / TTFT have no override
+        # concept) and is cached at the resolver layer for 60s, so the
+        # default `balanced` strategy doesn't pay a DB hit per request.
+        # Skipped for `cheapest` / None where the metrics aren't used.
         quality_scores: dict[str, float] | None = None
-        if strategy == "quality":
-            quality_scores = await resolve_quality_scores(
+        tps_scores: dict[str, float] | None = None
+        ttft_scores: dict[str, float] | None = None
+        if strategy in ("quality", "balanced", "fastest"):
+            metrics = await resolve_model_metrics(
                 db=db, workspace_id=str(kc.workspace_id),
             )
+            quality_scores = metrics.quality_scores
+            tps_scores = metrics.tps_scores
+            ttft_scores = metrics.ttft_scores
 
         # Pass the key's allowlist into the resolver so it filters BEFORE
         # the top-N truncation. Without this, an allowed model ranked at
         # position 6+ would be silently dropped by top_n=5 and the user
         # would see a false 403 even though they have a valid candidate.
-        candidates = choose_auto_model(
+        candidates, _scoring = choose_auto_model(
             needs=needs,
             deployable=deployable,
             candidates=CATALOG,
@@ -317,6 +322,8 @@ async def chat_completions(
             preferred_models=preferred_models,
             allowlist=kc.model_allowlist,
             quality_scores=quality_scores,
+            tps_scores=tps_scores,
+            ttft_scores=ttft_scores,
         )
         if not candidates:
             # Empty result has two distinct causes — distinguish them so the
@@ -328,7 +335,7 @@ async def chat_completions(
             # applies. Cheap (in-memory list comprehension, no DB / network).
             # Use `is not None` to honor explicit empty allowlist (deny-all).
             if kc.model_allowlist is not None:
-                any_capable = choose_auto_model(
+                any_capable, _ = choose_auto_model(
                     needs=needs,
                     deployable=deployable,
                     candidates=CATALOG,
@@ -336,6 +343,8 @@ async def chat_completions(
                     preferred_models=preferred_models,
                     allowlist=None,
                     quality_scores=quality_scores,
+                    tps_scores=tps_scores,
+                    ttft_scores=ttft_scores,
                     top_n=1,
                 )
                 if any_capable:
