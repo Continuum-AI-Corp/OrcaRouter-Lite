@@ -66,7 +66,14 @@ def _isolate_orcarouter_remote(request, monkeypatch):
 
 @pytest.fixture
 def isolated_env(monkeypatch) -> Generator[None, None, None]:
-    """Strip every ORCA_*/OPENAI_*/ANTHROPIC_*/etc env var before a test."""
+    """Strip every ORCA_*/OPENAI_*/ANTHROPIC_*/etc env var before a test.
+
+    Also blocks pydantic-settings from re-reading them out of `.env`
+    on the next `Settings()` instantiation. Without this guard, tests
+    asserting "no providers configured" silently pull whatever is in
+    the developer's local `.env` (which usually has real keys for
+    manual testing) and flake under those configurations.
+    """
     drop = [
         k for k in os.environ
         if k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GROQ_",
@@ -75,6 +82,17 @@ def isolated_env(monkeypatch) -> Generator[None, None, None]:
     ]
     for k in drop:
         monkeypatch.delenv(k, raising=False)
+
+    # Stop pydantic-settings from re-reading `.env` and undoing the
+    # delenv work above. The class-level model_config dict is shared
+    # across every Settings() call, so monkeypatch.setitem (which
+    # restores on teardown) is the right scope.
+    try:
+        from app.config import Settings
+        monkeypatch.setitem(Settings.model_config, "env_file", None)
+    except Exception:
+        pass
+
     yield
 
 

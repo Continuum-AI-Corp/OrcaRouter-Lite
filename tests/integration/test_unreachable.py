@@ -54,7 +54,7 @@ async def fresh_client(tmp_sqlite_url, monkeypatch):
     session_mod._session_factory = None
 
 
-async def test_unreachable_backfills_from_static_when_remote_ids_unknown(tmp_sqlite_url, monkeypatch):
+async def test_unreachable_backfills_from_static_when_remote_ids_unknown(tmp_sqlite_url, monkeypatch, isolated_env):
     """Codex P2: when orcarouter.ai promotes IDs that this Lite build's
     catalog doesn't know (newer model names, vendor-specific aliases),
     every entry would be filtered out in the catalog lookup loop and
@@ -127,7 +127,7 @@ async def test_unreachable_backfills_from_static_when_remote_ids_unknown(tmp_sql
     orcarouter_models.reset_cache()
 
 
-async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
+async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch, isolated_env):
     """The unreachable tile must reflect what orcarouter.ai actually
     promotes (top-N from /models), not a list compiled into the source.
     Stub the fetcher and verify the endpoint surfaces THOSE IDs."""
@@ -193,7 +193,7 @@ async def test_unreachable_uses_remote_top_n_list(tmp_sqlite_url, monkeypatch):
     orcarouter_models.reset_cache()
 
 
-async def test_unreachable_with_no_keys_lists_flagship_models(fresh_client):
+async def test_unreachable_with_no_keys_lists_flagship_models(isolated_env, fresh_client):
     """A bare-bones Lite install with no provider keys can't reach any
     flagship model — the endpoint should return a non-empty list to power
     the conversion CTA."""
@@ -263,7 +263,7 @@ async def test_unreachable_respects_limit(fresh_client):
     assert len(body["unreachable"]) <= 3
 
 
-async def test_unreachable_excludes_undecryptable_provider_keys(tmp_sqlite_url, monkeypatch):
+async def test_unreachable_excludes_undecryptable_provider_keys(tmp_sqlite_url, monkeypatch, isolated_env):
     """Codex P2: an enabled DB row with a corrupt encrypted_key isn't
     actually deployable (build_deployments drops it). The unreachable
     endpoint must not silently treat that provider as 'covered' — those
