@@ -8,7 +8,6 @@ response in OpenAI's `text/event-stream` format with a terminal
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable
@@ -19,14 +18,18 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import prompt_cache, router_cache
-from app.auto_routing import choose_auto_model, required_capabilities
+from app.auto_routing import (
+    _VERSION_SUFFIX_RE,
+    choose_auto_model,
+    required_capabilities,
+)
 from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.quality_scores import resolve_quality_scores
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
-from packages.litellm_adapter.catalog import CATALOG
+from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.types import UpstreamProviderError
 
 logger = structlog.get_logger()
@@ -40,30 +43,6 @@ def _chunk_to_dict(chunk) -> dict:
     if hasattr(chunk, "model_dump"):
         return chunk.model_dump(exclude_none=True)
     return dict(chunk)
-
-
-# Suffix shapes that mark a response model as a more-specific *version* of the
-# requested model rather than a different one. Matched against the substring
-# AFTER `requested_group + "-"` in the served name.
-#   "2024-08-06"   — OpenAI dated version
-#   "20241022"     — Anthropic dated version (compact form)
-#   "001" / "002"  — Google Vertex / Gemini revision suffix
-#   "v1.5"         — explicit semver-like version
-#
-# Deliberately excluded:
-#   "preview"      — too ambiguous. "gpt-4-turbo-preview" is a distinct
-#                    catalog model from "gpt-4-turbo", not a version variant.
-#   "latest"       — providers don't return "-latest" in response.model;
-#                    it's only a request-side alias.
-#   "mini" / etc.  — branding suffixes, not versions.
-_VERSION_SUFFIX_RE = re.compile(
-    r"^("
-    r"\d{4}-\d{2}-\d{2}"     # YYYY-MM-DD
-    r"|\d{6,}"                # YYYYMMDD or compact dates / build numbers
-    r"|\d{1,4}"               # 001, 002, 1, 12, ...
-    r"|v\d[\d.]*"             # v1, v1.5, v2.0.1
-    r")$"
-)
 
 
 def _served_same_group_as_requested(
@@ -152,6 +131,8 @@ async def _build_log_row(
     meta = response.get("_orca_meta", {})
     usage = response.get("usage", {}) or {}
     resolved = actual_resolved or response.get("model") or requested_model
+    input_t = usage.get("prompt_tokens", 0) or 0
+    output_t = usage.get("completion_tokens", 0) or 0
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
@@ -160,14 +141,42 @@ async def _build_log_row(
         model_resolved=resolved,
         provider=meta.get("provider", "unknown"),
         routing_strategy=strategy,
-        input_tokens=usage.get("prompt_tokens", 0),
-        output_tokens=usage.get("completion_tokens", 0),
-        cost_microcents=0,
+        input_tokens=input_t,
+        output_tokens=output_t,
+        cost_microcents=_compute_cost_microcents(resolved, input_t, output_t),
         latency_ms=meta.get("latency_ms", latency_ms),
         status_code=status_code,
         error_type=error_type,
         is_streaming=body.stream,
     )
+
+
+def _compute_cost_microcents(model_id: str | None, input_tokens: int, output_tokens: int) -> int:
+    """Compute request cost from token usage and the catalog's per-token prices.
+
+    Returns 0 when the model isn't in the catalog (LiteLLM may rewrite the
+    response model name to a provider-specific dated alias we don't carry,
+    e.g. "claude-3-5-sonnet-20241022" served against requested
+    "claude-3-5-sonnet-latest"). Try to canonicalize before giving up.
+
+    Per-token pricing in the catalog is USD/token; multiply by 1_000_000
+    to get microcents (1 USD = 1,000,000 microcents — same convention
+    as /v1/analytics/savings's baseline calculation).
+    """
+    if not model_id or input_tokens < 0 or output_tokens < 0:
+        return 0
+    m = CATALOG_BY_ID.get(model_id)
+    if m is None:
+        # Try stripping a provider prefix ("openai/gpt-4o" -> "gpt-4o").
+        bare = model_id.split("/", 1)[-1] if "/" in model_id else model_id
+        m = CATALOG_BY_ID.get(bare)
+    if m is None:
+        return 0
+    cost_usd = (
+        input_tokens * m.input_cost_per_token
+        + output_tokens * m.output_cost_per_token
+    )
+    return max(0, int(cost_usd * 1_000_000))
 
 
 @router.post("/chat/completions")

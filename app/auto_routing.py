@@ -20,9 +20,64 @@ Adapted from `apps/api/routes/chat.py:_required_capabilities` /
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from packages.litellm_adapter.catalog import CatalogModel
+
+# Suffix shapes that mark a model id as a more-specific *version* of a base
+# model rather than a different model. Matched against the substring AFTER
+# `base + "-"` in a candidate id. Shared with the prompt-cache canonicalization
+# in chat.py so both layers agree on what counts as "same model, different
+# version stamp."
+#   "2024-08-06"   — OpenAI dated version
+#   "20241022"     — Anthropic dated version (compact form)
+#   "001" / "002"  — Google Vertex / Gemini revision suffix (always 3+ digits)
+#   "v1.5"         — Generic version tag
+#
+# What we deliberately do NOT collapse:
+#   "turbo"        — distinct catalog model, not a version variant
+#   "latest"       — request-side alias only
+#   "mini"         — branding suffix
+#   single digits  — Anthropic uses these for semantic version (claude-opus-4-7
+#                    is NOT a version of claude-opus-4 — they're different
+#                    models). Rev-codes are always 3+ digits.
+_VERSION_SUFFIX_RE = re.compile(
+    r"^("
+    r"\d{4}-\d{2}-\d{2}"     # YYYY-MM-DD
+    r"|\d{6,}"                # YYYYMMDD or compact dates / build numbers
+    r"|\d{3,4}"               # 001, 002, 1234 (revision codes — always 3+ digits)
+    r"|v\d[\d.]*"             # v1, v1.5, v2.0.1
+    r")$"
+)
+
+
+def canonical_model_base(model_id: str) -> str:
+    """Strip a known version suffix to get the model's canonical base id.
+
+    "gemini-2.0-flash-lite-001" -> "gemini-2.0-flash-lite"
+    "gpt-5-nano-2025-08-07"     -> "gpt-5-nano"
+    "claude-opus-4-7"           -> "claude-opus-4-7" (single digits NOT stripped)
+    "claude-3-5-sonnet"         -> "claude-3-5-sonnet" (no change)
+
+    Used to dedupe sibling versions out of the auto-routing fallback list:
+    when the primary picks `gemini-2.0-flash-lite`, we don't want
+    `gemini-2.0-flash-lite-001` as the next fallback (Google rolls them
+    together — they share an outage and just add ~400ms of useless retry
+    latency before the real cross-provider fallback kicks in).
+    """
+    # Try the LONGEST plausible suffix first so the dashed-date pattern
+    # (3 dash-separated segments: YYYY-MM-DD) gets a chance before the
+    # bare-digit pattern matches just the last segment. Cap at 3 segments —
+    # anything longer is overwhelmingly likely to be the model name itself.
+    parts = model_id.split("-")
+    for cut in range(min(len(parts) - 1, 3), 0, -1):
+        suffix = "-".join(parts[-cut:])
+        if _VERSION_SUFFIX_RE.match(suffix):
+            base = "-".join(parts[:-cut])
+            if base:
+                return base
+    return model_id
 
 _CAP_FIELD = {
     "tools": "supports_tools",
@@ -187,4 +242,19 @@ def choose_auto_model(
             eligible.sort(key=lambda m: (-_blended_cost(m), m.id))
     else:
         eligible.sort(key=lambda m: (_blended_cost(m), m.id))
-    return [m.id for m in eligible[:top_n]]
+
+    # Dedupe sibling versions: a model and its dated/numbered variants
+    # ("gemini-2.0-flash-lite" + "...-001", "gpt-5-nano" + "...-2025-08-07")
+    # share an upstream outage. Keeping both in the fallback list just
+    # adds dead-deployment retry latency before the real cross-provider
+    # cascade. Keep the highest-ranked one per canonical base.
+    seen_bases: set[str] = set()
+    deduped: list[CatalogModel] = []
+    for m in eligible:
+        base = canonical_model_base(m.id)
+        if base in seen_bases:
+            continue
+        seen_bases.add(base)
+        deduped.append(m)
+
+    return [m.id for m in deduped[:top_n]]

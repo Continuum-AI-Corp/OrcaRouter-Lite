@@ -486,3 +486,117 @@ def test_none_allowlist_means_no_restriction():
         allowlist=None,
     )
     assert chosen == ["cheap"]
+
+
+# ── canonical_model_base: strip version-suffixes for dedupe ─────────────
+
+
+def test_canonical_base_strips_dated_alias():
+    from app.auto_routing import canonical_model_base
+    assert canonical_model_base("gpt-5-nano-2025-08-07") == "gpt-5-nano"
+    assert canonical_model_base("claude-3-5-sonnet-20241022") == "claude-3-5-sonnet"
+
+
+def test_canonical_base_strips_revision_suffix():
+    from app.auto_routing import canonical_model_base
+    assert canonical_model_base("gemini-2.0-flash-lite-001") == "gemini-2.0-flash-lite"
+    assert canonical_model_base("gemini-1.5-pro-002") == "gemini-1.5-pro"
+
+
+def test_canonical_base_strips_semver():
+    from app.auto_routing import canonical_model_base
+    assert canonical_model_base("foo-v1") == "foo"
+    assert canonical_model_base("foo-v2.1.0") == "foo"
+
+
+def test_canonical_base_leaves_non_version_suffix_alone():
+    """Branding suffixes are not versions — preserve as-is so distinct catalog
+    models stay distinct."""
+    from app.auto_routing import canonical_model_base
+    assert canonical_model_base("gpt-4o-mini") == "gpt-4o-mini"
+    assert canonical_model_base("gpt-4-turbo-preview") == "gpt-4-turbo-preview"
+    assert canonical_model_base("claude-3-5-sonnet-latest") == "claude-3-5-sonnet-latest"
+
+
+def test_canonical_base_with_no_suffix_is_identity():
+    from app.auto_routing import canonical_model_base
+    assert canonical_model_base("gpt-4o") == "gpt-4o"
+    assert canonical_model_base("claude-opus-4-7") == "claude-opus-4-7"
+
+
+# ── choose_auto_model: dedupe sibling versions out of fallback list ─────
+
+
+def test_choose_model_dedupes_sibling_versions():
+    """Regression: gemini-2.0-flash-lite and gemini-2.0-flash-lite-001 used
+    to both end up in the fallback list, which doubled the dead-deployment
+    retry latency on a Google outage. Dedupe by canonical base — keep the
+    highest-ranked sibling, drop the rest."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("gemini-2.0-flash-lite", "gemini", "gemini/", True, False, False, 1e-7, 4e-7),
+        CatalogModel("gemini-2.0-flash-lite-001", "gemini", "gemini/", True, False, False, 1.1e-7, 4.1e-7),
+        CatalogModel("gpt-5-nano", "openai", "openai/", True, False, False, 2e-7, 5e-7),
+        CatalogModel("gpt-5-nano-2025-08-07", "openai", "openai/", True, False, False, 2.1e-7, 5.1e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={c.id for c in candidates},
+        candidates=candidates,
+        strategy="cheapest",
+    )
+    # Each canonical base should appear at most once. The cheaper sibling
+    # within each base wins (cheapest strategy sorts by cost asc first).
+    assert "gemini-2.0-flash-lite" in chosen
+    assert "gemini-2.0-flash-lite-001" not in chosen, (
+        "version-suffix sibling should be deduped out of the fallback list"
+    )
+    assert "gpt-5-nano" in chosen
+    assert "gpt-5-nano-2025-08-07" not in chosen
+
+
+def test_dedupe_preserves_strategy_ranking():
+    """Dedupe must run AFTER sort so the highest-ranked sibling per base
+    survives, not an arbitrary one. Under quality strategy, the sibling with
+    the higher AA score should win."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("foo", "x", "x/", True, False, False, 1e-7, 4e-7),
+        CatalogModel("foo-001", "x", "x/", True, False, False, 1e-7, 4e-7),
+    ]
+    # Give the suffix-variant the higher score.
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"foo", "foo-001"},
+        candidates=candidates,
+        strategy="quality",
+        quality_scores={"foo": 50.0, "foo-001": 80.0},
+    )
+    assert chosen == ["foo-001"], (
+        "quality-ranked sibling (higher score) should survive the dedupe"
+    )
+
+
+def test_dedupe_does_not_collapse_unrelated_models():
+    """gpt-4o and gpt-4o-mini share a prefix but `mini` isn't a version
+    suffix — they must stay distinct."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("gpt-4o", "openai", "openai/", True, False, False, 5e-6, 15e-6),
+        CatalogModel("gpt-4o-mini", "openai", "openai/", True, False, False, 1.5e-7, 6e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"gpt-4o", "gpt-4o-mini"},
+        candidates=candidates,
+        strategy="cheapest",
+    )
+    assert "gpt-4o" in chosen and "gpt-4o-mini" in chosen, (
+        "branding suffix is not a version — both must remain"
+    )
