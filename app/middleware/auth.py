@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from packages.auth.key_validator import AuthError, validate_api_key
-from packages.db.session import get_session
+from packages.db import session as session_mod
 
 SKIP_AUTH_PATHS: set[str] = {
     "/health",
@@ -76,12 +76,21 @@ class AuthMiddleware:
 
         raw_key = auth_header[7:]
 
+        # Use the session factory directly with `async with` so the
+        # session is GUARANTEED to close on every exit path (success,
+        # AuthError, generic Exception). The previous
+        # `async for s in get_session(): break` pattern relied on
+        # Python's implicit generator cleanup, which is timing-fragile:
+        # in error paths the session could linger until GC and slowly
+        # exhaust the connection pool under load.
+        if session_mod._session_factory is None:
+            from app.config import get_settings
+            session_mod.init_session_factory(get_settings().database_url)
         try:
-            async for session in get_session():
+            async with session_mod._session_factory() as session:
                 key_context = await validate_api_key(raw_key, session)
-                scope.setdefault("state", {})["key_context"] = key_context
-                scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
-                break
+            scope.setdefault("state", {})["key_context"] = key_context
+            scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
         except AuthError as e:
             await _send_error(send, e.status_code, e.message, "auth_error")
             return

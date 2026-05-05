@@ -15,8 +15,6 @@ def test_settings_load_with_defaults(isolated_env):
     assert s.orcarouter_base_url == "https://api.orcarouter.ai/v1"
     assert s.orcarouter_api_key is None
     assert s.openai_api_key is None
-    # ~100 MiB body limit for file attachments
-    assert s.max_body_bytes == 100 * 1024 * 1024
 
 
 def test_settings_reads_env_provider_keys(isolated_env, monkeypatch):

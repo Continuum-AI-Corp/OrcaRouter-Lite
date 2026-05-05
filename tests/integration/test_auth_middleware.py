@@ -14,15 +14,23 @@ async def app_with_auth(db_session, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", str(db_session.bind.url))
     from fastapi import FastAPI, Request
 
-    # The middleware imports get_session at module load — patch the binding it
-    # actually uses (app.middleware.auth.get_session), not packages.db.session.
-    from app.middleware import auth as auth_mod
+    # Middleware now opens its own session via `session_mod._session_factory()`
+    # instead of consuming a `get_session()` async generator (the previous
+    # `async for s in get_session(): break` pattern was timing-fragile in
+    # error paths). Substitute a factory that hands back the test's
+    # already-open `db_session` and is a no-op on close — the fixture
+    # owns the session lifecycle.
     from app.middleware.auth import AuthMiddleware
+    from packages.db import session as session_mod
 
-    async def _get_session_override():
-        yield db_session
+    class _PassthroughFactory:
+        async def __aenter__(self):
+            return db_session
 
-    monkeypatch.setattr(auth_mod, "get_session", _get_session_override)
+        async def __aexit__(self, *exc):
+            return False  # propagate any exception, don't close
+
+    monkeypatch.setattr(session_mod, "_session_factory", lambda: _PassthroughFactory())
 
     app = FastAPI()
     app.add_middleware(AuthMiddleware)

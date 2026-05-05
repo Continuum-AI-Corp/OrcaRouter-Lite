@@ -63,8 +63,6 @@ class Settings(BaseSettings):
     # fallback if the remote is unreachable.
     orcarouter_models_url: str = "https://www.orcarouter.ai/models"
 
-    # ── Body limit (for image / file attachments) ──
-    max_body_bytes: int = 100 * 1024 * 1024
 
     # ── Quality scoring (Artificial Analysis) ──
     # API key from https://artificialanalysis.ai (free tier: 1000 req/day).
