@@ -7,11 +7,13 @@ response in OpenAI's `text/event-stream` format with a terminal
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable
 
+import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -478,6 +480,54 @@ async def chat_completions(
             agg_model: str | None = None
             status_code = 200
             error_type: str | None = None
+            log_written = False
+
+            async def _finalize() -> None:
+                """Write the request log row exactly once.
+
+                Called from two places: the cancel branch (so the row lands
+                even if the [DONE] yield fails against a disconnected
+                client), and the `finally` block (the normal path). The
+                `log_written` guard makes the second call a no-op when the
+                cancel path already ran.
+                """
+                nonlocal log_written, agg_provider
+                if log_written:
+                    return
+                log_written = True
+                # Real LiteLLM stream chunks don't carry _orca_meta (the
+                # adapter only injects it on non-stream responses, since
+                # wrapping every chunk would be wasteful). Look up provider
+                # attribution from the served model name against the active
+                # deployments — same lookup the non-stream adapter does.
+                if agg_provider == "unknown" and agg_model:
+                    deployments = getattr(client, "_deployments", []) or []
+                    bare_served = (
+                        agg_model.split("/", 1)[-1] if "/" in agg_model else agg_model
+                    )
+                    for d in deployments:
+                        if agg_model in (d.litellm_model, d.model_name) or bare_served == d.model_name:
+                            agg_provider = d.provider
+                            break
+                synthetic = {
+                    "model": agg_model or resolved_model,
+                    "usage": agg_usage,
+                    "_orca_meta": {"provider": agg_provider, "latency_ms": agg_latency},
+                }
+                log = await _build_log_row(
+                    body=body, kc=kc, response=synthetic,
+                    status_code=status_code, error_type=error_type,
+                    started_perf=started_perf,
+                    strategy=strategy,
+                    requested_model=requested_model,
+                    actual_resolved=agg_model,
+                )
+                db.add(log)
+                try:
+                    await db.commit()
+                except Exception as commit_err:
+                    logger.warning("request_log_commit_failed", error=str(commit_err))
+
             try:
                 async for chunk in _aiter(stream_obj):
                     d = _chunk_to_dict(chunk)
@@ -492,6 +542,50 @@ async def chat_completions(
                     if d.get("model"):
                         agg_model = d["model"]
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
+            except (asyncio.CancelledError, GeneratorExit):
+                # Client closed the connection (Ctrl+C, tab closed, browser
+                # navigated away, proxy timeout, ...). Two distinct signals
+                # land here depending on which side noticed first:
+                #   - CancelledError: asyncio task running the generator was
+                #     cancelled (Starlette saw the disconnect first).
+                #   - GeneratorExit: Starlette called aclose() on us during
+                #     its own cleanup pass.
+                # Either way the consumer is gone — no point yielding more
+                # frames, and we MUST stop pulling chunks from upstream so
+                # LiteLLM doesn't keep burning tokens on a response nobody
+                # will read.
+                error_type = "client_disconnect"
+                # 499 Client Closed Request — nginx convention, widely
+                # understood in analytics pipelines for "user bailed".
+                status_code = 499
+                logger.info(
+                    "chat_completion_stream_client_disconnect",
+                    served_model=agg_model,
+                )
+                # Cleanup MUST actually complete before we unwind, not just
+                # be scheduled. `asyncio.shield()` here would NOT wait — the
+                # outer await re-raises CancelledError immediately under
+                # Starlette's anyio task group cancellation, leaving the
+                # inner aclose/finalize racing FastAPI's request-scoped
+                # session teardown.
+                #
+                # `anyio.CancelScope(shield=True)` is the right primitive:
+                # awaits inside the shielded scope ignore outer cancellation
+                # and run to completion. The scope exits normally and we
+                # re-raise the original CancelledError below.
+                aclose = getattr(stream_obj, "aclose", None)
+                with anyio.CancelScope(shield=True):
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            pass
+                    try:
+                        await _finalize()
+                    except Exception:
+                        pass
+                # Re-raise so asyncio/Starlette see proper cancel propagation.
+                raise
             except Exception as exc:
                 # Translate the underlying LiteLLM exception so the request
                 # log records the meaningful error_type (rate_limit_error,
@@ -526,40 +620,25 @@ async def chat_completions(
                 }
                 yield f"data: {json.dumps(err_body)}\n\n"
             finally:
-                yield "data: [DONE]\n\n"
-                # Real LiteLLM stream chunks don't carry _orca_meta (the
-                # adapter only injects it on non-stream responses, since
-                # wrapping every chunk would be wasteful). Look up provider
-                # attribution from the served model name against the active
-                # deployments — same lookup the non-stream adapter does.
-                if agg_provider == "unknown" and agg_model:
-                    deployments = getattr(client, "_deployments", []) or []
-                    bare_served = (
-                        agg_model.split("/", 1)[-1] if "/" in agg_model else agg_model
-                    )
-                    for d in deployments:
-                        if agg_model in (d.litellm_model, d.model_name) or bare_served == d.model_name:
-                            agg_provider = d.provider
-                            break
-                # Synthesize a response-shaped dict for the log helper.
-                synthetic = {
-                    "model": agg_model or resolved_model,
-                    "usage": agg_usage,
-                    "_orca_meta": {"provider": agg_provider, "latency_ms": agg_latency},
-                }
-                log = await _build_log_row(
-                    body=body, kc=kc, response=synthetic,
-                    status_code=status_code, error_type=error_type,
-                    started_perf=started_perf,
-                    strategy=strategy,
-                    requested_model=requested_model,
-                    actual_resolved=agg_model,
-                )
-                db.add(log)
+                # Try to send the [DONE] sentinel. If the client is still
+                # listening they need it to stop reading. If they're gone
+                # (cancel path already ran), the yield will raise — swallow
+                # silently because there's no consumer to deliver to.
                 try:
-                    await db.commit()
-                except Exception as commit_err:
-                    logger.warning("request_log_commit_failed", error=str(commit_err))
+                    yield "data: [DONE]\n\n"
+                except (asyncio.CancelledError, GeneratorExit):
+                    pass
+                # Same shielding reason as the cancel branch: ensure the
+                # log write actually completes before we unwind, even if
+                # we're inside a cancelled scope. The cancel branch may
+                # have already run _finalize and set log_written=True; the
+                # `if log_written: return` guard inside makes this call a
+                # cheap no-op in that case.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await _finalize()
+                    except Exception:
+                        pass
 
         return StreamingResponse(
             sse(),
