@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import router_cache
 from app.config import get_settings
 from app.deps import get_db, get_key_context
+from app.router_cache import usable_providers_from_db
 from packages.auth.encryption import encrypt_credential
 from packages.auth.types import KeyContext
 from packages.db.models.provider_key import ProviderKey
@@ -86,23 +87,41 @@ async def list_providers(
         )
     ).scalars().all()
 
-    db_providers = {r.provider for r in rows}
-    out: list[dict] = [
-        ProviderKeyOut(
-            provider=r.provider,
-            key_prefix=r.key_prefix,
-            is_enabled=r.is_enabled,
-            source="db",
-        ).model_dump()
-        for r in rows
-    ]
+    # The runtime resolver (`router_cache.build_deployments`) only honors
+    # a DB row when it's BOTH `is_enabled` AND its `encrypted_key` decrypts.
+    # `usable_providers_from_db` already encodes that contract — reuse it
+    # here so the listing's notion of "DB row authoritative" stays in
+    # lockstep with what actually serves traffic. Without this, a disabled
+    # row or one with corrupt ciphertext (e.g. after a
+    # CREDENTIAL_ENCRYPTION_KEY rotation) would suppress the env entry
+    # in the dashboard while the runtime quietly falls back to env —
+    # operators would see a "DB" source label but the env key is what's
+    # actually authenticating their requests.
+    usable_db = usable_providers_from_db(rows)
+
+    out: list[dict] = []
+    for r in rows:
+        # Render every non-deleted DB row so operators still see disabled /
+        # broken rows and can fix them. is_enabled flag tells the dashboard
+        # to render appropriately; the env-suppression check below is the
+        # part that depends on USABILITY, not just presence.
+        out.append(
+            ProviderKeyOut(
+                provider=r.provider,
+                key_prefix=r.key_prefix,
+                is_enabled=r.is_enabled,
+                source="db",
+            ).model_dump()
+        )
 
     # Surface env-configured keys the runtime is already using. DB takes
-    # precedence (matches the runtime resolver in router_cache.py:58
-    # `db_provider_keys.get(provider) or env_keys.get(provider)`), so
-    # we only add env entries for providers NOT already covered by a DB row.
+    # precedence ONLY when usable — matches the runtime resolver in
+    # `router_cache.py:build_deployments` which silently skips disabled or
+    # undecryptable rows and falls back to env. Suppressing env here based
+    # on a non-usable DB row would lie to the operator about which
+    # credential is actually authenticating their requests.
     for prov, raw_key in get_settings().env_provider_keys().items():
-        if prov in db_providers:
+        if prov in usable_db:
             continue
         out.append(
             ProviderKeyOut(

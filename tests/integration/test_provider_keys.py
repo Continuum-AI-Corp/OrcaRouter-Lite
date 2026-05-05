@@ -353,3 +353,91 @@ async def test_delete_unknown_provider_returns_404(authed_client):
     path doesn't apply here)."""
     r = await authed_client.delete("/v1/providers/totally-fake-provider")
     assert r.status_code == 404
+
+
+async def test_disabled_db_row_does_not_suppress_env_entry(
+    authed_client, tmp_sqlite_url, monkeypatch,
+):
+    """Codex-flagged: the runtime resolver (`router_cache.build_deployments`)
+    only honors a DB row when both `is_enabled=True` AND the ciphertext
+    decrypts. If a row is disabled (or corrupt after a
+    CREDENTIAL_ENCRYPTION_KEY rotation), runtime falls back to env.
+    The list endpoint MUST NOT suppress the env entry on the basis of a
+    non-usable DB row — otherwise the dashboard would label the source
+    as 'db' while the env key is what's actually authenticating requests."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-actually-active")
+    from app import config as cfg
+    cfg.get_settings.cache_clear()
+
+    # Plant a DISABLED DB row directly via ORM. PUT route always sets
+    # is_enabled=True, so we go around it.
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.auth.encryption import encrypt_credential
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=encrypt_credential("sk-db-disabled-shouldnt-be-used"),
+            key_prefix="sk-db-dis...used",
+            is_enabled=False,   # ← disabled, runtime will skip
+        ))
+        await s.commit()
+    await engine.dispose()
+
+    r = await authed_client.get("/v1/providers")
+    rows = [p for p in r.json()["providers"] if p["provider"] == "openai"]
+    sources = sorted(p["source"] for p in rows)
+
+    # The disabled DB row IS shown (operators need to see + fix it),
+    # AND the env entry is ALSO shown so the operator sees what's
+    # actually serving traffic.
+    assert "env" in sources, (
+        f"env entry must remain visible when DB row is unusable, got: {rows}"
+    )
+    db_row = next(p for p in rows if p["source"] == "db")
+    env_row = next(p for p in rows if p["source"] == "env")
+    assert db_row["is_enabled"] is False
+    assert env_row["is_enabled"] is True
+
+
+async def test_undecryptable_db_row_does_not_suppress_env_entry(
+    authed_client, tmp_sqlite_url, monkeypatch,
+):
+    """Same contract as above but for the post-key-rotation case: a row
+    whose ciphertext can't decrypt under the current
+    CREDENTIAL_ENCRYPTION_KEY. The runtime treats this as 'no DB key
+    here' and falls back to env; the list endpoint must do the same."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-actually-active")
+    from app import config as cfg
+    cfg.get_settings.cache_clear()
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        # Insert garbage bytes — won't decrypt under any AES-GCM key.
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=b"this-is-not-a-valid-aesgcm-ciphertext",
+            key_prefix="sk-broken...xxxx",
+            is_enabled=True,   # enabled, but decrypt will fail
+        ))
+        await s.commit()
+    await engine.dispose()
+
+    r = await authed_client.get("/v1/providers")
+    rows = [p for p in r.json()["providers"] if p["provider"] == "openai"]
+    sources = sorted(p["source"] for p in rows)
+
+    assert "env" in sources, (
+        f"env entry must remain visible when DB ciphertext is corrupt, got: {rows}"
+    )
