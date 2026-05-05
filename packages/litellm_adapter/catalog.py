@@ -13,6 +13,7 @@ of unrelated modules don't need it).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 # ── Provider mapping: litellm prefix → (our provider id, litellm prefix string) ──
 # Each entry maps a litellm provider key (the part before the `/` in the model
@@ -51,6 +52,30 @@ class CatalogModel:
     supports_json_mode: bool = False
     input_cost_per_token: float = 0.0
     output_cost_per_token: float = 0.0
+    # ISO-8601 (YYYY-MM-DD) sourced from litellm meta, or None when unknown.
+    # Surfaced for UI display; routing-time exclusion happens at load via
+    # `_is_obviously_dead` below, not by reading this field.
+    deprecation_date: str | None = None
+
+
+def _is_obviously_dead(meta: dict) -> bool:
+    """Return True when meta declares a deprecation_date that is today or earlier.
+
+    Filters out models that the upstream provider has already retired, per
+    LiteLLM's community-maintained metadata. We trust this only as a hint —
+    providers sometimes pull a model earlier than the published date, which
+    is why LiteLLM Router's runtime cooldown is the second line of defense.
+
+    Tolerates malformed values (placeholder strings like LiteLLM's `sample_spec`
+    entry) by treating them as "not dead".
+    """
+    dep = meta.get("deprecation_date", "")
+    if not isinstance(dep, str) or not dep:
+        return False
+    try:
+        return date.fromisoformat(dep) <= date.today()
+    except ValueError:
+        return False
 
 
 def _is_chat_model(meta: dict) -> bool:
@@ -85,6 +110,12 @@ def _build_catalog_from_litellm() -> list[CatalogModel]:
         provider_id, prefix = mapped
         if not _is_chat_model(meta) and _strip_prefix(raw_id) not in _FORCE_INCLUDE:
             continue
+        # Drop models the upstream provider has already retired per LiteLLM's
+        # metadata. Models that LiteLLM hasn't marked yet but the provider has
+        # killed (e.g. early-deprecation cases) are caught at runtime by the
+        # Router's cooldown after the first 404.
+        if _is_obviously_dead(meta):
+            continue
 
         canonical = _strip_prefix(raw_id)
         # Some entries duplicate (e.g. "openai/gpt-4o" and "gpt-4o"); first wins.
@@ -92,6 +123,7 @@ def _build_catalog_from_litellm() -> list[CatalogModel]:
             continue
         seen.add(canonical)
 
+        dep_raw = meta.get("deprecation_date")
         out.append(
             CatalogModel(
                 id=canonical,
@@ -108,12 +140,15 @@ def _build_catalog_from_litellm() -> list[CatalogModel]:
                 ),
                 input_cost_per_token=float(meta.get("input_cost_per_token") or 0.0),
                 output_cost_per_token=float(meta.get("output_cost_per_token") or 0.0),
+                deprecation_date=dep_raw if isinstance(dep_raw, str) and dep_raw else None,
             )
         )
 
     # Make sure a few flagship aliases are always present even if the litellm
     # version pins a different canonical ID. This keeps demos / examples stable
-    # across litellm upgrades.
+    # across litellm upgrades. Each alias still respects deprecation: if the
+    # underlying model is past its deprecation_date in litellm's metadata, the
+    # alias is skipped here as well.
     flagship = {
         "claude-3-5-sonnet-latest": (
             "anthropic", "anthropic/", True, True, False,
@@ -126,16 +161,49 @@ def _build_catalog_from_litellm() -> list[CatalogModel]:
     }
     existing_ids = {m.id for m in out}
     for fid, (prov, prefix, tools, vision, json_mode, in_c, out_c) in flagship.items():
-        if fid not in existing_ids:
-            out.append(CatalogModel(
-                id=fid, provider=prov, litellm_prefix=prefix,
-                supports_tools=tools, supports_vision=vision,
-                supports_json_mode=json_mode,
-                input_cost_per_token=in_c, output_cost_per_token=out_c,
-            ))
+        if fid in existing_ids:
+            continue
+        # Inherit deprecation_date from any model_cost entry whose stripped id
+        # matches this alias. If any of them is dead, treat the alias as dead.
+        flagship_dep = _flagship_deprecation(model_cost, fid)
+        if _is_obviously_dead({"deprecation_date": flagship_dep}):
+            continue
+        out.append(CatalogModel(
+            id=fid, provider=prov, litellm_prefix=prefix,
+            supports_tools=tools, supports_vision=vision,
+            supports_json_mode=json_mode,
+            input_cost_per_token=in_c, output_cost_per_token=out_c,
+            deprecation_date=flagship_dep,
+        ))
 
     out.sort(key=lambda m: (m.provider, m.id))
     return out
+
+
+def _flagship_deprecation(model_cost: dict, fid: str) -> str | None:
+    """Find the earliest deprecation_date among model_cost entries matching `fid`.
+
+    A flagship alias like `claude-3-5-sonnet-latest` is a virtual name we add on
+    top of whatever the provider currently calls the latest version. If the
+    underlying versions have all been retired, the alias should be retired too.
+    Returns the earliest ISO date string found, or None if no match has one.
+    """
+    earliest: str | None = None
+    for raw, meta in model_cost.items():
+        if not isinstance(meta, dict):
+            continue
+        if _strip_prefix(raw) != fid:
+            continue
+        dep = meta.get("deprecation_date")
+        if not isinstance(dep, str) or not dep:
+            continue
+        try:
+            date.fromisoformat(dep)
+        except ValueError:
+            continue
+        if earliest is None or dep < earliest:
+            earliest = dep
+    return earliest
 
 
 # Tiny fallback used when litellm isn't importable.

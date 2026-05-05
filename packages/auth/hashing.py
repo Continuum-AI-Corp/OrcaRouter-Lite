@@ -1,8 +1,10 @@
 """API key generation, hashing, password utilities.
 
-Vendored from main repo, simplified — no Settings dependency, pepper read
-directly from env. Lite is single-tenant so the brute-force surface is
-the operator's own machine.
+Vendored from main repo, simplified. Reads API_KEY_PEPPER from the loaded
+Settings (which honors `.env`) with `os.environ` as a fallback for tests.
+Lite is single-tenant so the brute-force surface is the operator's own
+machine, but the pepper still matters for offline attacks against a stolen
+SQLite file.
 """
 
 import hashlib
@@ -12,7 +14,20 @@ import secrets
 
 
 def _get_api_key_pepper() -> bytes | None:
-    pepper = os.environ.get("API_KEY_PEPPER", "")
+    # Prefer Settings (which loads .env) over raw os.environ. pydantic-settings
+    # does NOT propagate .env values into os.environ, so a user who follows
+    # the README and sets API_KEY_PEPPER in .env would otherwise silently get
+    # un-peppered (plain SHA-256) hashes — a downgrade from the documented
+    # security posture.
+    pepper = ""
+    try:
+        from app.config import get_settings
+        pepper = get_settings().api_key_pepper or ""
+    except Exception:
+        # Settings may not be importable in some isolated test contexts.
+        pass
+    if not pepper:
+        pepper = os.environ.get("API_KEY_PEPPER", "")
     if not pepper or len(pepper) < 32:
         return None
     return pepper.encode("utf-8")

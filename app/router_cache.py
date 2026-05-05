@@ -187,6 +187,13 @@ async def get_router(session) -> object:
             strategy=strategy,
             preferred_models=preferred_models,
             litellm_routing_strategy=litellm_routing_strategy(strategy),
+            # Wire LiteLLM Router built-ins from settings so a deployment
+            # that 404s once stays cooled down (no immediate re-pick), and
+            # the cascade engine has policy for which errors fail fast.
+            cooldown_time=float(settings.router_cooldown_seconds),
+            allowed_fails=settings.router_allowed_fails,
+            enable_pre_call_checks=settings.router_pre_call_checks,
+            num_retries=settings.router_num_retries_default,
         )
         return _cached_client
 

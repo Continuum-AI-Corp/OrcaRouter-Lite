@@ -66,6 +66,34 @@ class Settings(BaseSettings):
     # ── Body limit (for image / file attachments) ──
     max_body_bytes: int = 100 * 1024 * 1024
 
+    # ── Router behavior (LiteLLM Router cooldown + cascade) ──
+    # How long a deployment stays cooled-down after a failure. LiteLLM's
+    # default is 1 second, which is effectively no cooldown — a dead model
+    # gets re-picked on the very next request. Production default is 1h.
+    # Local dev / CI may want lower (network blips shouldn't lock a model
+    # out for an hour); tests should set 0 to disable.
+    router_cooldown_seconds: int = 3600
+    # Global default for failures-before-cooldown across all error types,
+    # used by LiteLLM Router as the fallback when AllowedFailsPolicy returns
+    # a falsy value. We set 0 so the policy's "fail fast on hard errors"
+    # values (also 0) actually take effect — LiteLLM's internal
+    # `allowed_fails = policy_value or router.allowed_fails` short-circuits
+    # any 0 in the policy back to this default. Per-error-type leniency for
+    # transients (429 / 5xx / timeouts) still applies via non-zero policy
+    # values, set in client.py:_build_allowed_fails_policy().
+    router_allowed_fails: int = 0
+    # When True, LiteLLM filters deployments whose context window can't fit
+    # the request before dispatching. Cheap pre-flight that prevents wasted
+    # round-trips on prompts that would 422 anyway.
+    router_pre_call_checks: bool = True
+    # In-deployment retry count. The default applies to explicitly-pinned
+    # model requests (where the user said "use this exact model, retry it").
+    # The auto value is used when the request was model="auto" so cascade
+    # to the next fallback candidate happens immediately instead of after
+    # 2x in-deployment retries (which would add ~30-90s of perceived latency).
+    router_num_retries_default: int = 2
+    router_num_retries_auto: int = 0
+
     def env_provider_keys(self) -> dict[str, str]:
         """Return the configured ENV-sourced provider keys as {provider: key}."""
         out: dict[str, str] = {}

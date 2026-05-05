@@ -1,4 +1,4 @@
-"""model="auto" — pick the cheapest model that meets capability requirements.
+"""model="auto" — pick top-N models that meet capability requirements.
 
 The contract:
   1. Inspect the request to figure out required capabilities (tools, vision,
@@ -7,10 +7,15 @@ The contract:
   2. From the catalog, filter to models that advertise every required
      capability.
   3. From the deployable subset (configured providers + hosted upstream),
-     pick the cheapest by blended (input + output) per-token cost.
-  4. Return that model id, which the chat handler then sends to the router.
+     return the top-N by blended (input + output) per-token cost — the first
+     element is the primary, the rest are intended as LiteLLM Router
+     fallbacks for automatic cascade on 404 / cooldown.
+  4. The chat handler sends candidates[0] as the model and candidates[1:]
+     as fallbacks via `acompletion(fallbacks=...)`.
 
-This is the differentiated feature that LiteLLM's Router does not provide.
+This is the differentiated feature that LiteLLM's Router does not provide
+on its own — Router does the cascade, but it needs to know which models to
+fall back to. choose_auto_model produces that ordered list.
 """
 
 from __future__ import annotations
@@ -84,7 +89,9 @@ def test_choose_model_picks_cheapest_meeting_no_requirements():
     ]
     deployable = {"cheap", "medium", "expensive"}
     chosen = choose_auto_model(needs=set(), deployable=deployable, candidates=candidates)
-    assert chosen == "cheap"
+    # Cheapest first, then the rest in cost order — the full ordered list
+    # becomes the primary + fallback chain.
+    assert chosen == ["cheap", "medium", "expensive"]
 
 
 def test_choose_model_excludes_non_deployable():
@@ -98,7 +105,7 @@ def test_choose_model_excludes_non_deployable():
     ]
     deployable = {"cheap-and-keyed"}  # only this provider has a key
     chosen = choose_auto_model(needs=set(), deployable=deployable, candidates=candidates)
-    assert chosen == "cheap-and-keyed"
+    assert chosen == ["cheap-and-keyed"]
 
 
 def test_choose_model_filters_by_capability():
@@ -115,10 +122,13 @@ def test_choose_model_filters_by_capability():
     chosen = choose_auto_model(
         needs={"vision"}, deployable=deployable, candidates=candidates
     )
-    assert chosen == "vision-capable"
+    # Only one capable model survives the capability filter.
+    assert chosen == ["vision-capable"]
 
 
-def test_choose_model_returns_none_when_no_candidate_satisfies():
+def test_choose_model_returns_empty_when_no_candidate_satisfies():
+    """Empty list (not None) signals "no available candidate" so callers can
+    treat the return type uniformly without isinstance checks."""
     from app.auto_routing import choose_auto_model
     from packages.litellm_adapter.catalog import CatalogModel
 
@@ -128,7 +138,7 @@ def test_choose_model_returns_none_when_no_candidate_satisfies():
     chosen = choose_auto_model(
         needs={"vision"}, deployable={"text-only"}, candidates=candidates
     )
-    assert chosen is None
+    assert chosen == []
 
 
 def test_choose_model_uses_blended_input_plus_output_cost():
@@ -145,7 +155,8 @@ def test_choose_model_uses_blended_input_plus_output_cost():
     chosen = choose_auto_model(
         needs=set(), deployable={"a", "b"}, candidates=candidates
     )
-    assert chosen == "a"
+    # `a` wins the blended-cost comparison (output dominates).
+    assert chosen == ["a", "b"]
 
 
 # ── strategy-aware selection ────────────────────────────────────────────
@@ -166,7 +177,8 @@ def test_choose_model_quality_strategy_picks_most_expensive():
         candidates=candidates,
         strategy="quality",
     )
-    assert chosen == "expensive"
+    # `quality` reverses the order — most expensive first, then descending.
+    assert chosen == ["expensive", "medium", "cheap"]
 
 
 def test_choose_model_cheapest_strategy_matches_default():
@@ -183,7 +195,7 @@ def test_choose_model_cheapest_strategy_matches_default():
         candidates=candidates,
         strategy="cheapest",
     )
-    assert chosen == "cheap"
+    assert chosen == ["cheap", "expensive"]
 
 
 def test_choose_model_preferred_models_narrows_eligible_set():
@@ -203,7 +215,8 @@ def test_choose_model_preferred_models_narrows_eligible_set():
         strategy="cheapest",
         preferred_models=["preferred-mid", "preferred-big"],
     )
-    assert chosen == "preferred-mid"  # cheapest within the preferred set
+    # Eligible set is restricted to the preferred list, then sorted cheapest-first.
+    assert chosen == ["preferred-mid", "preferred-big"]
 
 
 def test_choose_model_preferred_models_falls_back_when_none_eligible():
@@ -220,7 +233,7 @@ def test_choose_model_preferred_models_falls_back_when_none_eligible():
         candidates=candidates,
         preferred_models=["does-not-exist", "neither-does-this"],
     )
-    assert chosen == "cheap"
+    assert chosen == ["cheap"]
 
 
 # ── litellm strategy mapping ────────────────────────────────────────────
@@ -241,3 +254,143 @@ def test_litellm_routing_strategy_returns_none_for_unknown_or_empty():
     assert litellm_routing_strategy(None) is None
     assert litellm_routing_strategy("") is None
     assert litellm_routing_strategy("not-a-real-strategy") is None
+
+
+# ── top-N truncation ────────────────────────────────────────────────────
+
+def test_choose_model_caps_results_at_top_n():
+    """Caller can opt into a smaller fallback chain to keep latency tight."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel(f"m{i}", "openai", "openai/", True, False, False,
+                     1e-7 * (i + 1), 4e-7 * (i + 1))
+        for i in range(10)
+    ]
+    deployable = {f"m{i}" for i in range(10)}
+    chosen = choose_auto_model(
+        needs=set(), deployable=deployable, candidates=candidates, top_n=3
+    )
+    # Cheapest 3 in cost order; the rest are dropped.
+    assert chosen == ["m0", "m1", "m2"]
+
+
+def test_choose_model_default_top_n_is_5():
+    """Default cap of 5 keeps the LiteLLM fallbacks list at a reasonable length."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel(f"m{i}", "openai", "openai/", True, False, False,
+                     1e-7 * (i + 1), 4e-7 * (i + 1))
+        for i in range(10)
+    ]
+    chosen = choose_auto_model(
+        needs=set(), deployable={f"m{i}" for i in range(10)}, candidates=candidates
+    )
+    assert len(chosen) == 5
+
+
+def test_allowlist_filters_before_top_n_truncation():
+    """An allowed model that ranks beyond top_n must NOT be falsely dropped.
+
+    The pre-fix code applied allowlist after the top-N truncation, so an
+    allow-listed model at position 6 would get filtered out by the top_n=5
+    cut, and the caller would see an empty result and falsely report 403.
+    """
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    # 10 models, allowed model is the *last* (most expensive) one.
+    candidates = [
+        CatalogModel(f"m{i}", "openai", "openai/", True, False, False,
+                     1e-7 * (i + 1), 4e-7 * (i + 1))
+        for i in range(10)
+    ]
+    deployable = {f"m{i}" for i in range(10)}
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable=deployable,
+        candidates=candidates,
+        allowlist=["m9"],   # only the rank-10 (most expensive) model is allowed
+    )
+    assert chosen == ["m9"], (
+        "allowed model ranked beyond top_n must survive — "
+        "filter must run before truncation"
+    )
+
+
+def test_allowlist_with_intersection_returns_only_allowed():
+    """When multiple allowed models exist, return them in cost order, capped at top_n."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("cheap", "openai", "openai/", True, False, False, 1e-8, 1e-8),
+        CatalogModel("medium", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+        CatalogModel("expensive", "openai", "openai/", True, False, False, 1e-5, 3e-5),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"cheap", "medium", "expensive"},
+        candidates=candidates,
+        allowlist=["medium", "expensive"],
+    )
+    # cheap is filtered out by allowlist; medium wins on cost.
+    assert chosen == ["medium", "expensive"]
+
+
+def test_allowlist_with_no_intersection_returns_empty():
+    """Empty result when no eligible model is in the allowlist — caller decides 403/422."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("cheap", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"cheap"},
+        candidates=candidates,
+        allowlist=["model-not-in-deployable"],
+    )
+    assert chosen == []
+
+
+def test_explicit_empty_allowlist_denies_all():
+    """An empty list is an explicit "allow nothing" signal — used by operators
+    to fully lock down a key. Falsy-check (`if allowlist`) would silently
+    treat it as "no restriction" and route normally, inverting intent."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("cheap", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"cheap"},
+        candidates=candidates,
+        allowlist=[],   # explicit deny-all
+    )
+    assert chosen == [], "empty allowlist must deny everything"
+
+
+def test_none_allowlist_means_no_restriction():
+    """Distinct from empty list: allowlist=None means "no allowlist set" — all
+    eligible models pass through. The is-not-None check in the implementation
+    relies on this distinction."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CatalogModel
+
+    candidates = [
+        CatalogModel("cheap", "openai", "openai/", True, False, False, 1e-7, 4e-7),
+    ]
+    chosen = choose_auto_model(
+        needs=set(),
+        deployable={"cheap"},
+        candidates=candidates,
+        allowlist=None,
+    )
+    assert chosen == ["cheap"]

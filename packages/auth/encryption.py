@@ -1,9 +1,14 @@
 """Provider credential encryption — AES-256-GCM.
 
-Vendored from main repo, simplified — reads CREDENTIAL_ENCRYPTION_KEY directly
-from env. If unset, derives a deterministic dev key from a fixed seed so that
-local development doesn't require any setup. In production, set a real
-64-char hex string.
+Vendored from main repo, simplified. Reads CREDENTIAL_ENCRYPTION_KEY from the
+loaded Settings (which honors `.env`) with `os.environ` as a fallback for
+test fixtures that set the env var directly.
+
+If neither yields a key, derives a deterministic dev key from a fixed seed
+so local development doesn't require any setup. **In production, set a real
+64-char hex string** — the dev fallback is publicly known via the source
+code, so anyone with read access to the SQLite file could decrypt provider
+keys with it.
 """
 
 from __future__ import annotations
@@ -15,7 +20,21 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 def _get_encryption_key() -> bytes:
-    key_hex = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
+    # Prefer Settings (which loads .env) over raw os.environ, because
+    # pydantic-settings does NOT propagate .env values into os.environ.
+    # Without this lookup, a user who follows the README and writes
+    # CREDENTIAL_ENCRYPTION_KEY=... in .env would silently get the dev
+    # fallback constant — the worst possible "secure by default" failure.
+    key_hex = ""
+    try:
+        from app.config import get_settings
+        key_hex = get_settings().credential_encryption_key or ""
+    except Exception:
+        # Settings may not be importable in some isolated test contexts;
+        # fall through to env-only behavior.
+        pass
+    if not key_hex:
+        key_hex = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
     if key_hex:
         try:
             raw = bytes.fromhex(key_hex)

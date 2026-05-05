@@ -1,17 +1,18 @@
-"""`model="auto"` — pick a catalog model that meets the request's capability
-requirements AND has a deployable provider configured. Selection rule depends
+"""`model="auto"` — pick catalog models that meet the request's capability
+requirements AND have a deployable provider configured. Selection rule depends
 on the active routing strategy.
 
 Two pure functions:
   - `required_capabilities(body)`  → set of {"tools", "vision", "json_mode"}
   - `choose_auto_model(needs, deployable, candidates, strategy, preferred_models)`
-    → model_id | None
+    → list of model_ids ordered by strategy (best first; empty if none)
 
 The chat handler resolves `model="auto"` by:
   1. computing needs = required_capabilities(request_body)
   2. computing deployable = {dep.model_name for dep in active_deployments}
-  3. calling choose_auto_model(...)
-  4. swapping the resolved id into the request before calling the router
+  3. calling choose_auto_model(...) to get top-N candidates
+  4. using candidates[0] as the primary model and candidates[1:] as Router
+     fallbacks so a 404/cooldown on the primary cascades automatically.
 
 Adapted from `apps/api/routes/chat.py:_required_capabilities` /
 `_score_model_for_auto` in the SaaS edition.
@@ -112,8 +113,15 @@ def choose_auto_model(
     candidates: Iterable[CatalogModel],
     strategy: str | None = None,
     preferred_models: list[str] | None = None,
-) -> str | None:
-    """Return a deployable model matching all `needs`, or None.
+    allowlist: list[str] | set[str] | None = None,
+    top_n: int = 5,
+) -> list[str]:
+    """Return up to `top_n` deployable models matching all `needs`, best first.
+
+    Empty list means no candidate satisfies the request. The first element is
+    the primary; subsequent elements are intended as LiteLLM Router fallbacks
+    so a 404 / cooldown on the primary cascades to the next-best candidate
+    without the user seeing an error.
 
     Selection rule by strategy:
       - `quality`: highest blended cost (proxy for "biggest/most-capable")
@@ -125,6 +133,11 @@ def choose_auto_model(
     If `preferred_models` is non-empty AND at least one entry is deployable
     + capability-matching, the eligible set is restricted to that list. This
     lets users pin a quality tier without giving up auto resolution.
+
+    If `allowlist` is non-empty, the eligible set is intersected with it
+    BEFORE the top-N cut so an allowed model that would otherwise rank 6+
+    isn't accidentally dropped. Empty intersection → empty result, and the
+    caller is responsible for surfacing the right HTTP error to the user.
 
     Excludes models with zero blended cost — those are unpriced entries in
     litellm's catalogue, not actually free, and routing to them would skew
@@ -141,10 +154,19 @@ def choose_auto_model(
         narrowed = [m for m in eligible if m.id in preferred_set]
         if narrowed:
             eligible = narrowed
+    if allowlist is not None:
+        # Apply the key's allowlist before sorting + truncation. Without
+        # this, an allowed model ranked beyond top_n would be dropped and
+        # the caller would falsely report no allowed match.
+        # `is not None` (not truthiness): an explicit empty allowlist is
+        # a "deny everything" signal from the operator; falsy check would
+        # silently invert that into "no restriction" — a security hole.
+        allow_set = set(allowlist)
+        eligible = [m for m in eligible if m.id in allow_set]
     if not eligible:
-        return None
+        return []
     if strategy == "quality":
         eligible.sort(key=lambda m: (-_blended_cost(m), m.id))
     else:
         eligible.sort(key=lambda m: (_blended_cost(m), m.id))
-    return eligible[0].id
+    return [m.id for m in eligible[:top_n]]
