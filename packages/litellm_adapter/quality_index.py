@@ -238,6 +238,15 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
     # Same last-segment scan with dotted alternates — covers namespaced
     # catalog ids that also use dotted versions (eg unlikely but possible
     # `Qwen/Qwen3.5-...`).
+    #
+    # Collect ALL hits and pick `sorted(...)[0]` rather than `return cid`
+    # mid-iteration. `catalog_ids` is a `set`; Python set iteration order
+    # is hash-seeded and non-deterministic across processes (PYTHONHASHSEED
+    # randomizes by default). Without sorting, two providers exposing
+    # `.../qwen3.5-*` could route AA metrics to a different catalog id
+    # on every restart, making routing decisions and tests flaky.
+    dotted_exact: list[str] = []
+    dotted_family: list[str] = []
     for alt in _dotted_version_variants(bare):
         alt_lower = alt.lower()
         alt_family_lower = alt_lower + "-"
@@ -245,8 +254,14 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
             if "/" not in cid:
                 continue
             last = cid.split("/")[-1].lower()
-            if last == alt_lower or last.startswith(alt_family_lower):
-                return cid
+            if last == alt_lower:
+                dotted_exact.append(cid)
+            elif last.startswith(alt_family_lower):
+                dotted_family.append(cid)
+    if dotted_exact:
+        return sorted(dotted_exact)[0]
+    if dotted_family:
+        return sorted(dotted_family)[0]
     return None
 
 

@@ -186,6 +186,53 @@ def test_match_catalog_id_last_segment_does_not_override_exact_match():
     assert _match_catalog_id("mistral-large", catalog) == "mistral-large"
 
 
+def test_match_catalog_id_dotted_last_segment_picks_deterministically():
+    """Codex review of PR #28 caught a non-determinism bug: when multiple
+    namespaced models share a dotted last-segment family (eg two providers
+    both exposing `.../qwen3.5-...` variants), the matcher picked one via
+    raw `set` iteration → process-hash-order dependent → different runs
+    routed AA metrics to different catalog ids → flaky tests + unstable
+    routing across restarts. Fix collects all hits and uses sorted()[0]
+    same as the earlier match passes.
+
+    This test plants four equally-valid namespaced family hits in a set
+    and asserts the matcher picks the lexicographic-first across runs.
+    Without the sort, set-iteration order would surface here."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {
+        "providerB/qwen3.5-235b-instruct",
+        "providerA/qwen3.5-32b-instruct",
+        "providerC/qwen3.5-72b-instruct",
+        "accounts/fireworks/models/qwen3.5-distill",
+    }
+    # Run several times; the result must be stable within a process AND
+    # match the explicit sort order. (Cross-process determinism is what
+    # the underlying fix is about — sorted() guarantees both.)
+    expected = sorted(catalog)[0]
+    for _ in range(5):
+        assert _match_catalog_id("qwen3-5", catalog) == expected, (
+            "dotted last-segment fallback must pick sorted-first hit, "
+            "not whatever set iteration yields this run"
+        )
+
+
+def test_match_catalog_id_dotted_last_segment_exact_beats_family():
+    """Within the dotted-last-segment fallback, an exact-segment match
+    must take precedence over a family-segment match (mirrors the
+    bare-side ordering — exact_segment_hits checked before
+    family_segment_hits)."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {
+        # Family-segment-only (would match if we didn't prefer exact)
+        "ns/qwen3.5-instruct-72b",
+        # Exact dotted last-segment match
+        "other-ns/qwen3.5",
+    }
+    assert _match_catalog_id("qwen3-5", catalog) == "other-ns/qwen3.5"
+
+
 # ── three-axis aggregation: max quality, max TPS, min TTFT ─────────────
 
 
