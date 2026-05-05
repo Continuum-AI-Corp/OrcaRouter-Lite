@@ -115,6 +115,113 @@ async def test_acompletion_non_stream_returns_dict_with_orca_meta(fake_router_wi
     assert result["_orca_meta"].get("provider") == "openai"
 
 
+async def test_acompletion_propagates_litellm_hidden_params_into_orca_meta(monkeypatch):
+    """LiteLLM stashes per-call cost on `_hidden_params.response_cost` and
+    the actual provider on `_hidden_params.custom_llm_provider`. The
+    adapter MUST extract these BEFORE `model_dump()` strips them, then
+    surface them on _orca_meta. Otherwise downstream cost tracking falls
+    back to the (much less accurate) catalog calculation for every request.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import litellm
+
+    from packages.litellm_adapter.client import OrcaLiteLLMClient
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    class _ResponseModel:
+        def __init__(self):
+            self.model = "claude-3-5-sonnet-20241022"
+            # LiteLLM populates this in `_response_cost_calculator` —
+            # value is USD (float).
+            self._hidden_params = {
+                "response_cost": 0.000_750,
+                "custom_llm_provider": "anthropic",
+                "litellm_call_id": "test-id",
+            }
+
+        def model_dump(self):
+            # Pydantic strips _-prefixed attrs by default. This mirrors
+            # what real LiteLLM ModelResponse.model_dump() does.
+            return {
+                "model": self.model,
+                "choices": [],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+            }
+
+    fake_router = MagicMock()
+
+    async def _acompletion(**kwargs):
+        return _ResponseModel()
+
+    fake_router.acompletion = AsyncMock(side_effect=_acompletion)
+    monkeypatch.setattr(litellm, "Router", lambda **_: fake_router)
+
+    client = OrcaLiteLLMClient(
+        deployments=[
+            ProviderDeployment(
+                model_name="claude-3-5-sonnet-20241022",
+                litellm_model="anthropic/claude-3-5-sonnet-20241022",
+                api_key="sk-test", provider="anthropic",
+            )
+        ],
+        strategy="balanced",
+    )
+    result = await client.acompletion(
+        model="claude-3-5-sonnet-20241022",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    meta = result.get("_orca_meta") or {}
+    assert meta.get("cost_usd") == 0.000_750, (
+        "_hidden_params.response_cost must survive into _orca_meta — "
+        "downstream cost calculation reads it from there"
+    )
+    assert meta.get("provider") == "anthropic", (
+        "_hidden_params.custom_llm_provider should win over the "
+        "deployment-loop fallback (more reliable on aliased model names)"
+    )
+
+
+async def test_acompletion_orca_meta_cost_none_when_litellm_omits_it(monkeypatch):
+    """When the response object has no `_hidden_params` (very old LiteLLM,
+    custom upstream wrappers), `cost_usd` must be None on the meta — that's
+    the signal for downstream code to fall back to catalog pricing."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import litellm
+
+    from packages.litellm_adapter.client import OrcaLiteLLMClient
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    class _BareResponse:
+        model = "gpt-4o-mini"
+        # Deliberately no _hidden_params.
+
+        def model_dump(self):
+            return {"model": self.model, "choices": [], "usage": {}}
+
+    fake_router = MagicMock()
+    fake_router.acompletion = AsyncMock(side_effect=lambda **_: _BareResponse())
+    monkeypatch.setattr(litellm, "Router", lambda **_: fake_router)
+
+    client = OrcaLiteLLMClient(
+        deployments=[
+            ProviderDeployment(
+                model_name="gpt-4o-mini", litellm_model="openai/gpt-4o-mini",
+                api_key="sk-test", provider="openai",
+            )
+        ],
+        strategy="balanced",
+    )
+    result = await client.acompletion(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert result["_orca_meta"]["cost_usd"] is None
+    # Provider attribution falls back to deployment-loop lookup.
+    assert result["_orca_meta"]["provider"] == "openai"
+
+
 async def test_acompletion_stream_raises_no_providers_when_router_is_none():
     """No-key configurations short-circuit before LiteLLM gets called.
     Stream requests must hit the same guard as non-stream ones."""

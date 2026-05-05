@@ -82,11 +82,18 @@ class Settings(BaseSettings):
 
     # ── Router behavior (LiteLLM Router cooldown + cascade) ──
     # How long a deployment stays cooled-down after a failure. LiteLLM's
-    # default is 1 second, which is effectively no cooldown — a dead model
-    # gets re-picked on the very next request. Production default is 1h.
-    # Local dev / CI may want lower (network blips shouldn't lock a model
-    # out for an hour); tests should set 0 to disable.
-    router_cooldown_seconds: int = 3600
+    # own default is 1 second (effectively no cooldown — a dead model
+    # gets re-picked on the very next request).
+    #
+    # Our default is 60s — a developer-friendly middle ground:
+    #   - long enough that a genuinely dead model isn't hammered every
+    #     request while you debug
+    #   - short enough that fixing your API key + waiting a minute beats
+    #     restarting the process to clear in-memory cooldowns
+    # Production deployments under sustained traffic should set this to
+    # 600-3600 in `.env` to avoid burning quota on a known-dead model.
+    # Tests should set 0 to disable cooldown entirely.
+    router_cooldown_seconds: int = 60
     # Global default for failures-before-cooldown across all error types,
     # used by LiteLLM Router as the fallback when AllowedFailsPolicy returns
     # a falsy value. We set 0 so the policy's "fail fast on hard errors"

@@ -37,10 +37,19 @@ def _build_allowed_fails_policy():
     except Exception:
         return None
     return AllowedFailsPolicy(
-        # 4xx including 404 / model_not_found: deployment is genuinely
-        # broken. Cool down on first failure (requires router default 0).
-        BadRequestErrorAllowedFails=0,
-        # 401: probably a wrong key. Don't keep hammering it.
+        # 4xx is a mixed bucket — LiteLLM lumps these together with no way
+        # to split them in AllowedFailsPolicy:
+        #   - genuine deployment death:   model 404 / deprecated
+        #   - client-side request error:  prompt too long, JSON malformed,
+        #                                 unsupported parameter, model typo
+        # The previous "0 = cool down on first failure" punished a single
+        # client typo with a process-wide deployment freeze — actively
+        # hostile during dev. 10 means a user can typo / oversize-prompt
+        # their way through plenty of mistakes; if the deployment is
+        # actually dead, the 11th failure still cools it within seconds.
+        BadRequestErrorAllowedFails=10,
+        # 401: API key is genuinely wrong / expired. No client-side
+        # confusion possible — really cool down immediately.
         AuthenticationErrorAllowedFails=0,
         # 429: transient rate limit. Tolerate up to 3 in-window before cooling.
         RateLimitErrorAllowedFails=3,
@@ -193,16 +202,36 @@ class OrcaLiteLLMClient:
             return resp
 
         latency_ms = int((time.perf_counter() - started) * 1000)
+        # LiteLLM stashes per-call diagnostics on `_hidden_params` BEFORE we
+        # serialize. Pull what we need out first, because `model_dump()` drops
+        # private-prefixed attrs and we lose them otherwise.
+        #   - response_cost: USD cost LiteLLM computed at the moment it knew
+        #     the resolved provider, including cache_creation/cache_read
+        #     multipliers and reasoning-token pricing. Authoritative.
+        #   - custom_llm_provider: the provider LiteLLM actually routed to
+        #     ("openai", "anthropic", "gemini", ...). Beats our own
+        #     deployment-loop matching, which can mis-attribute when LiteLLM
+        #     rewrites the model name to a dated alias mid-cascade.
+        hidden = getattr(resp, "_hidden_params", {}) or {}
+        litellm_cost_usd = hidden.get("response_cost")
+        litellm_provider = hidden.get("custom_llm_provider")
+
         # Convert litellm's ModelResponse to a plain dict + attach orca metadata.
         out = resp.model_dump() if hasattr(resp, "model_dump") else dict(resp)
-        # Look up which deployment served the request via the resolved model name.
-        provider = "unknown"
-        for d in self._deployments:
-            if d.litellm_model == out.get("model") or d.model_name == out.get("model"):
-                provider = d.provider
-                break
+
+        # Provider attribution: LiteLLM's own field wins. Fall back to a
+        # deployment-loop lookup only when LiteLLM didn't supply one (very
+        # old LiteLLM versions; defensive).
+        provider = litellm_provider or "unknown"
+        if not litellm_provider:
+            for d in self._deployments:
+                if d.litellm_model == out.get("model") or d.model_name == out.get("model"):
+                    provider = d.provider
+                    break
+
         out["_orca_meta"] = {
             "provider": provider,
             "latency_ms": latency_ms,
+            "cost_usd": litellm_cost_usd,
         }
         return out

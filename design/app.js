@@ -93,11 +93,18 @@ const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const fmtUsd = (mc) => {
+  // Single-tenant dev workloads: a single chat completion can cost
+  // ~$0.000006 (6 microcents). Default $0.00 rendering hides that
+  // entirely until the operator has run hundreds of requests, which
+  // makes the dashboard look broken on day 1. Lean precise on the
+  // small end — a developer reading $0.000148 understands it; a
+  // developer reading $0.00 thinks the meter is busted.
   const usd = (mc || 0) / 1_000_000;
   if (usd === 0) return "$0";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1)    return `$${usd.toFixed(3)}`;
-  if (usd < 100)  return `$${usd.toFixed(2)}`;
+  if (usd < 0.001) return `$${usd.toFixed(6)}`;
+  if (usd < 0.01)  return `$${usd.toFixed(5)}`;
+  if (usd < 1)     return `$${usd.toFixed(3)}`;
+  if (usd < 100)   return `$${usd.toFixed(2)}`;
   return `$${Math.round(usd).toLocaleString()}`;
 };
 const fmtNum = (n) => (n || 0).toLocaleString();
