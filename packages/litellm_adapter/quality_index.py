@@ -142,6 +142,29 @@ def _normalize_aa_id(aa_name: str) -> str:
     return s
 
 
+_DIGIT_DASH_DIGIT_RE = re.compile(r"(\d)-(\d)")
+
+
+def _dotted_version_variants(bare: str) -> list[str]:
+    """Generate alternates that put a dot back at any digit-dash-digit
+    position. Handles litellm's inconsistent OpenAI versioning where
+    some entries are stored with dots (`gpt-5.5`, `gpt-5.1`) but our
+    normalizer's blanket `replace(".", "-")` produces `gpt-5-5`.
+
+    Example: `gpt-5-5-mini` → `["gpt-5.5-mini"]`
+             `gpt-5-1-2025-11-13` → `["gpt-5.1-2025-11-13",
+                                      "gpt-5-1-2025.11-13",  ...]`
+
+    Cheap to compute (typically 0-2 candidates) and only tried after
+    exact + bare lookup fails, so the happy path is unaffected.
+    """
+    out: list[str] = []
+    for m in _DIGIT_DASH_DIGIT_RE.finditer(bare):
+        idx = m.start() + 1  # position of the dash
+        out.append(bare[:idx] + "." + bare[idx + 1:])
+    return out
+
+
 def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
     """Find a LiteLLM catalog id that matches a normalized AA name.
 
@@ -149,7 +172,12 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
       1. Exact match
       2. Match with provider prefix stripped (the catalog already
          strips prefixes at load, but be defensive)
-      3. Family match: any catalog id that starts with `normalized + "-"`
+      3. Dotted-version match: try restoring `.` at any digit-dash-digit
+         position. Litellm catalog stores `gpt-5.5` with the dot intact
+         while our normalizer produces `gpt-5-5` from AA's "GPT-5.5",
+         silently dropping AA scores for the entire OpenAI 5.x family
+         without this fallback.
+      4. Family match: any catalog id that starts with `normalized + "-"`
          (covers the case where AA gives a base name and the catalog
          has dated/versioned variants like "claude-opus-4-7-20260416")
 
@@ -160,12 +188,26 @@ def _match_catalog_id(normalized: str, catalog_ids: set[str]) -> str | None:
     bare = normalized.split("/", 1)[-1] if "/" in normalized else normalized
     if bare in catalog_ids:
         return bare
+    # Try dotted-version alternates BEFORE the family-prefix scan —
+    # a hit here is a more specific match (gpt-5.5 the canonical id
+    # vs gpt-5-mini-XXX as a stray family member of `gpt-5`).
+    for alt in _dotted_version_variants(bare):
+        if alt in catalog_ids:
+            return alt
     # Family match — pick the longest suffix-extended id that starts with
     # our normalized base. Stable order via sort so test runs are reproducible.
     family_prefix = bare + "-"
     candidates = [c for c in catalog_ids if c.startswith(family_prefix)]
     if candidates:
         return sorted(candidates)[0]
+    # Family match for dotted alternates — handles cases where AA gives
+    # a base like "GPT-5.5" → "gpt-5-5" but the catalog only carries
+    # the dated form "gpt-5.5-2026-04-23".
+    for alt in _dotted_version_variants(bare):
+        family_prefix = alt + "-"
+        candidates = [c for c in catalog_ids if c.startswith(family_prefix)]
+        if candidates:
+            return sorted(candidates)[0]
     return None
 
 

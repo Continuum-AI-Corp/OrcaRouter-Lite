@@ -93,6 +93,47 @@ def test_match_catalog_id_no_match():
     assert _match_catalog_id("totally-fake", {"gpt-4o"}) is None
 
 
+def test_match_catalog_id_dotted_version_fallback():
+    """Litellm catalog stores OpenAI 5.x with dots intact (`gpt-5.5`,
+    `gpt-5.1`, `gpt-5.2`), but our normalizer's blanket `replace('.', '-')`
+    converts AA's "GPT-5.5" → `gpt-5-5`. Without the dotted-fallback
+    pass, every AA score for the OpenAI 5.x family was silently dropped
+    on match. Symptom: dashboard showed "matched 47 of 513" with ALL
+    GPT-5.x rows blank in the Quality table."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {"gpt-5.5", "gpt-5.1", "gpt-5.2", "gpt-5", "gpt-5-mini"}
+    assert _match_catalog_id("gpt-5-5", catalog) == "gpt-5.5"
+    assert _match_catalog_id("gpt-5-1", catalog) == "gpt-5.1"
+    assert _match_catalog_id("gpt-5-2", catalog) == "gpt-5.2"
+    # Non-dotted versions still match exactly.
+    assert _match_catalog_id("gpt-5", catalog) == "gpt-5"
+    assert _match_catalog_id("gpt-5-mini", catalog) == "gpt-5-mini"
+
+
+def test_match_catalog_id_dotted_family_fallback_for_dated_variants():
+    """When AA gives a base ("GPT-5.5") but the catalog only carries
+    the dated variant (`gpt-5.5-2026-04-23`), the dotted family fallback
+    must still find it."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {"gpt-5.5-2026-04-23", "gpt-5.5-mini"}
+    # Plain bare "gpt-5-5" → no exact, no bare → tries dotted "gpt-5.5"
+    # → no exact → tries family `gpt-5.5-` → hit dated variant first.
+    assert _match_catalog_id("gpt-5-5", catalog) == "gpt-5.5-2026-04-23"
+
+
+def test_match_catalog_id_dotted_fallback_does_not_break_dashed_models():
+    """Claude/Anthropic models use dashes consistently
+    (`claude-3-5-sonnet-latest`, `claude-opus-4-7`). The dotted-version
+    fallback must not mis-route them by trying e.g. `claude-3.5-sonnet`."""
+    from packages.litellm_adapter.quality_index import _match_catalog_id
+
+    catalog = {"claude-3-5-sonnet-latest", "claude-opus-4-7"}
+    assert _match_catalog_id("claude-3-5-sonnet", catalog) == "claude-3-5-sonnet-latest"
+    assert _match_catalog_id("claude-opus-4-7", catalog) == "claude-opus-4-7"
+
+
 # ── three-axis aggregation: max quality, max TPS, min TTFT ─────────────
 
 
