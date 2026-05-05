@@ -29,3 +29,9 @@ class ChatCompletionRequest(BaseModel):
     response_format: dict | None = None
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    # Pass-through for OpenAI's `stream_options` block (e.g.
+    # `{"include_usage": true}`). Without this field declared, Pydantic
+    # silently drops it from the request and our own auto-inject in
+    # chat.py can't see what the client actually asked for, so an
+    # explicit `include_usage=false` from the client gets clobbered.
+    stream_options: dict | None = None

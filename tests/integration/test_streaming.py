@@ -221,3 +221,71 @@ async def test_non_streaming_still_works_unchanged(stream_client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
     assert r.json()["choices"][0]["message"]["content"] == "Hello world"
+
+
+async def test_streaming_auto_injects_include_usage_when_client_omits_it(stream_client):
+    """OpenAI streaming omits the `usage` field unless the caller opts in
+    via `stream_options.include_usage=true`. Almost no client knows to set
+    this — and without it our cost calculation falls back to 0. The server
+    auto-injects it so spend tracking works regardless of caller."""
+    client, fake = stream_client
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert r.status_code == 200
+    # Inspect what got passed down to the LiteLLM wrapper.
+    call_kwargs = fake.acompletion.call_args.kwargs
+    assert call_kwargs.get("stream_options") == {"include_usage": True}, (
+        f"server should auto-inject include_usage=True; got "
+        f"{call_kwargs.get('stream_options')}"
+    )
+
+
+async def test_streaming_respects_explicit_client_include_usage_false(stream_client):
+    """Regression: ChatCompletionRequest must declare `stream_options` as a
+    field, otherwise Pydantic silently drops it from the request body and
+    a client's explicit `include_usage=false` opt-out gets clobbered by
+    our auto-inject. (Codex round-2 [P2] — without the schema field the
+    auto-inject branch sees no client value and overrides to True.)"""
+    client, fake = stream_client
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "stream_options": {"include_usage": False},
+        },
+    )
+    assert r.status_code == 200
+    call_kwargs = fake.acompletion.call_args.kwargs
+    assert call_kwargs.get("stream_options") == {"include_usage": False}, (
+        f"client opt-out must survive end-to-end; got "
+        f"{call_kwargs.get('stream_options')}"
+    )
+
+
+async def test_streaming_preserves_other_stream_options_fields(stream_client):
+    """Client may pass additional `stream_options` fields besides
+    `include_usage`. Our auto-inject must add `include_usage=True` only
+    when missing, leaving other fields intact (don't clobber the dict)."""
+    client, fake = stream_client
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "stream_options": {"future_field": "preserve_me"},
+        },
+    )
+    assert r.status_code == 200
+    so = fake.acompletion.call_args.kwargs.get("stream_options")
+    assert so == {"future_field": "preserve_me", "include_usage": True}, (
+        f"must merge auto-inject with existing fields, not replace; got {so}"
+    )
