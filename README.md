@@ -187,7 +187,7 @@ for chunk in client.chat.completions.create(
 | Platform | Setup |
 |---|---|
 | [Fly.io](#flyio) | `fly launch --no-deploy` → `fly secrets set ...` → `fly deploy` (`fly.toml` in repo) |
-| [Railway](#railway) | Connect repo, add `/data` volume, paste env vars (`railway.json` in repo) |
+| [Railway](#railway) | Connect repo, paste env vars (`railway.json` in repo) |
 | [Render](#render--bare-docker) | Connect repo (auto-detects Dockerfile), add `/data` Disk, paste env vars |
 | [Bare Docker](#render--bare-docker) | `cp .env.example .env`, append two secrets, `docker compose up -d` |
 
@@ -234,19 +234,14 @@ when idle and auto-starts on the next request, controlling cost.
 Repo includes `railway.json` with Dockerfile build + healthcheck pre-configured.
 
 1. **Connect repo**: New Project → Deploy from GitHub repo → pick this repo
-2. **Create a volume**: open the Command Palette (`⌘K`) and select "Create Volume"
-   (or right-click the project canvas → New → Volume). When prompted, attach it
-   to the service and set the **mount path** to `/data`. Default size depends on
-   plan (Hobby: 5 GB) — 1 GB is plenty for SQLite.
-3. **Set env vars** in Service → Variables:
-   - `DATABASE_URL=sqlite+aiosqlite:////data/orca.db` (note the four slashes)
+2. **Set env vars** in Service → Variables:
    - `CREDENTIAL_ENCRYPTION_KEY=` (paste output of `openssl rand -hex 32`)
    - `API_KEY_PEPPER=` (paste another `openssl rand -hex 32`)
-   - Optional: `OPENAI_API_KEY=sk-...` or any other provider key — these can
-     also be added later from the dashboard at `/`
-4. **Generate a public domain**: Service → Settings → Networking →
+   - Optional: `OPENAI_API_KEY=sk-...` or any other provider key — also
+     addable later from the dashboard at `/`
+3. **Generate a public domain**: Service → Settings → Networking →
    Public Networking → Generate Domain.
-5. Railway auto-deploys on every push to `main`.
+4. Railway auto-deploys on every push to `main`.
 
 ### Render / Bare Docker
 
