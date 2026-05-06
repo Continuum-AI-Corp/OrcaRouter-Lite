@@ -223,6 +223,27 @@ PROVIDERS_TO_MODELS: dict[str, list[CatalogModel]] = {}
 for _m in CATALOG:
     PROVIDERS_TO_MODELS.setdefault(_m.provider, []).append(_m)
 
+# Merge supplemental entries for O2-hosted models not in LiteLLM's catalog.
+# Added to CATALOG/CATALOG_BY_ID only — NOT to PROVIDERS_TO_MODELS — so
+# build_deployments's local-provider loop (which reads PROVIDERS_TO_MODELS)
+# won't create deployments with O2-style dotted IDs against a direct provider
+# endpoint (Anthropic, OpenAI, etc.) that may not accept them.
+try:
+    from packages.litellm_adapter.hosted_catalog import HOSTED_CATALOG_SUPPLEMENT as _HCS
+    for _row in _HCS:
+        _id, _prov, _prefix, _tools, _vis, _json, _in, _out = _row
+        if _id not in CATALOG_BY_ID:
+            _sm = CatalogModel(
+                id=_id, provider=_prov, litellm_prefix=_prefix,
+                supports_tools=_tools, supports_vision=_vis,
+                supports_json_mode=_json,
+                input_cost_per_token=_in, output_cost_per_token=_out,
+            )
+            CATALOG.append(_sm)
+            CATALOG_BY_ID[_id] = _sm
+except ImportError:
+    pass
+
 
 def all_model_ids() -> list[str]:
     return list(CATALOG_BY_ID.keys())

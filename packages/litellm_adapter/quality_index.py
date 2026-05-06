@@ -626,6 +626,43 @@ async def _persist_with_axis_preservation(
     return merged
 
 
+def _apply_static_baseline(qi: QualityIndex, catalog_ids: set[str]) -> QualityIndex:
+    """Merge static quality + latency scores under AA data. Static = floor, AA = ceiling.
+
+    Called at every return path so models absent from AA's dataset
+    (new releases, O2-exclusive IDs) always get routing scores on all three axes.
+    Only IDs present in `catalog_ids` are merged — prevents leaking the
+    full static tables into callers that pass a restricted/synthetic catalog.
+    """
+    try:
+        from packages.litellm_adapter.quality_scores_static import (
+            STATIC_QUALITY, STATIC_TPS, STATIC_TTFT,
+        )
+    except ImportError:
+        return qi
+    if not STATIC_QUALITY and not STATIC_TPS and not STATIC_TTFT:
+        return qi
+
+    def _merge(static: dict[str, float], live: dict[str, float]) -> dict[str, float]:
+        filtered = {k: v for k, v in static.items() if k in catalog_ids}
+        return {**filtered, **live}  # live (AA) wins on overlap
+
+    merged_quality = _merge(STATIC_QUALITY, qi.scores)
+    merged_tps     = _merge(STATIC_TPS,     qi.tps_scores)
+    merged_ttft    = _merge(STATIC_TTFT,    qi.ttft_scores)
+
+    return dataclasses.replace(
+        qi,
+        scores=merged_quality,
+        tps_scores=merged_tps,
+        ttft_scores=merged_ttft,
+        matched_count=len(set(merged_quality) | set(merged_tps) | set(merged_ttft)),
+        matched_count_quality=len(merged_quality),
+        matched_count_tps=len(merged_tps),
+        matched_count_ttft=len(merged_ttft),
+    )
+
+
 async def get_quality_index(
     *,
     catalog_ids: set[str],
@@ -658,10 +695,10 @@ async def get_quality_index(
     s = get_settings()
     api_key = s.artificial_analysis_api_key
     if not api_key:
-        return QualityIndex(
+        return _apply_static_baseline(QualityIndex(
             scores={}, fetched_at=0.0, source="missing-key",
             raw_count=0, matched_count=0,
-        )
+        ), catalog_ids)
 
     url = s.artificial_analysis_models_url
     key_hash = _api_key_hash(api_key)
@@ -703,6 +740,7 @@ async def get_quality_index(
                 matched_count_tps=db_snapshot.matched_count_tps,
                 matched_count_ttft=db_snapshot.matched_count_ttft,
             )
+            promoted = _apply_static_baseline(promoted, catalog_ids)
             _cache[key_hash] = promoted
             return promoted
 
@@ -750,20 +788,21 @@ async def get_quality_index(
             matched_count_tps=metrics.matched_count_tps,
             matched_count_ttft=metrics.matched_count_ttft,
         )
+        idx = _apply_static_baseline(idx, catalog_ids)
         _cache[key_hash] = idx
         return idx
     except Exception:
         # Stale fallbacks, in order of freshness.
         cached = _cache.get(key_hash)
         if cached is not None and (now - cached.fetched_at) < _STALE_GRACE_SECONDS:
-            return dataclasses.replace(cached, source="stale-cache")
+            return dataclasses.replace(cached, source="stale-cache")  # baseline already applied at cache-write
         if db_snapshot is not None:
             # DB row is older than the in-process TTL but we serve it
             # anyway — better than disabling quality routing entirely.
             # `source="stale-db"` lets the dashboard show the operator
             # they're on stale data; no upper bound on age here because
             # the alternative (cost-based) is known wrong, not just stale.
-            return QualityIndex(
+            return _apply_static_baseline(QualityIndex(
                 scores=db_snapshot.quality_scores,
                 fetched_at=now,  # we just learned this from DB; re-anchor in-process
                 source="stale-db",
@@ -778,11 +817,11 @@ async def get_quality_index(
                 matched_count_quality=db_snapshot.matched_count_quality,
                 matched_count_tps=db_snapshot.matched_count_tps,
                 matched_count_ttft=db_snapshot.matched_count_ttft,
-            )
-        return QualityIndex(
+            ), catalog_ids)
+        return _apply_static_baseline(QualityIndex(
             scores={}, fetched_at=now, source="error",
             raw_count=0, matched_count=0,
-        )
+        ), catalog_ids)
 
 
 def reset_cache() -> None:

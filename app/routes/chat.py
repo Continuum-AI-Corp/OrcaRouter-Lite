@@ -147,7 +147,7 @@ async def _build_log_row(
         input_tokens=input_t,
         output_tokens=output_t,
         cost_microcents=_compute_cost_microcents(
-            litellm_cost_usd=meta.get("cost_usd"),
+            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
             model_id=resolved,
             input_tokens=input_t,
             output_tokens=output_t,

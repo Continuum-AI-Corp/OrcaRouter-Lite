@@ -87,6 +87,22 @@ _CAP_FIELD = {
 }
 
 
+def _lookup_score(scores: dict[str, float], model_id: str) -> float | None:
+    """Score lookup with dot→hyphen fallback for O2-native dotted IDs.
+
+    O2 registers models with dots (claude-opus-4.7, gpt-5.1-codex) while
+    Artificial Analysis normalizes model names to hyphens (claude-opus-4-7).
+    Without this fallback every dotted ID resolves to score=0, so quality/
+    balanced routing always ranks AA-scored cheap models above unscored
+    expensive ones — actively wrong. Returns None when no score exists in
+    either form.
+    """
+    s = scores.get(model_id)
+    if s is None and "." in model_id:
+        s = scores.get(model_id.replace(".", "-"))
+    return s
+
+
 # Blended weights — chat output dominates cost in practice. Same heuristic
 # as `apps/api/router_cache.py:_provider_order_key`.
 _INPUT_WEIGHT = 0.3
@@ -311,10 +327,10 @@ def choose_auto_model(
         # models routable as fallback rather than disappearing).
         if quality_scores:
             eligible.sort(
-                key=lambda m: (-quality_scores.get(m.id, 0.0), -_blended_cost(m), m.id)
+                key=lambda m: (-(_lookup_score(quality_scores, m.id) or 0.0), -_blended_cost(m), m.id)
             )
             for m in eligible:
-                raw = quality_scores.get(m.id)
+                raw = _lookup_score(quality_scores, m.id)
                 scoring_per_model[m.id] = ScoringDetail(
                     primary_score=int(round(raw)) if raw is not None else None,
                     breakdown={
@@ -333,12 +349,12 @@ def choose_auto_model(
     elif strategy == "balanced":
         # Strict coverage: model needs BOTH quality and cost. Drop unscored.
         if quality_scores:
-            scored_models = [m for m in eligible if m.id in quality_scores]
+            scored_models = [m for m in eligible if _lookup_score(quality_scores, m.id) is not None]
             if scored_models:
                 scored_ids = [m.id for m in scored_models]
                 cost_inv = {m.id: -_blended_cost(m) for m in scored_models}
                 c_norm = _normalize(cost_inv, scored_ids)
-                q_subset = {mid: quality_scores[mid] for mid in scored_ids}
+                q_subset = {mid: _lookup_score(quality_scores, mid) for mid in scored_ids}
                 q_norm = _normalize(q_subset, scored_ids)
 
                 def _bal_score(m: CatalogModel) -> float:
@@ -355,7 +371,7 @@ def choose_auto_model(
                         primary_score=int(round(_bal_score(m) * 100)),
                         breakdown={
                             "quality": {
-                                "raw": float(quality_scores[m.id]),
+                                "raw": float(_lookup_score(quality_scores, m.id)),
                                 "normalized": q_norm[m.id],
                             },
                             "cost": {
@@ -378,18 +394,19 @@ def choose_auto_model(
 
     elif strategy == "fastest":
         # Strict coverage: model needs BOTH TPS and TTFT.
-        tps_set = set(tps_scores or {})
-        ttft_set = set(ttft_scores or {})
-        both_set = tps_set & ttft_set
-        if both_set:
-            scored_models = [m for m in eligible if m.id in both_set]
+        if tps_scores and ttft_scores:
+            scored_models = [
+                m for m in eligible
+                if _lookup_score(tps_scores, m.id) is not None
+                and _lookup_score(ttft_scores, m.id) is not None
+            ]
             if scored_models:
                 scored_ids = [m.id for m in scored_models]
-                tps_subset = {mid: tps_scores[mid] for mid in scored_ids}
+                tps_subset = {mid: _lookup_score(tps_scores, mid) for mid in scored_ids}
                 tps_norm = _normalize(tps_subset, scored_ids)
                 # Lower TTFT = faster, so invert before normalizing so the
                 # normalized score points the same way as TPS (higher = better).
-                ttft_inv = {mid: -ttft_scores[mid] for mid in scored_ids}
+                ttft_inv = {mid: -_lookup_score(ttft_scores, mid) for mid in scored_ids}
                 ttft_norm = _normalize(ttft_inv, scored_ids)
 
                 def _fast_score(m: CatalogModel) -> float:
@@ -406,11 +423,11 @@ def choose_auto_model(
                         primary_score=int(round(_fast_score(m) * 100)),
                         breakdown={
                             "tps": {
-                                "raw": float(tps_scores[m.id]),
+                                "raw": float(_lookup_score(tps_scores, m.id)),
                                 "normalized": tps_norm[m.id],
                             },
                             "ttft": {
-                                "raw": float(ttft_scores[m.id]),
+                                "raw": float(_lookup_score(ttft_scores, m.id)),
                                 "normalized": ttft_norm[m.id],
                             },
                         },

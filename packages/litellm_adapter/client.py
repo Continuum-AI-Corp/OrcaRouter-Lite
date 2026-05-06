@@ -117,6 +117,8 @@ class OrcaLiteLLMClient:
                 params["api_base"] = d.api_base
             if d.custom_llm_provider:
                 params["custom_llm_provider"] = d.custom_llm_provider
+            if d.extra_headers:
+                params["extra_headers"] = d.extra_headers
             if d.rpm:
                 params["rpm"] = d.rpm
             if d.tpm:

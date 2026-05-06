@@ -61,3 +61,4 @@ class ProviderDeployment:
     rpm: int | None = None
     tpm: int | None = None
     custom_llm_provider: str | None = None
+    extra_headers: dict | None = None

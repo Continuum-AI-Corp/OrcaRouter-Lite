@@ -403,7 +403,7 @@ async def test_fetch_remote_accepts_bare_list_envelope(monkeypatch):
     _patch_aa_transport(monkeypatch, handler)
     idx = await quality_index.get_quality_index(catalog_ids={"claude-opus-4-7"})
     assert idx.source == "live"
-    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.scores.get("claude-opus-4-7") == 57.0
 
 
 async def test_fetch_remote_unknown_schema_falls_through_to_stale(monkeypatch, db_session):
@@ -445,7 +445,7 @@ async def test_fetch_remote_unknown_schema_falls_through_to_stale(monkeypatch, d
         db=db_session, workspace_id="default", force_refresh=True,
     )
     assert idx.source == "stale-db", "schema mismatch must fall through to stale, not poison snapshot"
-    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.scores.get("claude-opus-4-7") == 57.0
 
 
 async def test_get_quality_index_returns_missing_key_when_unconfigured(monkeypatch):
@@ -460,7 +460,8 @@ async def test_get_quality_index_returns_missing_key_when_unconfigured(monkeypat
 
     idx = await quality_index.get_quality_index(catalog_ids={"gpt-4o"})
     assert idx.source == "missing-key"
-    assert idx.scores == {}
+    # Static baseline is always applied — even without an AA key, static scores are present.
+    assert idx.scores  # non-empty due to static baseline
 
 
 async def test_get_quality_index_fetches_and_caches(monkeypatch):
@@ -490,7 +491,9 @@ async def test_get_quality_index_fetches_and_caches(monkeypatch):
 
     idx1 = await quality_index.get_quality_index(catalog_ids={"claude-opus-4-7", "gpt-4o"})
     assert idx1.source == "live"
-    assert idx1.scores == {"claude-opus-4-7": 57.0, "gpt-4o": 50.0}
+    # AA values win over static baseline on overlap.
+    assert idx1.scores.get("claude-opus-4-7") == 57.0
+    assert idx1.scores.get("gpt-4o") == 50.0
     assert fetch_calls["n"] == 1
     # Confirms the real _fetch_remote ran and forwarded our key header —
     # if we'd monkeypatched _fetch_remote we'd never know.
@@ -549,7 +552,7 @@ async def test_db_snapshot_persists_across_in_process_cache_reset(monkeypatch, d
         db=db_session, workspace_id="default",
     )
     assert fetch_calls["n"] == 1, "DB snapshot should serve cold-start, not refetch"
-    assert idx2.scores == {"claude-opus-4-7": 57.0}
+    assert idx2.scores.get("claude-opus-4-7") == 57.0
 
 
 async def test_db_snapshot_invalidated_on_key_rotation(monkeypatch, db_session):
@@ -700,7 +703,7 @@ async def test_aa_failure_falls_back_to_db_snapshot(monkeypatch, db_session):
     assert idx.source == "stale-db", (
         "must flag the source as DB-stale so the dashboard can show 'AA outage'"
     )
-    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.scores.get("claude-opus-4-7") == 57.0
 
 
 async def test_empty_aa_response_does_not_poison_db_snapshot(monkeypatch, db_session):
@@ -742,7 +745,7 @@ async def test_empty_aa_response_does_not_poison_db_snapshot(monkeypatch, db_ses
         catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
     )
     assert idx_live.source == "live"
-    assert idx_live.scores == {"claude-opus-4-7": 57.0}
+    assert idx_live.scores.get("claude-opus-4-7") == 57.0
 
     # 2. Simulate process restart + AA glitch returning empty data.
     quality_index.reset_cache()
@@ -755,7 +758,7 @@ async def test_empty_aa_response_does_not_poison_db_snapshot(monkeypatch, db_ses
 
     # Must serve the stale snapshot, not poison-overwrite with `{}`.
     assert idx_after.source == "stale-db"
-    assert idx_after.scores == {"claude-opus-4-7": 57.0}, (
+    assert idx_after.scores.get("claude-opus-4-7") == 57.0, (
         "empty AA fetch must not overwrite existing DB snapshot"
     )
 
@@ -815,7 +818,7 @@ async def test_aa_response_with_no_catalog_matches_does_not_poison_snapshot(monk
     assert idx.source == "stale-db", (
         "zero matched_count must be treated as failure, not silently overwrite snapshot"
     )
-    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.scores.get("claude-opus-4-7") == 57.0
 
 
 async def test_get_quality_index_serves_stale_on_failure(monkeypatch):
@@ -853,7 +856,7 @@ async def test_get_quality_index_serves_stale_on_failure(monkeypatch):
         catalog_ids={"claude-opus-4-7"}, force_refresh=True,
     )
     assert idx_stale.source == "stale-cache"
-    assert idx_stale.scores == {"claude-opus-4-7": 57.0}, "stale value preserved"
+    assert idx_stale.scores.get("claude-opus-4-7") == 57.0, "stale value preserved"
 
 
 # ── DB snapshot: new shape round-trip + legacy backward compat ─────────
@@ -884,14 +887,14 @@ async def test_db_snapshot_round_trip_preserves_three_maps(monkeypatch, db_sessi
     idx = await quality_index.get_quality_index(
         catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
     )
-    assert idx.scores == {"claude-opus-4-7": 57.0}
+    assert idx.scores.get("claude-opus-4-7") == 57.0
     assert idx.tps_scores == {"claude-opus-4-7": 60.0}
     assert idx.ttft_scores == {"claude-opus-4-7": 1.2}
-    assert idx.matched_count_quality == 1
+    # Static baseline augments quality count; tps/ttft are unaffected.
+    assert idx.matched_count_quality >= 1
     assert idx.matched_count_tps == 1
     assert idx.matched_count_ttft == 1
-    # union(三轴 keys) — single model in all axes → 1
-    assert idx.matched_count == 1
+    assert idx.matched_count >= 1
 
     # Drop in-memory cache, re-load from DB → same data.
     quality_index.reset_cache()
@@ -901,7 +904,7 @@ async def test_db_snapshot_round_trip_preserves_three_maps(monkeypatch, db_sessi
     assert idx2.source in ("live", "stale-db"), (
         "DB hit should promote to in-process, not refetch AA — but live is also OK"
     )
-    assert idx2.scores == {"claude-opus-4-7": 57.0}
+    assert idx2.scores.get("claude-opus-4-7") == 57.0
     assert idx2.tps_scores == {"claude-opus-4-7": 60.0}
     assert idx2.ttft_scores == {"claude-opus-4-7": 1.2}
 
@@ -946,11 +949,12 @@ async def test_db_snapshot_loader_handles_legacy_flat_quality_only_shape(
         db=db_session, workspace_id="default",
     )
     # Legacy shape detected → quality hydrated, TPS/TTFT empty (feature
-    # didn't exist when the row was written).
-    assert idx.scores == {"claude-opus-4-7": 57.0, "gpt-4o": 70.0}
+    # didn't exist when the row was written). Static baseline augments quality.
+    assert idx.scores.get("claude-opus-4-7") == 57.0
+    assert idx.scores.get("gpt-4o") == 70.0
     assert idx.tps_scores == {}
     assert idx.ttft_scores == {}
-    assert idx.matched_count_quality == 2
+    assert idx.matched_count_quality >= 2
 
 
 async def test_persist_with_axis_preservation_keeps_old_quality_when_new_empty(
@@ -991,7 +995,7 @@ async def test_persist_with_axis_preservation_keeps_old_quality_when_new_empty(
     idx_full = await quality_index.get_quality_index(
         catalog_ids={"claude-opus-4-7"}, db=db_session, workspace_id="default",
     )
-    assert idx_full.scores == {"claude-opus-4-7": 57.0}
+    assert idx_full.scores.get("claude-opus-4-7") == 57.0
 
     # Simulate AA quality regression on next refresh.
     quality_index.reset_cache()
@@ -1001,7 +1005,7 @@ async def test_persist_with_axis_preservation_keeps_old_quality_when_new_empty(
         db=db_session, workspace_id="default", force_refresh=True,
     )
     # Quality preserved from old snapshot, TPS/TTFT taken from new fetch.
-    assert idx_after.scores == {"claude-opus-4-7": 57.0}, (
+    assert idx_after.scores.get("claude-opus-4-7") == 57.0, (
         "quality must be preserved when new fetch has empty quality axis"
     )
     assert idx_after.tps_scores == {"claude-opus-4-7": 65.0}, "TPS taken from new"

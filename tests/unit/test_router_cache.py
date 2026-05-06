@@ -100,19 +100,20 @@ def test_orcarouter_api_key_adds_hosted_upstream_per_model(monkeypatch):
     """
     from app.config import Settings
     from app.router_cache import build_deployments
-    from packages.litellm_adapter.catalog import all_model_ids
+    from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
 
     monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-hosted-xyz")
     s = Settings(_env_file=None)
 
     deps = build_deployments(env_keys={}, db_keys=[], settings=s)
     orca_deps = [d for d in deps if d.provider == "orcarouter"]
-    assert len(orca_deps) == len(all_model_ids())
+    assert len(orca_deps) == len(HOSTED_MODELS)
     for d in orca_deps:
         assert d.api_base == "https://api.orcarouter.ai/v1"
         assert d.api_key == "sk-orca-hosted-xyz"
-        # OpenAI-compatible passthrough — `openai/` prefix tells litellm to use the OpenAI SDK
-        assert d.litellm_model.startswith("openai/")
+        assert d.custom_llm_provider == "openai"
+        assert d.extra_headers == {"X-OrcaRouter-beta-usd": "response"}
+        assert "/" in d.litellm_model
 
 
 def test_orcarouter_upstream_combines_with_local_keys(monkeypatch):
@@ -137,7 +138,7 @@ def test_orcarouter_db_row_enables_hosted_upstream():
     from app.router_cache import build_deployments
     from packages.auth.encryption import encrypt_credential
     from packages.db.models.provider_key import ProviderKey
-    from packages.litellm_adapter.catalog import all_model_ids
+    from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
 
     s = Settings(_env_file=None)
     db_row = ProviderKey(
@@ -149,7 +150,7 @@ def test_orcarouter_db_row_enables_hosted_upstream():
     )
     deps = build_deployments(env_keys={}, db_keys=[db_row], settings=s)
     orca_deps = [d for d in deps if d.provider == "orcarouter"]
-    assert len(orca_deps) == len(all_model_ids())
+    assert len(orca_deps) == len(HOSTED_MODELS)
     for d in orca_deps:
         assert d.api_key == "sk-orca-from-dashboard"
         assert d.api_base == "https://api.orcarouter.ai/v1"

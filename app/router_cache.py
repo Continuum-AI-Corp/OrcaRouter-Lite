@@ -14,7 +14,8 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from packages.auth.encryption import decrypt_credential
-from packages.litellm_adapter.catalog import all_model_ids, models_for_provider
+from packages.litellm_adapter.catalog import models_for_provider
+from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
 from packages.litellm_adapter.types import ProviderDeployment
 
 if TYPE_CHECKING:
@@ -74,14 +75,16 @@ def build_deployments(
     # deployment so the long tail of providers never errors with "no key."
     hosted_key = db_provider_keys.get(HOSTED_PROVIDER_NAME) or settings.orcarouter_api_key
     if hosted_key:
-        for model_id in all_model_ids():
+        for provider, bare_id in HOSTED_MODELS:
             deployments.append(
                 ProviderDeployment(
-                    model_name=model_id,
-                    litellm_model=f"openai/{model_id}",
+                    model_name=bare_id,
+                    litellm_model=f"{provider}/{bare_id}",
                     api_key=hosted_key,
                     api_base=settings.orcarouter_base_url,
                     provider=HOSTED_PROVIDER_NAME,
+                    custom_llm_provider="openai",
+                    extra_headers={"X-OrcaRouter-beta-usd": "response"},
                 )
             )
 
