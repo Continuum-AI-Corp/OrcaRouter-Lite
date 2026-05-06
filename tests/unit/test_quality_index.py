@@ -464,31 +464,35 @@ async def test_get_quality_index_returns_missing_key_when_unconfigured(monkeypat
     assert idx.scores  # non-empty due to static baseline
 
 
-async def test_static_baseline_keeps_hyphenated_keys_for_dotted_catalog_ids(monkeypatch):
+async def test_static_baseline_rekeys_hyphenated_to_dotted_catalog_id(monkeypatch):
     """When the catalog carries an O2-native dotted ID (claude-opus-4.7) but
     the static table is keyed under AA's hyphenated form (claude-opus-4-7),
-    the catalog_ids filter must accept both — otherwise the hyphenated baseline
-    is stripped and `_lookup_score`'s dot→hyphen fallback finds nothing,
-    leaving hosted Claude/Qwen unscored under quality / balanced / fastest.
+    the merge must rekey the row to the dotted catalog id — not just keep
+    the hyphenated form. QualityIndex callers that read via direct
+    `scores.get(m.id)` (e.g. /v1/quality dashboard route) need to see the
+    baseline under the catalog id, not only via `_lookup_score`'s
+    dot→hyphen fallback.
     """
     from app import config as cfg
-    from app.auto_routing import _lookup_score
     from packages.litellm_adapter import quality_index
 
     quality_index.reset_cache()
     monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "")
     cfg.get_settings.cache_clear()
 
-    # Catalog has the dotted form only (as it would when the model comes
-    # exclusively from HOSTED_CATALOG_SUPPLEMENT, not LiteLLM model_cost).
+    # Catalog has the dotted form only (as when the model comes exclusively
+    # from HOSTED_CATALOG_SUPPLEMENT, not LiteLLM model_cost).
     idx = await quality_index.get_quality_index(catalog_ids={"claude-opus-4.7"})
 
-    # The hyphenated static key survives the filter, and a dot→hyphen lookup
-    # against the deployment id resolves it.
-    assert _lookup_score(idx.scores, "claude-opus-4.7") is not None, (
-        "Hosted Claude must have a baseline score even when only the dotted "
-        "deployment ID is in catalog_ids"
+    # Score keyed under the dotted catalog id directly (per QualityIndex
+    # contract). No fallback helper needed.
+    assert idx.scores.get("claude-opus-4.7") is not None, (
+        "Hosted Claude must be keyed under the dotted catalog id so direct "
+        "`scores.get(m.id)` consumers (dashboard /v1/quality) see it"
     )
+    # The hyphenated AA form is NOT a catalog id when only the dotted form
+    # was passed — it must not leak into the result.
+    assert "claude-opus-4-7" not in idx.scores
 
 
 async def test_get_quality_index_fetches_and_caches(monkeypatch):
