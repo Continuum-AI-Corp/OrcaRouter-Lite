@@ -198,10 +198,8 @@ openssl rand -hex 32
 openssl rand -hex 32
 ```
 
-Plus at least one provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GOOGLE_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY`,
-`TOGETHER_API_KEY`, `FIREWORKS_API_KEY`) **or** `ORCAROUTER_API_KEY` for the
-hosted fallback.
+Provider keys can be added later through the dashboard at `/` — they don't need
+to be set at deploy time.
 
 ### Fly.io
 
@@ -213,7 +211,7 @@ fly apps create my-orca-lite                                    # pick a name
 fly volumes create lite_data --size 1 --region iad              # match fly.toml region
 fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
 fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
-fly secrets set OPENAI_API_KEY=sk-...                           # at least one provider
+fly secrets set OPENAI_API_KEY=sk-...                           # optional — also addable from the dashboard
 fly deploy
 ```
 
@@ -234,7 +232,8 @@ Repo includes `railway.json` with Dockerfile build + healthcheck pre-configured.
    - `DATABASE_URL=sqlite+aiosqlite:////data/orca.db` (note the four slashes)
    - `CREDENTIAL_ENCRYPTION_KEY=` (paste output of `openssl rand -hex 32`)
    - `API_KEY_PEPPER=` (paste another `openssl rand -hex 32`)
-   - `OPENAI_API_KEY=sk-...` (or another provider key)
+   - Optional: `OPENAI_API_KEY=sk-...` or any other provider key — these can
+     also be added later from the dashboard at `/`
 4. **Generate a public domain**: Service → Settings → Networking →
    Public Networking → Generate Domain.
 5. Railway auto-deploys on every push to `main`.
