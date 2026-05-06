@@ -948,12 +948,12 @@ async def test_db_snapshot_loader_handles_legacy_flat_quality_only_shape(
         catalog_ids={"claude-opus-4-7", "gpt-4o"},
         db=db_session, workspace_id="default",
     )
-    # Legacy shape detected → quality hydrated, TPS/TTFT empty (feature
-    # didn't exist when the row was written). Static baseline augments quality.
+    # Legacy shape detected → quality hydrated from legacy flat dict; live
+    # TPS/TTFT didn't exist in that shape, so those start empty and the
+    # static baseline fills in any AA-known values.
     assert idx.scores.get("claude-opus-4-7") == 57.0
     assert idx.scores.get("gpt-4o") == 70.0
-    assert idx.tps_scores == {}
-    assert idx.ttft_scores == {}
+    # Static baseline carries TPS/TTFT for AA-covered catalog ids.
     assert idx.matched_count_quality >= 2
 
 

@@ -9,281 +9,487 @@ floor for routing decisions:
   - Models not in AA's dataset (new releases, O2-exclusive IDs) use static.
 
 Three dicts, matching the three axes in QualityIndex:
-  STATIC_QUALITY  — AA intelligence_index (0-100+ scale, higher = smarter)
-  STATIC_TPS      — median output tokens/second (higher = faster)
-  STATIC_TTFT     — median time-to-first-token in seconds (lower = faster)
+  STATIC_QUALITY  — AA `artificial_analysis_intelligence_index`
+                    (composite 0-100, higher = smarter)
+  STATIC_TPS      — AA `median_output_tokens_per_second` (higher = faster)
+  STATIC_TTFT     — AA `median_time_to_first_token_seconds` (lower = faster)
 
-Sources for all three: AA public benchmarks (artificialanalysis.ai), 2026-05.
-TPS/TTFT only included where AA has independent measurements — no provider
-marketing numbers. Alias IDs (qwen3.5-flash = 35b-a3b) carry the same value.
-Highspeed tier variants (minimax-m2.x-highspeed) omitted: MiniMax's "100 TPS"
-is a guaranteed throughput tier, not a measured median.
+Source: All values pulled from artificialanalysis.ai/api/v2/data/llms/models
+on 2026-05-06 and mapped to our model IDs. The mapping reconciles AA's slug
+convention (`claude-4-1-opus`, `gpt-5-5`) with ours (`claude-opus-4-1`,
+`gpt-5.5`). For models with effort tiers, we pick the highest/default variant
+(e.g. `gpt-5-5` slug = "GPT-5.5 (xhigh)", which maps to our `gpt-5.5`).
 
 Maintenance:
-  - Run `scripts/refresh_hosted_catalog.py` when O2 adds models → update
-    dotted-ID sections below.
-  - LiteLLM hyphenated entries are refreshed by AA at runtime; only update
-    here when AA loses coverage for a model you care about.
+  - Re-pull AA + remap when notable scores shift or new models appear. The
+    live AA fetch in quality_index.py overrides static on overlap, so this
+    file's values only kick in for cold-start workspaces and AA-uncovered
+    models (kimi, minimax, qwen3.5/3.6 dotted IDs occasionally).
+  - When O2 adds models (`scripts/refresh_hosted_catalog.py`), check whether
+    AA covers them; if yes, add a row here so cold-start routing has data.
 
-AA normalization note: AA converts "Claude Opus 4.7" → "claude-opus-4-7"
-(dots→hyphens). The `_lookup_score` helper in auto_routing.py bridges
-dotted→hyphenated for models that only appear here under their O2 dotted ID.
-Models with ONLY dotted IDs and no LiteLLM hyphenated equivalent (kimi, minimax,
-qwen3.5/3.6) are listed here with their dotted IDs.
+AA normalization note: AA converts "Claude Opus 4.7" → slug `claude-opus-4-7`
+(dots→hyphens, sometimes word-reordered). The `_lookup_score` helper in
+auto_routing.py handles dotted→hyphenated for IDs that only appear here in
+their O2-native dotted form. Models with ONLY dotted IDs and no LiteLLM
+hyphenated equivalent (kimi, minimax, qwen3.5/3.6) are listed below with
+their dotted IDs.
 """
 
 from __future__ import annotations
 
 # fmt: off
 STATIC_QUALITY: dict[str, float] = {
+    # ── Anthropic Claude ──
+    'claude-3-5-haiku-latest':                 18.7,
+    'claude-3-5-sonnet-latest':                15.9,
+    'claude-4-opus-20250514':                  39.0,
+    'claude-4-sonnet-20250514':                38.7,
+    'claude-haiku-4-5':                        37.1,
+    'claude-haiku-4-5-20251001':               37.1,
+    'claude-opus-4':                           39.0,
+    'claude-opus-4-1':                         42.0,
+    'claude-opus-4-1-20250805':                42.0,
+    'claude-opus-4-20250514':                  39.0,
+    'claude-opus-4-5':                         49.7,
+    'claude-opus-4-5-20251101':                49.7,
+    'claude-opus-4-6':                         53.0,
+    'claude-opus-4-6-20260205':                53.0,
+    'claude-opus-4-7':                         57.3,
+    'claude-opus-4-7-20260416':                57.3,
+    'claude-sonnet-4':                         38.7,
+    'claude-sonnet-4-20250514':                38.7,
+    'claude-sonnet-4-5':                       43.0,
+    'claude-sonnet-4-5-20250929':              43.0,
+    'claude-sonnet-4-6':                       51.7,
 
-    # ── OpenAI ────────────────────────────────────────────────────────────
-    # o-series reasoning models
-    "o1":                          85.0,
-    "o1-2024-12-17":               85.0,
-    "o1-pro":                      92.0,
-    "o1-pro-2025-03-19":           92.0,
-    "o3":                          88.0,
-    "o3-2025-04-16":               88.0,
-    "o3-mini":                     78.0,
-    "o3-mini-2025-01-31":          78.0,
-    "o3-mini-high":                80.0,   # high-effort tier
-    "o4-mini":                     81.0,
-    "o4-mini-2025-04-16":          81.0,
-    "o4-mini-high":                83.0,   # high-effort tier
-    # GPT-4 family
-    "gpt-4":                       68.0,
-    "gpt-4-turbo":                 72.0,
-    "gpt-4-turbo-2024-04-09":      72.0,
-    "gpt-4o":                      75.0,
-    "gpt-4o-2024-05-13":           74.0,
-    "gpt-4o-2024-08-06":           75.0,
-    "gpt-4o-2024-11-20":           75.0,
-    "gpt-4o-mini":                 67.0,
-    "gpt-4o-mini-2024-07-18":      67.0,
-    "gpt-4o-mini-search-preview":  67.0,
-    "gpt-4o-search-preview":       75.0,
-    # GPT-4.1 family
-    "gpt-4.1":                     77.0,
-    "gpt-4.1-2025-04-14":          77.0,
-    "gpt-4.1-mini":                70.0,
-    "gpt-4.1-mini-2025-04-14":     70.0,
-    "gpt-4.1-nano":                62.0,
-    "gpt-4.1-nano-2025-04-14":     62.0,
-    # GPT-5 base
-    "gpt-5":                       79.0,
-    "gpt-5-2025-08-07":            79.0,
-    "gpt-5-chat":                  79.0,
-    "gpt-5-chat-latest":           79.0,
-    "gpt-5-mini":                  72.0,
-    "gpt-5-mini-2025-08-07":       72.0,
-    "gpt-5-nano":                  60.0,
-    "gpt-5-nano-2025-08-07":       60.0,
-    "gpt-5-search-api":            79.0,
-    "gpt-5-search-api-2025-10-14": 79.0,
-    "gpt-5-codex":                 79.0,   # code-specialized
-    "gpt-5-pro":                   82.0,
-    "gpt-5-pro-2025-10-06":        82.0,
-    # GPT-5.1
-    "gpt-5.1":                     80.0,
-    "gpt-5.1-2025-11-13":          80.0,
-    "gpt-5.1-chat-latest":         80.0,
-    "gpt-5.1-codex":               80.0,
-    "gpt-5.1-codex-max":           83.0,
-    "gpt-5.1-codex-mini":          75.0,
-    # GPT-5.2
-    "gpt-5.2":                     82.0,
-    "gpt-5.2-2025-12-11":          82.0,
-    "gpt-5.2-chat-latest":         82.0,
-    "gpt-5.2-codex":               82.0,
-    "gpt-5.2-pro":                 84.0,
-    "gpt-5.2-pro-2025-12-11":      84.0,
-    # GPT-5.3
-    "gpt-5.3-chat-latest":         83.0,
-    "gpt-5.3-codex":               83.0,
-    # GPT-5.4
-    "gpt-5.4":                     85.0,
-    "gpt-5.4-2026-03-05":          85.0,
-    "gpt-5.4-mini":                77.0,
-    "gpt-5.4-mini-2026-03-17":     77.0,
-    "gpt-5.4-nano":                65.0,
-    "gpt-5.4-nano-2026-03-17":     65.0,
-    "gpt-5.4-pro":                 87.0,
-    "gpt-5.4-pro-2026-03-05":      87.0,
-    # GPT-5.5
-    "gpt-5.5":                     90.0,
-    "gpt-5.5-2026-04-23":          90.0,
-    "gpt-5.5-pro":                 92.0,
-    "gpt-5.5-pro-2026-04-23":      92.0,
+    # ── OpenAI GPT-3.x / 4.x ──
+    'gpt-4':                                   12.8,
+    'gpt-4-turbo':                             13.7,
+    'gpt-4-turbo-2024-04-09':                  13.7,
+    'gpt-4.1':                                 26.3,
+    'gpt-4.1-2025-04-14':                      26.3,
+    'gpt-4.1-mini':                            22.9,
+    'gpt-4.1-mini-2025-04-14':                 22.9,
+    'gpt-4.1-nano':                            13.0,
+    'gpt-4.1-nano-2025-04-14':                 13.0,
+    'gpt-4o':                                  17.3,
+    'gpt-4o-2024-05-13':                       14.5,
+    'gpt-4o-2024-08-06':                       18.6,
+    'gpt-4o-2024-11-20':                       17.3,
+    'gpt-4o-mini':                             12.6,
+    'gpt-4o-mini-2024-07-18':                  12.6,
 
-    # ── Anthropic ──────────────────────────────────────────────────────────
-    # Claude 3.5 (legacy, LiteLLM IDs)
-    "claude-3-5-sonnet-latest":    77.0,
-    "claude-3-5-haiku-latest":     65.0,
-    # Claude 4 Sonnet family (LiteLLM hyphenated IDs)
-    "claude-sonnet-4-20250514":    79.0,
-    "claude-4-sonnet-20250514":    79.0,
-    "claude-sonnet-4-5":           81.0,
-    "claude-sonnet-4-5-20250929":  81.0,
-    "claude-sonnet-4-6":           82.0,
-    # Claude 4 Haiku
-    "claude-haiku-4-5":            69.0,
-    "claude-haiku-4-5-20251001":   69.0,
-    # Claude 4 Opus family (LiteLLM hyphenated IDs)
-    "claude-4-opus-20250514":      86.0,
-    "claude-opus-4-20250514":      86.0,
-    "claude-opus-4-1":             87.0,
-    "claude-opus-4-1-20250805":    87.0,
-    "claude-opus-4-5":             84.0,
-    "claude-opus-4-5-20251101":    84.0,
-    "claude-opus-4-6":             85.0,
-    "claude-opus-4-6-20260205":    85.0,
-    "claude-opus-4-7":             86.0,
-    "claude-opus-4-7-20260416":    86.0,
+    # ── OpenAI GPT-5.x ──
+    'gpt-5':                                   44.6,
+    'gpt-5-2025-08-07':                        44.6,
+    'gpt-5-codex':                             44.6,
+    'gpt-5-mini':                              41.2,
+    'gpt-5-mini-2025-08-07':                   41.2,
+    'gpt-5-nano':                              26.8,
+    'gpt-5-nano-2025-08-07':                   26.8,
+    'gpt-5.1':                                 47.7,
+    'gpt-5.1-2025-11-13':                      47.7,
+    'gpt-5.1-codex':                           43.1,
+    'gpt-5.1-codex-max':                       43.1,
+    'gpt-5.1-codex-mini':                      38.6,
+    'gpt-5.2':                                 51.3,
+    'gpt-5.2-2025-12-11':                      51.3,
+    'gpt-5.2-codex':                           49.0,
+    'gpt-5.3-codex':                           53.6,
+    'gpt-5.4':                                 56.8,
+    'gpt-5.4-2026-03-05':                      56.8,
+    'gpt-5.4-mini':                            48.9,
+    'gpt-5.4-nano':                            44.0,
+    'gpt-5.5':                                 60.2,
+    'gpt-5.5-2026-04-23':                      60.2,
 
-    # ── Google ─────────────────────────────────────────────────────────────
-    # Gemini 2.5
-    "gemini-2.5-pro":                        80.0,
-    "gemini-2.5-flash":                      72.0,
-    "gemini-2.5-flash-lite":                 63.0,
-    "gemini-2.5-flash-preview-09-2025":      72.0,
-    "gemini-2.5-flash-lite-preview-09-2025": 63.0,
-    "gemini-flash-latest":                   72.0,
-    "gemini-flash-lite-latest":              63.0,
-    "gemini-pro-latest":                     80.0,
-    # Gemini 3.x
-    "gemini-3-flash-preview":                76.0,
-    "gemini-3-pro-preview":                  82.0,
-    "gemini-3.1-flash-lite-preview":         74.0,
-    "gemini-3.1-pro-preview":                84.0,
-    "gemini-3.1-pro-preview-customtools":    84.0,
-    # Gemma 3 open models
-    "gemma-3-27b-it":              66.0,
-    "gemma-3-12b-it":              62.0,
-    "gemma-3-4b-it":               54.0,
-    "gemma-3-1b-it":               44.0,
-    "gemma-3n-e4b-it":             52.0,
-    "gemma-3n-e2b-it":             44.0,
-    # Gemma 4 open models
-    "gemma-4-31b-it":              70.0,
-    "gemma-4-26b-a4b-it":          68.0,
+    # ── OpenAI o-series ──
+    'o1':                                      30.8,
+    'o1-2024-12-17':                           30.8,
+    'o1-pro':                                  25.8,
+    'o1-pro-2025-03-19':                       25.8,
+    'o3':                                      38.4,
+    'o3-2025-04-16':                           38.4,
+    'o3-mini':                                 25.9,
+    'o3-mini-2025-01-31':                      25.9,
+    'o3-mini-high':                            25.2,
+    'o4-mini':                                 33.1,
+    'o4-mini-2025-04-16':                      33.1,
 
-    # ── DeepSeek ───────────────────────────────────────────────────────────
-    "deepseek-chat":               71.0,
-    "deepseek-v3":                 79.0,
-    "deepseek-v3.2":               81.0,
-    "deepseek-r1":                 84.0,
-    "deepseek-reasoner":           83.0,
-    "deepseek-v4-flash":           73.0,
-    "deepseek-v4-pro":             83.0,
+    # ── Google Gemini ──
+    'gemini-2.5-flash':                        20.6,
+    'gemini-2.5-flash-lite':                   12.7,
+    'gemini-2.5-pro':                          34.6,
+    'gemini-3-flash-preview':                  35.0,
+    'gemini-3-pro-preview':                    48.4,
+    'gemini-3.1-flash-lite-preview':           33.5,
+    'gemini-3.1-pro-preview':                  57.2,
+    'gemini-3.1-pro-preview-customtools':      57.2,
+    'gemini-flash-latest':                     20.6,
+    'gemini-flash-lite-latest':                12.7,
+    'gemini-pro-latest':                       34.6,
 
-    # ── xAI Grok ────────────────────────────────────────────────────────────
-    # LiteLLM uses bare IDs without provider prefix for xai models
-    "grok-3":                      79.0,
-    "grok-3-mini":                 71.0,
-    "grok-3-mini-high":            73.0,
-    "grok-3-mini-low":             69.0,
-    "grok-4":                      82.0,
-    "grok-4-0709":                 82.0,
-    "grok-4-1-fast-non-reasoning": 76.0,
-    "grok-4-1-fast-reasoning":     78.0,
-    "grok-4-fast-non-reasoning":   77.0,
-    "grok-4-fast-reasoning":       79.0,
-    "grok-code-fast-1":            74.0,
-    "grok-code-fast-1-0825":       74.0,
+    # ── Google Gemma ──
+    'gemma-3-12b-it':                          8.8,
+    'gemma-3-1b-it':                           5.5,
+    'gemma-3-27b-it':                          10.3,
+    'gemma-3-4b-it':                           6.3,
+    'gemma-3n-e2b-it':                         4.8,
+    'gemma-3n-e4b-it':                         6.4,
+    'gemma-4-26b-a4b-it':                      31.2,
+    'gemma-4-31b-it':                          39.2,
 
-    # ── Kimi (Moonshot AI) — dotted IDs; no LiteLLM hyphenated equivalent ──
-    "kimi-k2.5":                   75.0,
-    "kimi-k2.6":                   77.0,
+    # ── DeepSeek ──
+    'deepseek-chat':                           32.1,
+    'deepseek-r1':                             27.1,
+    'deepseek-reasoner':                       27.1,
+    'deepseek-v3':                             16.5,
+    'deepseek-v3.2':                           32.1,
+    'deepseek-v4-flash':                       46.5,
+    'deepseek-v4-pro':                         51.5,
 
-    # ── MiniMax — dotted IDs; no LiteLLM hyphenated equivalent ─────────────
-    "minimax-m2.5":                70.0,
-    "minimax-m2.5-highspeed":      70.0,
-    "minimax-m2.7":                73.0,
-    "minimax-m2.7-highspeed":      73.0,
+    # ── xAI Grok ──
+    'grok-3':                                  21.6,
+    'grok-3-mini':                             32.1,
+    'grok-3-mini-high':                        32.1,
+    'grok-3-mini-low':                         32.1,
+    'grok-4':                                  41.5,
+    'grok-4-0709':                             41.5,
+    'grok-4-1-fast-non-reasoning':             23.6,
+    'grok-4-1-fast-reasoning':                 38.6,
+    'grok-4-fast-non-reasoning':               23.1,
+    'grok-4-fast-reasoning':                   35.1,
+    'grok-code-fast-1':                        28.7,
+    'grok-code-fast-1-0825':                   28.7,
 
-    # ── Qwen 3 (non-dotted) ────────────────────────────────────────────────
-    "qwen3-max":                   79.0,
-    "qwen3-max-preview":           79.0,
-    "qwen3-vl-235b-a22b-instruct": 77.0,
-    "qwen3-vl-235b-a22b-thinking": 80.0,
-    "qwen3-vl-8b-instruct":        62.0,
-    "qwen3-vl-8b-thinking":        65.0,
+    # ── Kimi (Moonshot) ──
+    'kimi-k2.5':                               46.8,
+    'kimi-k2.6':                               53.9,
 
-    # ── Qwen 3.5 / 3.6 — dotted IDs; no LiteLLM hyphenated equivalent ─────
-    "qwen3.5-397b-a17b":           76.0,
-    "qwen3.5-122b-a10b":           73.0,
-    "qwen3.5-plus":                72.0,
-    "qwen3.5-plus-2026-02-15":     72.0,
-    "qwen3.5-27b":                 68.0,
-    "qwen3.5-35b-a3b":             70.0,
-    "qwen3.5-flash":               60.0,
-    "qwen3.5-flash-2026-02-23":    60.0,
-    "qwen3.6-plus":                74.0,
-    "qwen3.6-plus-2026-04-02":     74.0,
-    "qwen3.6-35b-a3b":             71.0,
-    "qwen3.6-flash":               61.0,
-    "qwen3.6-flash-2026-04-16":    61.0,
+    # ── MiniMax ──
+    'minimax-m2.5':                            41.9,
+    'minimax-m2.5-highspeed':                  41.9,
+    'minimax-m2.7':                            49.6,
+    'minimax-m2.7-highspeed':                  49.6,
+
+    # ── Qwen (Alibaba) ──
+    'qwen3-max':                               39.9,
+    'qwen3-max-preview':                       26.1,
+    'qwen3-vl-235b-a22b-instruct':             20.8,
+    'qwen3-vl-235b-a22b-thinking':             27.6,
+    'qwen3-vl-8b-instruct':                    14.3,
+    'qwen3-vl-8b-thinking':                    16.7,
+    'qwen3.5-122b-a10b':                       41.6,
+    'qwen3.5-27b':                             42.1,
+    'qwen3.5-35b-a3b':                         37.1,
+    'qwen3.5-397b-a17b':                       45.0,
+    'qwen3.5-flash':                           25.9,
+    'qwen3.5-flash-2026-02-23':                25.9,
+    'qwen3.5-plus':                            38.6,
+    'qwen3.5-plus-2026-02-15':                 38.6,
+    'qwen3.6-35b-a3b':                         43.5,
+    'qwen3.6-flash':                           43.5,
+    'qwen3.6-flash-2026-04-16':                43.5,
+    'qwen3.6-plus':                            50.0,
+    'qwen3.6-plus-2026-04-02':                 50.0,
 }
 # fmt: on
 
 # fmt: off
-# TPS = median output tokens/second. Higher = faster.
-# Only O2-exclusive dotted-ID models are listed here; mainstream models
-# (OpenAI, Anthropic, Google, Grok, DeepSeek) are covered by the live AA fetch.
-# Source: artificialanalysis.ai, 2026-05. AA wins on overlap.
+# TPS = median output tokens/second. Higher = faster. Sourced from AA same as
+# STATIC_QUALITY above. Live AA fetch wins on overlap.
 STATIC_TPS: dict[str, float] = {
-    # ── Kimi (Moonshot AI) ─────────────────────────────────────────────────
-    "kimi-k2.5":                    37.3,
-    "kimi-k2.6":                    34.3,
+    # ── Anthropic Claude ──
+    'claude-4-opus-20250514':                  44.3,
+    'claude-4-sonnet-20250514':                55.7,
+    'claude-haiku-4-5':                        153.5,
+    'claude-haiku-4-5-20251001':               153.5,
+    'claude-opus-4':                           44.3,
+    'claude-opus-4-1':                         38.7,
+    'claude-opus-4-1-20250805':                38.7,
+    'claude-opus-4-20250514':                  44.3,
+    'claude-opus-4-5':                         67.2,
+    'claude-opus-4-5-20251101':                67.2,
+    'claude-opus-4-6':                         56.6,
+    'claude-opus-4-6-20260205':                56.6,
+    'claude-opus-4-7':                         62.1,
+    'claude-opus-4-7-20260416':                62.1,
+    'claude-sonnet-4':                         55.7,
+    'claude-sonnet-4-20250514':                55.7,
+    'claude-sonnet-4-5':                       57.5,
+    'claude-sonnet-4-5-20250929':              57.5,
+    'claude-sonnet-4-6':                       66.1,
 
-    # ── MiniMax ────────────────────────────────────────────────────────────
-    "minimax-m2.5":                 93.5,
-    "minimax-m2.7":                 52.7,
-    # highspeed variants omitted — MiniMax's "100 TPS" is a guaranteed
-    # throughput tier, not an independently measured median.
+    # ── OpenAI GPT-3.x / 4.x ──
+    'gpt-4':                                   28.3,
+    'gpt-4-turbo':                             34.2,
+    'gpt-4-turbo-2024-04-09':                  34.2,
+    'gpt-4.1':                                 127.4,
+    'gpt-4.1-2025-04-14':                      127.4,
+    'gpt-4.1-mini':                            86.3,
+    'gpt-4.1-mini-2025-04-14':                 86.3,
+    'gpt-4.1-nano':                            126.7,
+    'gpt-4.1-nano-2025-04-14':                 126.7,
+    'gpt-4o':                                  159.7,
+    'gpt-4o-2024-05-13':                       107.6,
+    'gpt-4o-2024-08-06':                       108.8,
+    'gpt-4o-2024-11-20':                       159.7,
+    'gpt-4o-mini':                             62.2,
+    'gpt-4o-mini-2024-07-18':                  62.2,
 
-    # ── Qwen 3.5 (AA uses parameter-count names; alias IDs share the value) ─
-    "qwen3.5-35b-a3b":             164.4,
-    "qwen3.5-flash":               164.4,   # alias for 35b-a3b
-    "qwen3.5-flash-2026-02-23":    164.4,
-    "qwen3.5-397b-a17b":            52.4,
-    "qwen3.5-plus":                 52.4,   # alias for 397b-a17b
-    "qwen3.5-plus-2026-02-15":      52.4,
-    "qwen3.5-122b-a10b":           148.8,
-    "qwen3.5-27b":                  86.8,
+    # ── OpenAI GPT-5.x ──
+    'gpt-5':                                   95.9,
+    'gpt-5-2025-08-07':                        95.9,
+    'gpt-5-codex':                             179.1,
+    'gpt-5-mini':                              78.4,
+    'gpt-5-mini-2025-08-07':                   78.4,
+    'gpt-5-nano':                              140.2,
+    'gpt-5-nano-2025-08-07':                   140.2,
+    'gpt-5.1':                                 154.6,
+    'gpt-5.1-2025-11-13':                      154.6,
+    'gpt-5.1-codex':                           194.8,
+    'gpt-5.1-codex-max':                       194.8,
+    'gpt-5.1-codex-mini':                      212.3,
+    'gpt-5.2':                                 74.0,
+    'gpt-5.2-2025-12-11':                      74.0,
+    'gpt-5.2-codex':                           102.3,
+    'gpt-5.3-codex':                           87.1,
+    'gpt-5.4':                                 84.8,
+    'gpt-5.4-2026-03-05':                      84.8,
+    'gpt-5.4-mini':                            177.8,
+    'gpt-5.4-nano':                            163.7,
+    'gpt-5.5':                                 78.7,
+    'gpt-5.5-2026-04-23':                      78.7,
 
-    # ── Qwen 3.6 ────────────────────────────────────────────────────────────
-    "qwen3.6-35b-a3b":             200.4,
-    "qwen3.6-plus":                 52.4,
-    "qwen3.6-plus-2026-04-02":      52.4,
-    # qwen3.6-flash: no AA data yet (released 2026-04-27)
+    # ── OpenAI o-series ──
+    'o1':                                      122.2,
+    'o1-2024-12-17':                           122.2,
+    'o3':                                      117.3,
+    'o3-2025-04-16':                           117.3,
+    'o3-mini':                                 144.1,
+    'o3-mini-2025-01-31':                      144.1,
+    'o3-mini-high':                            159.6,
+    'o4-mini':                                 134.0,
+    'o4-mini-2025-04-16':                      134.0,
+
+    # ── Google Gemini ──
+    'gemini-2.5-flash':                        199.8,
+    'gemini-2.5-flash-lite':                   292.9,
+    'gemini-2.5-pro':                          132.5,
+    'gemini-3-flash-preview':                  189.8,
+    'gemini-3-pro-preview':                    141.5,
+    'gemini-3.1-flash-lite-preview':           338.0,
+    'gemini-3.1-pro-preview':                  137.6,
+    'gemini-3.1-pro-preview-customtools':      137.6,
+    'gemini-flash-latest':                     199.8,
+    'gemini-flash-lite-latest':                292.9,
+    'gemini-pro-latest':                       132.5,
+
+    # ── Google Gemma ──
+    'gemma-3-12b-it':                          29.4,
+    'gemma-3-1b-it':                           60.7,
+    'gemma-3-27b-it':                          31.7,
+    'gemma-3-4b-it':                           30.7,
+    'gemma-3n-e2b-it':                         59.9,
+    'gemma-3n-e4b-it':                         20.0,
+    'gemma-4-31b-it':                          35.1,
+
+    # ── DeepSeek ──
+    'deepseek-v4-flash':                       75.4,
+    'deepseek-v4-pro':                         33.3,
+
+    # ── xAI Grok ──
+    'grok-3-mini':                             135.1,
+    'grok-3-mini-high':                        135.1,
+    'grok-3-mini-low':                         135.1,
+    'grok-4':                                  45.2,
+    'grok-4-0709':                             45.2,
+    'grok-4-1-fast-non-reasoning':             109.2,
+    'grok-4-1-fast-reasoning':                 84.9,
+    'grok-4-fast-non-reasoning':               66.7,
+    'grok-4-fast-reasoning':                   61.8,
+    'grok-code-fast-1':                        83.1,
+    'grok-code-fast-1-0825':                   83.1,
+
+    # ── Kimi (Moonshot) ──
+    'kimi-k2.5':                               45.5,
+    'kimi-k2.6':                               28.2,
+
+    # ── MiniMax ──
+    'minimax-m2.5':                            103.6,
+    'minimax-m2.5-highspeed':                  103.6,
+    'minimax-m2.7':                            49.8,
+    'minimax-m2.7-highspeed':                  49.8,
+
+    # ── Qwen (Alibaba) ──
+    'qwen3-max':                               46.2,
+    'qwen3-max-preview':                       52.2,
+    'qwen3-vl-235b-a22b-instruct':             51.2,
+    'qwen3-vl-235b-a22b-thinking':             33.4,
+    'qwen3-vl-8b-instruct':                    146.5,
+    'qwen3-vl-8b-thinking':                    137.1,
+    'qwen3.5-122b-a10b':                       148.5,
+    'qwen3.5-27b':                             84.6,
+    'qwen3.5-35b-a3b':                         127.8,
+    'qwen3.5-397b-a17b':                       51.7,
+    'qwen3.5-flash':                           248.1,
+    'qwen3.5-flash-2026-02-23':                248.1,
+    'qwen3.5-plus':                            56.1,
+    'qwen3.5-plus-2026-02-15':                 56.1,
+    'qwen3.6-35b-a3b':                         189.4,
+    'qwen3.6-flash':                           189.4,
+    'qwen3.6-flash-2026-04-16':                189.4,
+    'qwen3.6-plus':                            52.8,
+    'qwen3.6-plus-2026-04-02':                 52.8,
 }
+# fmt: on
 
-# TTFT = median time-to-first-token in seconds. Lower = faster.
-# Same sourcing rules as STATIC_TPS above.
+# fmt: off
+# TTFT = median time-to-first-token in seconds. Lower = faster. Sourced from AA
+# same as STATIC_QUALITY above. Live AA fetch wins on overlap.
 STATIC_TTFT: dict[str, float] = {
-    # ── Kimi ───────────────────────────────────────────────────────────────
-    "kimi-k2.5":                     3.03,
-    "kimi-k2.6":                     3.09,
+    # ── Anthropic Claude ──
+    'claude-4-opus-20250514':                  9.81,
+    'claude-4-sonnet-20250514':                8.65,
+    'claude-haiku-4-5':                        11.78,
+    'claude-haiku-4-5-20251001':               11.78,
+    'claude-opus-4':                           9.81,
+    'claude-opus-4-1':                         8.17,
+    'claude-opus-4-1-20250805':                8.17,
+    'claude-opus-4-20250514':                  9.81,
+    'claude-opus-4-5':                         11.60,
+    'claude-opus-4-5-20251101':                11.60,
+    'claude-opus-4-6':                         15.72,
+    'claude-opus-4-6-20260205':                15.72,
+    'claude-opus-4-7':                         24.73,
+    'claude-opus-4-7-20260416':                24.73,
+    'claude-sonnet-4':                         8.65,
+    'claude-sonnet-4-20250514':                8.65,
+    'claude-sonnet-4-5':                       7.32,
+    'claude-sonnet-4-5-20250929':              7.32,
+    'claude-sonnet-4-6':                       74.80,
 
-    # ── MiniMax ────────────────────────────────────────────────────────────
-    "minimax-m2.5":                  1.70,
-    "minimax-m2.7":                  1.91,
+    # ── OpenAI GPT-3.x / 4.x ──
+    'gpt-4':                                   0.90,
+    'gpt-4-turbo':                             0.87,
+    'gpt-4-turbo-2024-04-09':                  0.87,
+    'gpt-4.1':                                 0.59,
+    'gpt-4.1-2025-04-14':                      0.59,
+    'gpt-4.1-mini':                            0.52,
+    'gpt-4.1-mini-2025-04-14':                 0.52,
+    'gpt-4.1-nano':                            0.54,
+    'gpt-4.1-nano-2025-04-14':                 0.54,
+    'gpt-4o':                                  0.54,
+    'gpt-4o-2024-05-13':                       0.66,
+    'gpt-4o-2024-08-06':                       0.71,
+    'gpt-4o-2024-11-20':                       0.54,
+    'gpt-4o-mini':                             0.60,
+    'gpt-4o-mini-2024-07-18':                  0.60,
 
-    # ── Qwen 3.5 ────────────────────────────────────────────────────────────
-    "qwen3.5-35b-a3b":               2.16,
-    "qwen3.5-flash":                 2.16,
-    "qwen3.5-flash-2026-02-23":      2.16,
-    "qwen3.5-397b-a17b":             2.48,
-    "qwen3.5-plus":                  2.48,
-    "qwen3.5-plus-2026-02-15":       2.48,
-    "qwen3.5-122b-a10b":             2.49,
-    "qwen3.5-27b":                   5.77,
+    # ── OpenAI GPT-5.x ──
+    'gpt-5':                                   71.67,
+    'gpt-5-2025-08-07':                        71.67,
+    'gpt-5-codex':                             6.61,
+    'gpt-5-mini':                              71.90,
+    'gpt-5-mini-2025-08-07':                   71.90,
+    'gpt-5-nano':                              74.72,
+    'gpt-5-nano-2025-08-07':                   74.72,
+    'gpt-5.1':                                 17.00,
+    'gpt-5.1-2025-11-13':                      17.00,
+    'gpt-5.1-codex':                           3.51,
+    'gpt-5.1-codex-max':                       3.51,
+    'gpt-5.1-codex-mini':                      4.79,
+    'gpt-5.2':                                 53.30,
+    'gpt-5.2-2025-12-11':                      53.30,
+    'gpt-5.2-codex':                           2.00,
+    'gpt-5.3-codex':                           51.60,
+    'gpt-5.4':                                 148.07,
+    'gpt-5.4-2026-03-05':                      148.07,
+    'gpt-5.4-mini':                            4.14,
+    'gpt-5.4-nano':                            2.46,
+    'gpt-5.5':                                 32.17,
+    'gpt-5.5-2026-04-23':                      32.17,
 
-    # ── Qwen 3.6 ────────────────────────────────────────────────────────────
-    "qwen3.6-35b-a3b":               2.43,
-    "qwen3.6-plus":                  2.68,
-    "qwen3.6-plus-2026-04-02":       2.68,
+    # ── OpenAI o-series ──
+    'o1':                                      16.40,
+    'o1-2024-12-17':                           16.40,
+    'o3':                                      5.87,
+    'o3-2025-04-16':                           5.87,
+    'o3-mini':                                 8.75,
+    'o3-mini-2025-01-31':                      8.75,
+    'o3-mini-high':                            18.67,
+    'o4-mini':                                 19.20,
+    'o4-mini-2025-04-16':                      19.20,
+
+    # ── Google Gemini ──
+    'gemini-2.5-flash':                        0.50,
+    'gemini-2.5-flash-lite':                   0.58,
+    'gemini-2.5-pro':                          22.71,
+    'gemini-3-flash-preview':                  0.83,
+    'gemini-3-pro-preview':                    31.78,
+    'gemini-3.1-flash-lite-preview':           4.92,
+    'gemini-3.1-pro-preview':                  30.75,
+    'gemini-3.1-pro-preview-customtools':      30.75,
+    'gemini-flash-latest':                     0.50,
+    'gemini-flash-lite-latest':                0.58,
+    'gemini-pro-latest':                       22.71,
+
+    # ── Google Gemma ──
+    'gemma-3-12b-it':                          1.78,
+    'gemma-3-1b-it':                           0.65,
+    'gemma-3-27b-it':                          0.71,
+    'gemma-3-4b-it':                           1.19,
+    'gemma-3n-e2b-it':                         0.43,
+    'gemma-3n-e4b-it':                         0.48,
+    'gemma-4-31b-it':                          1.05,
+
+    # ── DeepSeek ──
+    'deepseek-v4-flash':                       0.85,
+    'deepseek-v4-pro':                         1.13,
+
+    # ── xAI Grok ──
+    'grok-3-mini':                             0.43,
+    'grok-3-mini-high':                        0.43,
+    'grok-3-mini-low':                         0.43,
+    'grok-4':                                  11.82,
+    'grok-4-0709':                             11.82,
+    'grok-4-1-fast-non-reasoning':             0.47,
+    'grok-4-1-fast-reasoning':                 15.78,
+    'grok-4-fast-non-reasoning':               0.39,
+    'grok-4-fast-reasoning':                   7.70,
+    'grok-code-fast-1':                        5.93,
+    'grok-code-fast-1-0825':                   5.93,
+
+    # ── Kimi (Moonshot) ──
+    'kimi-k2.5':                               1.27,
+    'kimi-k2.6':                               1.35,
+
+    # ── MiniMax ──
+    'minimax-m2.5':                            1.14,
+    'minimax-m2.5-highspeed':                  1.14,
+    'minimax-m2.7':                            1.39,
+    'minimax-m2.7-highspeed':                  1.39,
+
+    # ── Qwen (Alibaba) ──
+    'qwen3-max':                               1.43,
+    'qwen3-max-preview':                       1.82,
+    'qwen3-vl-235b-a22b-instruct':             1.08,
+    'qwen3-vl-235b-a22b-thinking':             1.29,
+    'qwen3-vl-8b-instruct':                    1.10,
+    'qwen3-vl-8b-thinking':                    1.05,
+    'qwen3.5-122b-a10b':                       1.12,
+    'qwen3.5-27b':                             1.40,
+    'qwen3.5-35b-a3b':                         1.12,
+    'qwen3.5-397b-a17b':                       1.40,
+    'qwen3.5-flash':                           1.05,
+    'qwen3.5-flash-2026-02-23':                1.05,
+    'qwen3.5-plus':                            1.30,
+    'qwen3.5-plus-2026-02-15':                 1.30,
+    'qwen3.6-35b-a3b':                         1.29,
+    'qwen3.6-flash':                           1.29,
+    'qwen3.6-flash-2026-04-16':                1.29,
+    'qwen3.6-plus':                            1.49,
+    'qwen3.6-plus-2026-04-02':                 1.49,
 }
 # fmt: on
