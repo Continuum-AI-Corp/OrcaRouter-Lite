@@ -1,0 +1,55 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local dev artifacts
+.env
+.env.local
+.env.*.local
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Tests / docs / dev-only
+tests/
+docs/
+*.md
+!README.md
+
+# Claude Code / agent caches
+.claude/
+.context/
+.gstack/
+
+# Docker / compose
+docker-compose*.yml
+Dockerfile*
+.dockerignore

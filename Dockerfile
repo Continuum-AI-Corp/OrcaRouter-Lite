@@ -1,6 +1,16 @@
 # ── Build stage ────────────────────────────────────────
 FROM python:3.12-slim AS builder
 
+# Build deps for any source-built wheels (cryptography / bcrypt fall back to
+# source on platforms without manylinux wheels). Currently all listed deps
+# ship wheels for linux/amd64 + arm64, but adding these costs ~80MB in the
+# builder layer (discarded in the runtime stage) and prevents silent breaks
+# the next time we add a native dep.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc libffi-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY pyproject.toml .
 RUN mkdir -p app packages \
