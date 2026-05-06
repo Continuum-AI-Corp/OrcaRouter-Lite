@@ -636,7 +636,9 @@ def _apply_static_baseline(qi: QualityIndex, catalog_ids: set[str]) -> QualityIn
     """
     try:
         from packages.litellm_adapter.quality_scores_static import (
-            STATIC_QUALITY, STATIC_TPS, STATIC_TTFT,
+            STATIC_QUALITY,
+            STATIC_TPS,
+            STATIC_TTFT,
         )
     except ImportError:
         return qi

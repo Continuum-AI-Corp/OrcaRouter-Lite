@@ -38,7 +38,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import delete as sql_delete, select
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import router_cache
