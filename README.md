@@ -240,19 +240,18 @@ Repo includes `railway.json` with Dockerfile build + healthcheck pre-configured.
 
 ### Render / Bare Docker
 
-```bash
-# Render: connect repo, root = ., let it auto-detect the Dockerfile.
-# Add a Disk mounted at /data, set the same env vars as Railway above.
+**Render:** connect repo, root = `.`, let it auto-detect the Dockerfile.
+Add a Disk mounted at `/data`, set the same env vars as Railway above.
 
-# Bare Docker (single-host VM):
-docker volume create lite_data
-docker run -d -p 8000:8000 \
-  -v lite_data:/data \
-  -e DATABASE_URL=sqlite+aiosqlite:////data/orca.db \
-  -e CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) \
-  -e API_KEY_PEPPER=$(openssl rand -hex 32) \
-  -e OPENAI_API_KEY=sk-... \
-  ghcr.io/continuum-ai-corp/orcarouter-lite:latest    # image not yet published
+**Bare Docker (single-host VM):** the repo's `docker-compose.yml` already wires
+the `lite-data` volume to `/data`, exposes port 8000, and reads `.env` from the
+host. Just populate `.env`:
+
+```bash
+cp .env.example .env
+echo "CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
+echo "API_KEY_PEPPER=$(openssl rand -hex 32)" >> .env
+docker compose up -d
 ```
 
 ## What's in the box
