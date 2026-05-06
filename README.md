@@ -184,80 +184,12 @@ for chunk in client.chat.completions.create(
 
 ## Deploy somewhere else
 
-| Platform | Setup |
+| Platform | One-click |
 |---|---|
-| [Fly.io](#flyio) | `fly launch --no-deploy` → `fly secrets set ...` → `fly deploy` (`fly.toml` in repo) |
-| [Railway](#railway) | Connect repo, paste env vars (`railway.json` in repo) |
-| [Render](#render--bare-docker) | Connect repo (auto-detects Dockerfile), add `/data` Disk, paste env vars |
-| [Bare Docker](#render--bare-docker) | `cp .env.example .env`, append two secrets, `docker compose up -d` |
-
-### Required secrets (all platforms)
-
-Generate two secrets before deploying. Without them the app falls back to a
-hardcoded dev key (`packages/auth/encryption.py:47`) — every operator's stored
-provider keys would be decryptable from public source code.
-
-```bash
-# CREDENTIAL_ENCRYPTION_KEY — encrypts provider keys at rest in SQLite.
-openssl rand -hex 32
-
-# API_KEY_PEPPER — strengthens API-key hashing from SHA-256 to HMAC-SHA256.
-openssl rand -hex 32
-```
-
-Provider keys can be added later through the dashboard at `/` — they don't need
-to be set at deploy time.
-
-### Fly.io
-
-Repo includes `fly.toml` with volume + healthcheck + auto-stop pre-configured.
-Fly app names are globally unique, so `fly launch` will accept the committed
-`orcarouter-lite` if available, or prompt for an alternative and rewrite
-`fly.toml` for you.
-
-```bash
-fly auth login
-fly launch --no-deploy                                          # pick app name + region; updates fly.toml in place
-fly volumes create lite_data --size 1 --region iad              # match the region you chose above
-fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
-fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
-fly secrets set OPENAI_API_KEY=sk-...                           # optional — also addable from the dashboard
-fly deploy
-```
-
-`fly.toml` configures a minimum-spec VM (`shared-cpu-1x` / 512MB / 1GB volume).
-`auto_stop_machines = "stop"` + `min_machines_running = 0` stops the machine
-when idle and auto-starts on the next request, controlling cost.
-
-### Railway
-
-Repo includes `railway.json` with Dockerfile build + healthcheck pre-configured.
-
-1. **Connect repo**: New Project → Deploy from GitHub repo → pick this repo
-2. **Set env vars** in Service → Variables:
-   - `CREDENTIAL_ENCRYPTION_KEY=` (paste output of `openssl rand -hex 32`)
-   - `API_KEY_PEPPER=` (paste another `openssl rand -hex 32`)
-   - Optional: `OPENAI_API_KEY=sk-...` or any other provider key — also
-     addable later from the dashboard at `/`
-3. **Generate a public domain**: Service → Settings → Networking →
-   Public Networking → Generate Domain.
-4. Railway auto-deploys on every push to `main`.
-
-### Render / Bare Docker
-
-**Render:** connect repo, root = `.`, let it auto-detect the Dockerfile.
-Add a Disk mounted at `/data`, set the same env vars as Railway above.
-
-**Bare Docker (single-host VM):** the repo's `docker-compose.yml` already wires
-the `lite-data` volume to `/data`, exposes port 8000, and reads `.env` from the
-host. Just populate `.env`:
-
-```bash
-cp .env.example .env
-echo "CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
-echo "API_KEY_PEPPER=$(openssl rand -hex 32)" >> .env
-docker compose up -d
-```
+| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Fly.io | `fly launch --dockerfile Dockerfile` |
+| Render | Connect repo, root dir = `.` |
+| Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image coming soon) |
 
 ## What's in the box
 
