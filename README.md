@@ -211,8 +211,9 @@ to be set at deploy time.
 ### Fly.io
 
 Repo includes `fly.toml` with volume + healthcheck + auto-stop pre-configured.
-The committed `app = "orcarouter-lite"` is a placeholder — `fly launch` rewrites
-it with the unique name you pick.
+Fly app names are globally unique, so `fly launch` will accept the committed
+`orcarouter-lite` if available, or prompt for an alternative and rewrite
+`fly.toml` for you.
 
 ```bash
 fly auth login

@@ -1,13 +1,12 @@
 # Fly.io app configuration for OrcaRouter-Lite.
 #
-# IMPORTANT: the `app` value below must match the unique name you create on
-# Fly. The simplest path is `fly launch`, which prompts for an app name and
-# rewrites this file in place. If you'd rather create the app manually, edit
-# the `app = ...` line below first, then run `fly apps create <same-name>`.
+# Fly app names are globally unique. `fly launch` will accept the committed
+# `orcarouter-lite` if available; if it's already taken, it prompts for an
+# alternative and rewrites this file in place — no manual edit needed.
 #
-# Recommended first-time flow (no manual edit needed):
+# First-time flow:
 #   fly auth login
-#   fly launch --no-deploy            # picks app name, updates this file
+#   fly launch --no-deploy
 #   fly volumes create lite_data --size 1 --region iad
 #   fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
 #   fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
