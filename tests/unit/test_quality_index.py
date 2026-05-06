@@ -464,6 +464,33 @@ async def test_get_quality_index_returns_missing_key_when_unconfigured(monkeypat
     assert idx.scores  # non-empty due to static baseline
 
 
+async def test_static_baseline_keeps_hyphenated_keys_for_dotted_catalog_ids(monkeypatch):
+    """When the catalog carries an O2-native dotted ID (claude-opus-4.7) but
+    the static table is keyed under AA's hyphenated form (claude-opus-4-7),
+    the catalog_ids filter must accept both — otherwise the hyphenated baseline
+    is stripped and `_lookup_score`'s dot→hyphen fallback finds nothing,
+    leaving hosted Claude/Qwen unscored under quality / balanced / fastest.
+    """
+    from app import config as cfg
+    from app.auto_routing import _lookup_score
+    from packages.litellm_adapter import quality_index
+
+    quality_index.reset_cache()
+    monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "")
+    cfg.get_settings.cache_clear()
+
+    # Catalog has the dotted form only (as it would when the model comes
+    # exclusively from HOSTED_CATALOG_SUPPLEMENT, not LiteLLM model_cost).
+    idx = await quality_index.get_quality_index(catalog_ids={"claude-opus-4.7"})
+
+    # The hyphenated static key survives the filter, and a dot→hyphen lookup
+    # against the deployment id resolves it.
+    assert _lookup_score(idx.scores, "claude-opus-4.7") is not None, (
+        "Hosted Claude must have a baseline score even when only the dotted "
+        "deployment ID is in catalog_ids"
+    )
+
+
 async def test_get_quality_index_fetches_and_caches(monkeypatch):
     """Real fetch + cache flow: first call drives the AA-shaped HTTP mock
     through the real `_fetch_remote` parser; second call within TTL

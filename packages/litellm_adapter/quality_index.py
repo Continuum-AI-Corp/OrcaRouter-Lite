@@ -643,8 +643,18 @@ def _apply_static_baseline(qi: QualityIndex, catalog_ids: set[str]) -> QualityIn
     if not STATIC_QUALITY and not STATIC_TPS and not STATIC_TTFT:
         return qi
 
+    # Accept both the literal catalog_id AND its dot↔hyphen variant. AA
+    # publishes hyphenated keys (`claude-opus-4-7`) but our catalog carries
+    # the O2-native dotted form (`claude-opus-4.7`) via HOSTED_CATALOG_SUPPLEMENT
+    # when LiteLLM doesn't ship the model. A naive `if k in catalog_ids` filter
+    # would drop the hyphenated baseline before `_lookup_score`'s dot→hyphen
+    # fallback could rescue it, leaving hosted Claude/Qwen unscored under
+    # quality / balanced / fastest strategies.
+    accept = set(catalog_ids)
+    accept.update(cid.replace(".", "-") for cid in catalog_ids if "." in cid)
+
     def _merge(static: dict[str, float], live: dict[str, float]) -> dict[str, float]:
-        filtered = {k: v for k, v in static.items() if k in catalog_ids}
+        filtered = {k: v for k, v in static.items() if k in accept}
         return {**filtered, **live}  # live (AA) wins on overlap
 
     merged_quality = _merge(STATIC_QUALITY, qi.scores)
