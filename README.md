@@ -204,11 +204,13 @@ to be set at deploy time.
 ### Fly.io
 
 Repo includes `fly.toml` with volume + healthcheck + auto-stop pre-configured.
+The committed `app = "orcarouter-lite"` is a placeholder — `fly launch` rewrites
+it with the unique name you pick.
 
 ```bash
 fly auth login
-fly apps create my-orca-lite                                    # pick a name
-fly volumes create lite_data --size 1 --region iad              # match fly.toml region
+fly launch --no-deploy                                          # pick app name + region; updates fly.toml in place
+fly volumes create lite_data --size 1 --region iad              # match the region you chose above
 fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
 fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
 fly secrets set OPENAI_API_KEY=sk-...                           # optional — also addable from the dashboard

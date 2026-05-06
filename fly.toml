@@ -1,12 +1,17 @@
 # Fly.io app configuration for OrcaRouter-Lite.
 #
-# First-time setup (replace `app` below with your own name):
+# IMPORTANT: the `app` value below must match the unique name you create on
+# Fly. The simplest path is `fly launch`, which prompts for an app name and
+# rewrites this file in place. If you'd rather create the app manually, edit
+# the `app = ...` line below first, then run `fly apps create <same-name>`.
+#
+# Recommended first-time flow (no manual edit needed):
 #   fly auth login
-#   fly apps create my-orca-lite
+#   fly launch --no-deploy            # picks app name, updates this file
 #   fly volumes create lite_data --size 1 --region iad
 #   fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
 #   fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
-#   fly secrets set OPENAI_API_KEY=sk-...   # at least one provider
+#   fly secrets set OPENAI_API_KEY=sk-...   # optional
 #   fly deploy
 #
 # Subsequent deploys: `fly deploy`. Secrets are injected at runtime — they
