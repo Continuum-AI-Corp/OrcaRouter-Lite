@@ -184,12 +184,77 @@ for chunk in client.chat.completions.create(
 
 ## Deploy somewhere else
 
-| Platform | One-click |
-|---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Connect repo, root dir = `.` |
-| Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image coming soon) |
+### Required secrets (all platforms)
+
+Generate two secrets before deploying. Without them the app falls back to a
+hardcoded dev key (`packages/auth/encryption.py:47`) — every operator's stored
+provider keys would be decryptable from public source code.
+
+```bash
+# CREDENTIAL_ENCRYPTION_KEY — encrypts provider keys at rest in SQLite.
+openssl rand -hex 32
+
+# API_KEY_PEPPER — strengthens API-key hashing from SHA-256 to HMAC-SHA256.
+openssl rand -hex 32
+```
+
+Plus at least one provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GOOGLE_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `DEEPSEEK_API_KEY`,
+`TOGETHER_API_KEY`, `FIREWORKS_API_KEY`) **or** `ORCAROUTER_API_KEY` for the
+hosted fallback.
+
+### Fly.io
+
+Repo includes `fly.toml` with volume + healthcheck + auto-stop pre-configured.
+
+```bash
+fly auth login
+fly apps create my-orca-lite                                    # pick a name
+fly volumes create lite_data --size 1 --region iad              # match fly.toml region
+fly secrets set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32)
+fly secrets set API_KEY_PEPPER=$(openssl rand -hex 32)
+fly secrets set OPENAI_API_KEY=sk-...                           # at least one provider
+fly deploy
+```
+
+`fly.toml` configures a minimum-spec VM (`shared-cpu-1x` / 512MB / 1GB volume).
+`auto_stop_machines = "stop"` + `min_machines_running = 0` stops the machine
+when idle and auto-starts on the next request, controlling cost.
+
+### Railway
+
+Repo includes `railway.json` with Dockerfile build + healthcheck pre-configured.
+
+1. **Connect repo**: New Project → Deploy from GitHub repo → pick this repo
+2. **Create a volume**: open the Command Palette (`⌘K`) and select "Create Volume"
+   (or right-click the project canvas → New → Volume). When prompted, attach it
+   to the service and set the **mount path** to `/data`. Default size depends on
+   plan (Hobby: 5 GB) — 1 GB is plenty for SQLite.
+3. **Set env vars** in Service → Variables:
+   - `DATABASE_URL=sqlite+aiosqlite:////data/orca.db` (note the four slashes)
+   - `CREDENTIAL_ENCRYPTION_KEY=` (paste output of `openssl rand -hex 32`)
+   - `API_KEY_PEPPER=` (paste another `openssl rand -hex 32`)
+   - `OPENAI_API_KEY=sk-...` (or another provider key)
+4. **Generate a public domain**: Service → Settings → Networking →
+   Public Networking → Generate Domain.
+5. Railway auto-deploys on every push to `main`.
+
+### Render / Bare Docker
+
+```bash
+# Render: connect repo, root = ., let it auto-detect the Dockerfile.
+# Add a Disk mounted at /data, set the same env vars as Railway above.
+
+# Bare Docker (single-host VM):
+docker volume create lite_data
+docker run -d -p 8000:8000 \
+  -v lite_data:/data \
+  -e DATABASE_URL=sqlite+aiosqlite:////data/orca.db \
+  -e CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) \
+  -e API_KEY_PEPPER=$(openssl rand -hex 32) \
+  -e OPENAI_API_KEY=sk-... \
+  ghcr.io/continuum-ai-corp/orcarouter-lite:latest    # image not yet published
+```
 
 ## What's in the box
 
