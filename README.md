@@ -184,6 +184,13 @@ for chunk in client.chat.completions.create(
 
 ## Deploy somewhere else
 
+| Platform | Setup |
+|---|---|
+| [Fly.io](#flyio) | `fly launch --no-deploy` → `fly secrets set ...` → `fly deploy` (`fly.toml` in repo) |
+| [Railway](#railway) | Connect repo, add `/data` volume, paste env vars (`railway.json` in repo) |
+| [Render](#render--bare-docker) | Connect repo (auto-detects Dockerfile), add `/data` Disk, paste env vars |
+| [Bare Docker](#render--bare-docker) | `cp .env.example .env`, append two secrets, `docker compose up -d` |
+
 ### Required secrets (all platforms)
 
 Generate two secrets before deploying. Without them the app falls back to a
