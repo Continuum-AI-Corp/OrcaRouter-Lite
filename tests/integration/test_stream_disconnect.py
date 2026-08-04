@@ -2,7 +2,7 @@
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app import router_cache
 from app.routes.chat import chat_completions
@@ -42,6 +42,7 @@ async def test_sse_generator_clean_teardown(monkeypatch):
     )
 
     db_mock = AsyncMock()
+    db_mock.add = MagicMock()  # Synchronous method on AsyncSession
 
     # Call the chat_completions endpoint handler
     response = await chat_completions(
