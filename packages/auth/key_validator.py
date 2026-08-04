@@ -49,6 +49,7 @@ async def validate_api_key(raw_key: str, session: AsyncSession) -> KeyContext:
     try:
         row.last_used_at = datetime.now(timezone.utc)
         await session.flush()
+        await session.commit()
     except Exception:
         pass
 
