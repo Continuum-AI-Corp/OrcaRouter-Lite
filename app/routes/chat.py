@@ -531,11 +531,21 @@ async def chat_completions(
                     requested_model=requested_model,
                     actual_resolved=agg_model,
                 )
-                db.add(log)
-                try:
-                    await db.commit()
-                except Exception as commit_err:
-                    logger.warning("request_log_commit_failed", error=str(commit_err))
+                from packages.db import session as session_mod
+
+                if session_mod._session_factory is not None:
+                    try:
+                        async with session_mod._session_factory() as s:
+                            s.add(log)
+                            await s.commit()
+                    except Exception as commit_err:
+                        logger.warning("request_log_commit_failed", error=str(commit_err))
+                else:
+                    db.add(log)
+                    try:
+                        await db.commit()
+                    except Exception as commit_err:
+                        logger.warning("request_log_commit_failed", error=str(commit_err))
 
             try:
                 async for chunk in _aiter(stream_obj):
@@ -551,6 +561,7 @@ async def chat_completions(
                     if d.get("model"):
                         agg_model = d["model"]
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
+                yield "data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
                 # Client closed the connection (Ctrl+C, tab closed, browser
                 # navigated away, proxy timeout, ...). Two distinct signals
@@ -629,14 +640,6 @@ async def chat_completions(
                 }
                 yield f"data: {json.dumps(err_body)}\n\n"
             finally:
-                # Try to send the [DONE] sentinel. If the client is still
-                # listening they need it to stop reading. If they're gone
-                # (cancel path already ran), the yield will raise — swallow
-                # silently because there's no consumer to deliver to.
-                try:
-                    yield "data: [DONE]\n\n"
-                except (asyncio.CancelledError, GeneratorExit):
-                    pass
                 # Same shielding reason as the cancel branch: ensure the
                 # log write actually completes before we unwind, even if
                 # we're inside a cancelled scope. The cancel branch may
