@@ -1,11 +1,11 @@
 import pytest
-from sqlalchemy import select
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.main import create_app
+from app.seed import seed_initial_state
 from packages.db import session as session_mod
 from packages.db.models.api_key import ApiKey
-from app.seed import seed_initial_state
 
 
 @pytest.mark.asyncio
@@ -13,9 +13,10 @@ async def test_api_key_last_used_at_is_persisted(tmp_sqlite_url, monkeypatch):
     """Verify that last_used_at is committed to DB when an API key is used."""
     monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
 
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
     from packages.db.engine import build_engine
     from packages.db.models.base import Base
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     engine = build_engine(tmp_sqlite_url)
     async with engine.begin() as conn:
