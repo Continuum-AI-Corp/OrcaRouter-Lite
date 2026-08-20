@@ -151,14 +151,25 @@ def test_version_suffix_does_not_confuse_distinct_models():
     ) is False
 
 
-def test_preview_suffix_is_not_a_version_variant():
+def test_preview_suffix_is_not_a_version_variant(monkeypatch):
     """`gpt-4-turbo-preview` is a DISTINCT catalog model from `gpt-4-turbo`,
     not a version of it. The version-suffix pass must NOT match `-preview`
     or the cache will be poisoned across these two models. Catalog lookup
     catches the cascade after the version pass falls through."""
     from app.routes.chat import _served_same_group_as_requested
-    # Both gpt-4-turbo and gpt-4-turbo-preview are in CATALOG_BY_ID as
-    # distinct entries. The catalog lookup should detect this as a cascade.
+    from packages.litellm_adapter import catalog as catalog_mod
+
+    # Pin the catalog entry instead of relying on the live litellm-sourced
+    # CATALOG: gpt-4-turbo-preview is past its deprecation_date, so current
+    # litellm metadata drops it at load and the catalog-lookup pass would
+    # silently fall through to the permissive default.
+    monkeypatch.setitem(
+        catalog_mod.CATALOG_BY_ID,
+        "gpt-4-turbo-preview",
+        catalog_mod.CatalogModel(
+            id="gpt-4-turbo-preview", provider="openai", litellm_prefix="openai/"
+        ),
+    )
     assert _served_same_group_as_requested(
         requested_group="gpt-4-turbo",
         served_model="gpt-4-turbo-preview",
