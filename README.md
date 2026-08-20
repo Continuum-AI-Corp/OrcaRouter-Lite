@@ -202,6 +202,7 @@ for chunk in client.chat.completions.create(
 - `GET/POST/DELETE /v1/keys/...` — list / rotate / revoke API keys
 - Single-page dashboard at `/`
 - SQLite by default; Postgres opt-in via `DATABASE_URL`; Redis optional
+- Multi-worker safe: set `REDIS_URL` and config changes (provider keys, routing, quality overrides) are invalidated across all workers/replicas via pub/sub. Single worker (the default) needs no Redis.
 
 ### Cross-provider prompt cache
 
