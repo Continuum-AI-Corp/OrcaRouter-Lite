@@ -1,8 +1,9 @@
 """Test to verify clean teardown of sse() generator without RuntimeError on client disconnect."""
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app import router_cache
 from app.routes.chat import chat_completions

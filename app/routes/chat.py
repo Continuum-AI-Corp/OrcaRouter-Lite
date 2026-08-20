@@ -639,6 +639,10 @@ async def chat_completions(
                     }
                 }
                 yield f"data: {json.dumps(err_body)}\n\n"
+                # Not handling GeneratorExit here, so yielding the sentinel
+                # is legal; clients reading until [DONE] still get it after
+                # an upstream error.
+                yield "data: [DONE]\n\n"
             finally:
                 # Same shielding reason as the cancel branch: ensure the
                 # log write actually completes before we unwind, even if
