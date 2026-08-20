@@ -42,7 +42,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import router_cache
+from app import cache_invalidation_bus
 from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.router_cache import usable_providers_from_db
@@ -184,7 +184,7 @@ async def set_provider_key(
         db.add(existing)
 
     await db.commit()
-    router_cache.invalidate_router()
+    await cache_invalidation_bus.broadcast_router_cache_invalidation()
 
     return ProviderKeyOut(
         provider=existing.provider,
@@ -228,5 +228,5 @@ async def delete_provider_key(
                 ),
             )
         raise HTTPException(status_code=404, detail="Provider key not found")
-    router_cache.invalidate_router()
+    await cache_invalidation_bus.broadcast_router_cache_invalidation()
     return Response(status_code=204)

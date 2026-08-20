@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import router_cache
+from app import cache_invalidation_bus
 from app.deps import get_db, get_key_context
 from app.seed import DEFAULT_WORKSPACE_ID
 from packages.auth.types import KeyContext
@@ -74,7 +74,7 @@ async def update_routing(
         row.preferred_models = body.preferred_models
 
     await db.commit()
-    router_cache.invalidate_router()
+    await cache_invalidation_bus.broadcast_router_cache_invalidation()
 
     return {
         "strategy": row.strategy,

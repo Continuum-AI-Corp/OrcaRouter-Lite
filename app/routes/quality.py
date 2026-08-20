@@ -31,10 +31,10 @@ from app.auto_routing import (
     choose_auto_model,
     litellm_routing_strategy,
 )
+from app.cache_invalidation_bus import broadcast_metrics_cache_invalidation
 from app.deps import get_db, get_key_context
 from app.quality_scores import (
     fetch_aa_index,
-    invalidate_metrics_cache,
     load_overrides,
     resolve_model_metrics,
 )
@@ -175,7 +175,7 @@ async def quality_refresh(
     aa = await fetch_aa_index(
         db=db, workspace_id=str(kc.workspace_id), force_refresh=True,
     )
-    invalidate_metrics_cache()  # global — AA fetch refreshes for all workspaces
+    await broadcast_metrics_cache_invalidation()  # global — AA fetch refreshes all workspaces
     return {"aa_index": _serialize_aa_index(aa)}
 
 
@@ -453,7 +453,7 @@ async def upsert_override(
         ).scalar_one()
     # Drop the resolver cache so balanced + quality routing see the new
     # override on the very next request (otherwise stale up to 60s TTL).
-    invalidate_metrics_cache(workspace_id)
+    await broadcast_metrics_cache_invalidation(workspace_id)
     return _serialize_override(row)
 
 
@@ -474,4 +474,4 @@ async def delete_override(
         )
     )
     await db.commit()
-    invalidate_metrics_cache(workspace_id)
+    await broadcast_metrics_cache_invalidation(workspace_id)

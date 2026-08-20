@@ -56,10 +56,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             log.info("seed_complete", api_key=seed.api_key)
             print(f"\n  ✓ orcarouter-lite ready. API key: {seed.api_key}\n")
 
+    from app import cache_invalidation_bus
+
+    await cache_invalidation_bus.start_invalidation_listener()
+
     log.info("lite_ready")
     yield
 
     log.info("lite_shutting_down")
+    await cache_invalidation_bus.stop_invalidation_listener()
     await dispose_engine()
 
 

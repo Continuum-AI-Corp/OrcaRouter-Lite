@@ -20,12 +20,13 @@ by (workspace_id, AA-key-hash); override PUT/DELETE and quality refresh
 routes invalidate the relevant entries so operator changes are visible
 immediately, not after a TTL.
 
-Multi-worker note: cache is module-local. Multi-worker uvicorn or k8s
-replicas each hold their own — a worker that didn't see the override
-mutation serves stale until its own TTL expires. Acceptable for the
-single-tenant Lite default (1 worker); cross-worker invalidation
-(pubsub / shared cache) belongs to a future PR if multi-worker
-deployment becomes a real use case.
+Multi-worker note: cache is module-local. On a single worker (the Lite
+default) the mutation route dropping its own entry is enough. Under
+multiple uvicorn workers / k8s replicas, cross-worker invalidation is
+handled by app.cache_invalidation_bus (Redis pub/sub) when REDIS_URL is
+set — mutation routes call broadcast_metrics_cache_invalidation() so
+siblings drop their entries too instead of waiting out the TTL. Without
+REDIS_URL a sibling still serves stale until its own TTL expires.
 """
 
 from __future__ import annotations
