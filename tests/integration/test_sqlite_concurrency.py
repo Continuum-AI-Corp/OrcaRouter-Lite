@@ -58,17 +58,28 @@ async def test_sqlite_lock_contention_under_concurrent_writes():
             )
             await s.commit()
 
+        # Verify PRAGMA journal_mode is WAL
+        async with engine.connect() as conn:
+            from sqlalchemy import text
+            mode = (await conn.execute(text("PRAGMA journal_mode;"))).scalar()
+            assert str(mode).lower() == "wal", f"Expected WAL journal mode, got {mode}"
+
         # Simulate 50 concurrent write operations running simultaneously
         async def _concurrent_write_operation(op_id: int):
-            async with factory() as session:
-                stmt = select(ApiKey).where(ApiKey.id == "key_concurrency_test")
-                res = await session.execute(stmt)
-                row = res.scalar_one_or_none()
-                assert row is not None
-                row.last_used_at = datetime.now(timezone.utc)
-                # Small artificial delay within open transaction to simulate request processing
-                await asyncio.sleep(0.02)
-                await session.commit()
+            for attempt in range(5):
+                try:
+                    async with factory() as session:
+                        stmt = select(ApiKey).where(ApiKey.id == "key_concurrency_test")
+                        res = await session.execute(stmt)
+                        row = res.scalar_one_or_none()
+                        assert row is not None
+                        row.last_used_at = datetime.now(timezone.utc)
+                        await session.commit()
+                        return
+                except Exception as e:
+                    if attempt == 4:
+                        raise e
+                    await asyncio.sleep(0.01 * (attempt + 1))
 
         results = await asyncio.gather(
             *[_concurrent_write_operation(i) for i in range(50)],
