@@ -84,8 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await dispose_engine()
 
 
-def unhandled_exception_handler(request, exc: Exception):
+async def unhandled_exception_handler(request, exc: Exception):
     """Last-resort handler: log everything, return an opaque envelope.
+
+    Declared `async` on purpose: Starlette runs async exception handlers on
+    the event loop inside the `except` block where `sys.exc_info()` still
+    holds the active exception. A sync handler would be dispatched via
+    `run_in_threadpool` in a worker thread, where `exc_info` is empty and the
+    traceback would be lost — defeating the whole point of this handler.
 
     The traceback MUST be recorded here — this is the only place an
     arbitrary exception surfaces, and without it every production 500 is
@@ -95,6 +101,7 @@ def unhandled_exception_handler(request, exc: Exception):
         "unhandled_exception",
         path=str(request.url.path),
         error=str(exc),
+        exc_info=exc,
     )
     return JSONResponse(
         status_code=500,
