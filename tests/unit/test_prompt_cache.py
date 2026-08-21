@@ -75,14 +75,78 @@ def test_should_cache_skips_streaming_and_high_temperature():
 
     base = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
 
-    # Cacheable: temp=0 (or unset, defaults to 0 for safety) and not streaming
+    # Cacheable: explicitly-zero temperature and not streaming
     assert is_cacheable({**base, "temperature": 0.0, "stream": False}) is True
-    assert is_cacheable({**base, "stream": False}) is True  # temp unset → treat as deterministic
 
-    # Not cacheable
+    # Not cacheable — an OMITTED temperature means the provider default
+    # (1.0), i.e. maximally non-deterministic. Never cache that.
+    assert is_cacheable({**base, "stream": False}) is False
+
     assert is_cacheable({**base, "stream": True}) is False
     assert is_cacheable({**base, "temperature": 0.7}) is False
     assert is_cacheable({**base, "temperature": 0.1}) is False
+
+
+def test_should_cache_blocks_narrowed_top_p_without_seed():
+    """top_p < 1 samples from a truncated distribution even at temperature 0."""
+    from app.prompt_cache import is_cacheable
+
+    base = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    assert is_cacheable({**base, "temperature": 0.0, "top_p": 0.5}) is False
+    assert is_cacheable({**base, "temperature": 0.0, "top_p": 1.0}) is True
+    # A seed overrides any sampling param.
+    assert is_cacheable({**base, "temperature": 0.7, "top_p": 0.3, "seed": 7}) is True
+
+
+# ── v2 key-space: every output-affecting parameter must change the key ──
+
+_MSGS = [{"role": "user", "content": "hi"}]
+
+
+def _key(**overrides):
+    from app.prompt_cache import cache_key
+
+    kwargs = dict(model="m", messages=_MSGS, temperature=0.0, tools=None,
+                  response_format=None, seed=None)
+    kwargs.update(overrides)
+    return cache_key(**kwargs)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("max_tokens", 16),
+    ("max_tokens", 4000),
+    ("top_p", 0.9),
+    ("stop", ["\n"]),
+    ("n", 2),
+    ("tool_choice", "none"),
+    ("presence_penalty", 1.0),
+    ("frequency_penalty", -0.5),
+])
+def test_cache_key_differs_on_every_output_affecting_param(field, value):
+    base = _key()
+    assert _key(**{field: value}) != base
+
+
+def test_cache_key_version_bump_invalidates_v1_entries():
+    """A v1-era entry (no 'v' field) can never collide with the v2 space."""
+    k = _key(max_tokens=100)
+    # Recompute what the old implementation would have produced for the
+    # same six fields and confirm it differs from the new key.
+    import hashlib
+    import json
+
+    legacy_payload = {
+        "model": "m",
+        "messages": _MSGS,
+        "temperature": 0.0,
+        "tools": None,
+        "response_format": None,
+        "seed": None,
+    }
+    legacy = hashlib.sha256(
+        json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert k != legacy
 
 
 def test_should_cache_skips_when_seed_unspecified_with_high_temp():

@@ -422,6 +422,13 @@ async def chat_completions(
             tools=completion_kwargs.get("tools"),
             response_format=completion_kwargs.get("response_format"),
             seed=completion_kwargs.get("seed"),
+            max_tokens=completion_kwargs.get("max_tokens"),
+            top_p=completion_kwargs.get("top_p"),
+            stop=completion_kwargs.get("stop"),
+            n=completion_kwargs.get("n"),
+            tool_choice=completion_kwargs.get("tool_choice"),
+            presence_penalty=completion_kwargs.get("presence_penalty"),
+            frequency_penalty=completion_kwargs.get("frequency_penalty"),
         )
         cached = await prompt_cache.get_backend().get(cache_lookup_key)
         if cached is not None:

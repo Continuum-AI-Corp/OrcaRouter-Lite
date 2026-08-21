@@ -33,15 +33,36 @@ def cache_key(
     tools: list[dict] | None,
     response_format: dict | None,
     seed: int | None,
+    max_tokens: int | None = None,
+    top_p: float | None = None,
+    stop=None,
+    n: int | None = None,
+    tool_choice=None,
+    presence_penalty: float | None = None,
+    frequency_penalty: float | None = None,
 ) -> str:
-    """Deterministic SHA-256 key for the cacheable inputs."""
+    """Deterministic SHA-256 key over EVERY output-affecting input.
+
+    v2: the original key covered only six fields, so e.g. a max_tokens=16
+    request collided with an identical max_tokens=4000 request and served
+    the truncated answer as a HIT. The version field keeps old entries
+    from ever matching the new key space.
+    """
     payload = {
+        "v": 2,
         "model": model,
         "messages": messages,
         "temperature": temperature if temperature is not None else 0.0,
         "tools": tools or None,
         "response_format": response_format or None,
         "seed": seed,
+        "max_tokens": max_tokens,
+        "top_p": top_p,
+        "stop": stop,
+        "n": n,
+        "tool_choice": tool_choice,
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()
@@ -52,16 +73,24 @@ def is_cacheable(body: dict) -> bool:
 
     - Streaming responses are skipped (caching SSE chunks correctly is more
       trouble than it's worth for v1).
-    - Non-zero temperature without an explicit seed → non-deterministic, skip.
-    - With a seed, any temperature is fine — the seed pins the output.
+    - With an explicit seed, any sampling params are fine — the seed pins
+      the output.
+    - Otherwise the temperature must be EXPLICITLY zero AND top_p must not
+      narrow the distribution. An OMITTED temperature means the provider
+      default (1.0 — maximally non-deterministic), never cacheable.
     """
     if body.get("stream"):
         return False
-    temperature = body.get("temperature", 0.0) or 0.0
     seed = body.get("seed")
-    if temperature == 0.0:
+    if seed is not None:
         return True
-    return seed is not None
+    temperature = body.get("temperature")
+    if temperature is None or float(temperature) != 0.0:
+        return False
+    top_p = body.get("top_p")
+    if top_p is not None and float(top_p) != 1.0:
+        return False
+    return True
 
 
 # ── Backends ──────────────────────────────────────────────────────────
