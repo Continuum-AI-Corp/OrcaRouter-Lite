@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import json
 
+import structlog
+
 from packages.auth.key_validator import AuthError, validate_api_key
 from packages.db import session as session_mod
+
+logger = structlog.get_logger()
 
 SKIP_AUTH_PATHS: set[str] = {
     "/health",
@@ -95,6 +99,9 @@ class AuthMiddleware:
             await _send_error(send, e.status_code, e.message, "auth_error")
             return
         except Exception:
+            # A DB failure during key validation must be visible — without
+            # this log the operator only sees unexplained 503s.
+            logger.exception("auth_middleware_error", path=path)
             await _send_error(send, 503, "Service temporarily unavailable", "server_error")
             return
 

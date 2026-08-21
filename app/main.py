@@ -84,6 +84,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await dispose_engine()
 
 
+def unhandled_exception_handler(request, exc: Exception):
+    """Last-resort handler: log everything, return an opaque envelope.
+
+    The traceback MUST be recorded here — this is the only place an
+    arbitrary exception surfaces, and without it every production 500 is
+    undebuggable.
+    """
+    structlog.get_logger().exception(
+        "unhandled_exception",
+        path=str(request.url.path),
+        error=str(exc),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "message": "Internal server error",
+                "type": "server_error",
+            }
+        },
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="OrcaRouter Lite",
@@ -122,17 +145,7 @@ def create_app() -> FastAPI:
             content={"error": {"message": msg, "type": "validation_error"}},
         )
 
-    @app.exception_handler(Exception)
-    async def unhandled(_req, exc: Exception):
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": {
-                    "message": "Internal server error",
-                    "type": "server_error",
-                }
-            },
-        )
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
     from app.middleware.auth import AuthMiddleware
 
