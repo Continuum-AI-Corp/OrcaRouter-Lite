@@ -80,5 +80,8 @@ def test_truncated_blob_raises_rather_than_returning_garbage(hex_key):
     from packages.auth.encryption import decrypt_credential, encrypt_credential
 
     blob = encrypt_credential("x")
-    with pytest.raises(InvalidTag):
+    # A blob too short to even parse the nonce/length fields raises before any
+    # tag check (cryptography rejects the parameters); either exception type
+    # proves "raises rather than returns garbage".
+    with pytest.raises((InvalidTag, ValueError)):
         decrypt_credential(blob[:8])

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Providers we accept from env vars. Must stay in sync with:
@@ -61,7 +62,9 @@ class Settings(BaseSettings):
     api_key_pepper: str = ""
     # Explicit opt-out from the startup guard that refuses to run with the
     # publicly-known dev encryption key when real credentials are at stake.
-    allow_insecure_dev_key: bool = False
+    allow_insecure_dev_key: bool = Field(
+    default=False, validation_alias="ORCA_ALLOW_INSECURE_DEV_KEY"
+)
 
     # ── Provider keys via env (alternative to UI-stored keys) ──
     # Keep in sync with `_PROVIDERS_FROM_ENV` above. Pydantic-settings reads

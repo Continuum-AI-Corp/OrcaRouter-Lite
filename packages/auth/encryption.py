@@ -104,10 +104,10 @@ def _resolve_key_material() -> tuple[bytes, str]:
 
 
 def is_using_insecure_dev_key() -> bool:
-    try:
-        return _resolve_key_material()[1] == "dev-fallback"
-    except Exception:
-        return False
+    # Fail CLOSED: if key resolution errors (bad config, missing env, etc.)
+    # we must not silently report "secure" and let the app boot past the
+    # credential guard. Surface the error instead.
+    return _resolve_key_material()[1] == "dev-fallback"
 
 
 def encrypt_credential(plaintext: str) -> bytes:

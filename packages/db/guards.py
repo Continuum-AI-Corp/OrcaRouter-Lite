@@ -25,8 +25,17 @@ def _allow_flag_enabled(settings_value: bool, os_environ) -> bool:
 async def _count_provider_keys(session: AsyncSession) -> int:
     from packages.db.models.provider_key import ProviderKey
 
+    # Count only LIVE credentials. The codebase treats soft-deleted rows as
+    # absent everywhere else (providers.py, hosted.py, analytics.py, router
+    # cache), and pre-hard-delete dev DBs legitimately carry tombstones.
     return int(
-        (await session.execute(select(func.count()).select_from(ProviderKey))).scalar_one()
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(ProviderKey)
+                .where(ProviderKey.is_deleted == 0)
+            )
+        ).scalar_one()
     )
 
 
@@ -55,9 +64,20 @@ async def assert_credential_encryption_ready(
     try:
         async with make_session() as session:
             key_rows = await _count_provider_keys(session)
-    except Exception:
-        # Table missing (pre-migration fresh DB) counts as zero rows.
-        key_rows = 0
+    except Exception as exc:
+        # Only a genuinely missing table (fresh pre-migration DB) is treated
+        # as "no credentials at risk". Any real DB failure — locked file,
+        # I/O error, corruption — must fail CLOSED, not silently boot with
+        # the public dev key. Distinguish by the driver's message.
+        msg = " ".join(str(arg) for arg in getattr(exc, "args", [])).lower()
+        if "no such table" in msg:
+            key_rows = 0
+        else:
+            raise RuntimeError(
+                "Could not verify provider credential encryption state; "
+                "refusing to boot with the insecure development key. "
+                f"Underlying error: {exc}"
+            ) from exc
 
     if is_sqlite and key_rows == 0:
         return
