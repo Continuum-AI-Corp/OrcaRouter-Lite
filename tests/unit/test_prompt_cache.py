@@ -127,6 +127,16 @@ def test_cache_key_differs_on_every_output_affecting_param(field, value):
     assert _key(**{field: value}) != base
 
 
+def test_cache_key_omitted_temperature_differs_from_explicit_zero():
+    """With a seed, an omitted temperature (provider default 1.0) and an
+    explicit 0.0 must NOT share a key — otherwise a temperature-1 client
+    could be served a temperature-0 generation."""
+    base = _key(seed=42)
+    assert base != _key(seed=42, temperature=0.0)
+    # And omitted must be its own, stable key.
+    assert _key(seed=42) == _key(seed=42)
+
+
 def test_cache_key_version_bump_invalidates_v1_entries():
     """A v1-era entry (no 'v' field) can never collide with the v2 space."""
     k = _key(max_tokens=100)
