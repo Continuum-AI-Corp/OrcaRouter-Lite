@@ -40,16 +40,22 @@ def build_engine(database_url: str) -> AsyncEngine:
 
         @event.listens_for(engine.sync_engine, "connect")
         def _set_sqlite_pragmas(dbapi_connection, connection_record):
-            cursor = dbapi_connection.cursor()
-            try:
-                cursor.execute("PRAGMA journal_mode=WAL;")
-            except Exception:
-                pass
-            try:
-                cursor.execute("PRAGMA busy_timeout=30000;")
-            except Exception:
-                pass
-            cursor.close()
+            raw_conn = getattr(dbapi_connection, "_conn", dbapi_connection)
+            if hasattr(raw_conn, "cursor"):
+                cursor = raw_conn.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL;")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("PRAGMA busy_timeout=30000;")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("PRAGMA synchronous=FULL;")
+                except Exception:
+                    pass
+                cursor.close()
 
         return engine
 

@@ -8,6 +8,8 @@ __pycache__/
 htmlcov/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 .env
 .venv/
 venv/
