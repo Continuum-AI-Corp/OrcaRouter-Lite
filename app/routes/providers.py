@@ -46,6 +46,7 @@ from app import cache_invalidation_bus
 from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.router_cache import usable_providers_from_db
+from app.routes.keys import require_unrestricted
 from packages.auth.encryption import encrypt_credential
 from packages.auth.types import KeyContext
 from packages.db.models.provider_key import ProviderKey
@@ -143,6 +144,10 @@ async def set_provider_key(
     _kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    # A restricted key (model allowlist or budget cap) must not be able to
+    # overwrite operator credentials or delete providers — that would let it
+    # escape its restrictions and redirect the whole workspace's traffic.
+    require_unrestricted(_kc)
     if not body.api_key.strip():
         raise HTTPException(status_code=422, detail="api_key cannot be empty")
 
@@ -200,6 +205,7 @@ async def delete_provider_key(
     _kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    require_unrestricted(_kc)
     """Hard-delete the DB row for this provider. After this, runtime
     resolution falls back to the env value (if `.env` has one) or
     treats the provider as unconfigured.

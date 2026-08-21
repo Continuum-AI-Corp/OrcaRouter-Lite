@@ -33,6 +33,7 @@ from app.auto_routing import (
 )
 from app.cache_invalidation_bus import broadcast_metrics_cache_invalidation
 from app.deps import get_db, get_key_context
+from app.routes.keys import require_unrestricted
 from app.quality_scores import (
     fetch_aa_index,
     load_overrides,
@@ -391,6 +392,7 @@ async def upsert_override(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(kc)
     """Create or update an override. Idempotent on (workspace, model_id).
 
     `session.merge()` is select-then-write under the hood, so two
@@ -463,6 +465,7 @@ async def delete_override(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> None:
+    require_unrestricted(kc)
     """Remove an override. Returns 204 even if the override didn't exist —
     the operator's intent ('no override on this model') is satisfied either
     way, no need to surface the distinction."""

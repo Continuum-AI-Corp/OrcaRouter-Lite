@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache_invalidation_bus
 from app.deps import get_db, get_key_context
+from app.routes.keys import require_unrestricted
 from app.seed import DEFAULT_WORKSPACE_ID
 from packages.auth.types import KeyContext
 from packages.db.models.routing_config import RoutingConfig
@@ -57,6 +58,7 @@ async def update_routing(
     _kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(_kc)
     row = (
         await db.execute(
             select(RoutingConfig).where(

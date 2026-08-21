@@ -135,3 +135,71 @@ async def test_unrestricted_key_retains_full_management(keys_app, seeded_keys):
 
         revoked = await c.delete(f"/v1/keys/{child_id}", headers=h)
         assert revoked.status_code == 204
+
+
+@pytest.fixture
+async def mgmt_app(db_session, monkeypatch):
+    """App mounting the privilege-sensitive write routes alongside keys."""
+    monkeypatch.setenv("DATABASE_URL", str(db_session.bind.url))
+    from fastapi import FastAPI
+
+    from app.middleware.auth import AuthMiddleware
+    from app.routes.keys import router as keys_router
+    from app.routes.providers import router as providers_router
+    from app.routes.quality import router as quality_router
+    from app.routes.routing import router as routing_router
+    from packages.db import session as session_mod
+
+    class _PassthroughFactory:
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(session_mod, "_session_factory", lambda: _PassthroughFactory())
+
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.include_router(keys_router)
+    app.include_router(providers_router)
+    app.include_router(routing_router)
+    app.include_router(quality_router)
+    return app
+
+
+@pytest.mark.parametrize("which", [1, 2], ids=["allowlist-restricted", "budget-restricted"])
+async def test_restricted_key_cannot_write_provider_credentials(
+    mgmt_app, seeded_keys, which
+):
+    _keys, restricted, budgeted = seeded_keys
+    caller = (restricted, budgeted)[which - 1]
+    h = {"Authorization": f"Bearer {caller}"}
+    async with await _client(mgmt_app) as c:
+        r = await c.put(
+            "/v1/providers/openai",
+            json={"api_key": "sk-test-123"},
+            headers=h,
+        )
+    assert r.status_code == 403
+
+
+async def test_restricted_key_cannot_write_routing(mgmt_app, seeded_keys):
+    _keys, restricted, _budgeted = seeded_keys
+    h = {"Authorization": f"Bearer {restricted}"}
+    async with await _client(mgmt_app) as c:
+        r = await c.put("/v1/routing", json={"strategy": "balanced"}, headers=h)
+    assert r.status_code == 403
+
+
+async def test_unrestricted_key_can_write_provider_and_routing(mgmt_app, seeded_keys):
+    root, _restricted, _budgeted = seeded_keys
+    h = {"Authorization": f"Bearer {root}"}
+    async with await _client(mgmt_app) as c:
+        # Gate only — we assert the restricted-key block doesn't apply to root.
+        p = await c.put(
+            "/v1/providers/openai", json={"api_key": "sk-test-123"}, headers=h
+        )
+        assert p.status_code != 403
+        r = await c.put("/v1/routing", json={"strategy": "balanced"}, headers=h)
+        assert r.status_code != 403

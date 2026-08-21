@@ -61,6 +61,8 @@ async def list_keys(
                 "name": r.name,
                 "key_prefix": r.key_prefix,
                 "is_active": r.is_active,
+                "model_allowlist": r.model_allowlist,
+                "budget_limit_cents": r.budget_limit_cents,
                 "last_used_at": iso_utc(r.last_used_at),
                 "revoked_at": iso_utc(r.revoked_at),
                 "created_at": iso_utc(r.created_at),
