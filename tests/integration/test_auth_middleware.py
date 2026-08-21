@@ -90,3 +90,76 @@ async def test_protected_with_valid_key_returns_200(app_with_auth, db_session):
         r = await c.get("/v1/protected", headers={"Authorization": f"Bearer {seed.api_key}"})
     assert r.status_code == 200
     assert r.json() == {"workspace_id": "default"}
+
+
+# ── native-protocol credential locations + /v1beta guard (slice S1) ──
+
+
+async def test_v1beta_is_guarded_not_waved_through_as_static(app_with_auth):
+    """Regression: `_is_static` used to match only the "/v1/" prefix, so
+    "/v1beta/..." bypassed auth entirely. It must 401 (in the Google
+    envelope), not fall through to the app unauthenticated."""
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get("/v1beta/models")
+    assert r.status_code == 401
+    err = r.json()["error"]
+    assert err["code"] == 401
+    assert err["status"] == "UNAUTHENTICATED"
+
+
+async def test_x_api_key_header_authenticates(app_with_auth, db_session):
+    """Anthropic SDK / Claude Code style credential location."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.seed import seed_initial_state
+
+    seed = await seed_initial_state(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get("/v1/protected", headers={"x-api-key": seed.api_key})
+    assert r.status_code == 200
+
+
+async def test_x_goog_api_key_header_authenticates(app_with_auth, db_session):
+    """google-genai SDK style credential location."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.seed import seed_initial_state
+
+    seed = await seed_initial_state(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get("/v1/protected", headers={"x-goog-api-key": seed.api_key})
+    assert r.status_code == 200
+
+
+async def test_query_param_key_only_works_under_v1beta(app_with_auth, db_session):
+    """?key= must NOT authenticate /v1/* paths (credential-in-URL is scoped
+    to the Gemini surface); under /v1beta a valid ?key= passes the
+    middleware (the test app then 404s — anything but 401 proves it)."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.seed import seed_initial_state
+
+    seed = await seed_initial_state(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        denied = await c.get(f"/v1/protected?key={seed.api_key}")
+        allowed = await c.get(f"/v1beta/anything?key={seed.api_key}")
+    assert denied.status_code == 401
+    assert allowed.status_code == 404  # passed auth, no such route
+
+
+async def test_v1_messages_401_uses_anthropic_envelope(app_with_auth):
+    """Auth failures on the Anthropic surface render the Anthropic error
+    envelope, not the OpenAI one."""
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.post("/v1/messages", json={})
+    assert r.status_code == 401
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "authentication_error"

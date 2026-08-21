@@ -5,7 +5,7 @@ OpenAI 호환. BYOK. 단일 작업 공간. 스트리밍. `모델="자동"`.
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![테스트](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![테스트](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![모델](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![라이센스](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## 네이티브 프로토콜 엔드포인트(Anthropic + Gemini)
+
+Lite는 하나의 라우팅 파이프라인에 대해 세 가지 수신 프로토콜을 말합니다. Anthropic 또는 Gemini 와이어 형식만 말하는 클라이언트도 직접 연결됩니다. OpenAI SDK가 필요하지 않습니다:
+
+```bash
+# Claude Code, pointed at Lite (no /v1 suffix in the base URL)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK, pointed at Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+요청은 에지에서 동일한 내부 파이프라인으로 변환되므로 `model="auto"`, 교차 제공자 프롬프트 캐시(프로토콜 간 공유), 라우팅 전략, 분석 대시보드가 모두 동일하게 작동합니다. 가이드: [integrations/claude-code.md](./integrations/claude-code.md), [integrations/gemini-sdk.md](./integrations/gemini-sdk.md)를 참조하세요.
+
 ## 모델 카탈로그
 
 시작 시 [LiteLLM의 커뮤니티에서 유지 관리하는 가격 데이터베이스](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)에서 100개 이상의 채팅 모델이 로드됩니다. 수동으로 유지 관리할 모델 목록이 없습니다. 각 항목은 다음을 노출합니다.
@@ -194,6 +216,8 @@ for chunk in client.chat.completions.create(
 ## 상자 안에 무엇이 들어있나요?
 
 - `POST /v1/chat/completions` — 프록시 + 스트리밍 + `model="auto"` + 교차 제공자 프롬프트 캐시
+- `POST /v1/messages` — **Anthropic Messages API 인그레스**(Claude Code / Anthropic SDK가 직접 연결, `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **Gemini API 인그레스**(google-genai SDK가 직접 연결, `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET /v1/models` — 검색 가능한 모델 카탈로그(`litellm.model_cost`의 100개 이상의 모델)
 - `GET/PUT/DELETE /v1/providers/{provider}` — 암호화된 공급자 키 설정/목록/해지
 - `GET/PUT /v1/routing` — 전략 변경(`균형` / `가장 저렴함` / `가장 빠름` / `품질`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 
 ### 통합
 
-[Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI에 대한 드롭인 구성 SDK](./integrations/vercel_ai.ts) 및 OpenAI Chat Completions 프로토콜을 말하는 모든 도구입니다. [`통합/`](./integrations/)을 참조하세요.
+[Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI에 대한 드롭인 구성 SDK](./integrations/vercel_ai.ts) 및 OpenAI Chat Completions 프로토콜을 말하는 모든 도구입니다 — 여기에 네이티브 Anthropic 및 Gemini 와이어 형식도 추가됩니다. [`통합/`](./integrations/)을 참조하세요.
 
 ## 고의로 하지 않은 것
 
@@ -244,7 +268,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | 슬라이스 | 테스트 | 무엇 |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. 호스팅 상태 | 7 | `/v1/hosted` config-source + signup-URL 표면 |
 | 17. 호스팅 자동 절약 | 3 | 합성 카탈로그의 `_hosted_auto_savings` 극단적인 경우 |
 | 18. 연결할 수 없는 모델 | 7 | 호스팅이 켜져 있으면 "접근할 수 없는 모델" 타일이 지워집니다 |
-| **합계** | **127** | |
+| 19. 다중 프로토콜 인증 | 6 | x-api-key / x-goog-api-key / ?key= 범위 지정, /v1beta 가드, 프로토콜별 401 봉투 |
+| 20. Anthropic `/v1/messages` | 53 | 요청/응답/스트림 변환 + 인그레스 통합 |
+| 21. Gemini `/v1beta` | 40 | schema-enum 정규화를 포함한 변환 + generateContent/스트림 인그레스 |
+| **합계** | **403** | |
+
+슬라이스 행은 각 슬라이스가 출시될 때 추가된 테스트를 보여줍니다. 합계는 현재 전체 테스트 스위트입니다.
 
 ## 건축학
 

@@ -5,7 +5,7 @@ OpenAI-совместимый. BYOK. Один рабочий пространс�
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## Нативные протокольные эндпоинты (Anthropic + Gemini)
+
+Lite говорит на трёх входящих протоколах поверх одного пайплайна маршрутизации. Клиенты, которые говорят только на wire-форматах Anthropic или Gemini, подключаются напрямую — OpenAI SDK не требуется:
+
+```bash
+# Claude Code, направленный на Lite (без суффикса /v1 в базовом URL)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK, направленный на Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+Запросы транслируются на входе в тот же внутренний пайплайн, поэтому `model="auto"`, кросс-провайдерный кэш промптов (общий для всех протоколов), стратегии маршрутизации и аналитический дашборд работают одинаково. Гайды: [integrations/claude-code.md](./integrations/claude-code.md), [integrations/gemini-sdk.md](./integrations/gemini-sdk.md).
+
 ## Каталог моделей
 
 При старте загружается более 100 чат-моделей из [community-поддерживаемой базы цен LiteLLM](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — никакого списка моделей вручную. Каждая запись содержит:
@@ -194,6 +216,8 @@ for chunk in client.chat.completions.create(
 ## Что в коробке
 
 - `POST /v1/chat/completions` — proxy + стриминг + `model="auto"` + кросс-провайдерный кэш промптов
+- `POST /v1/messages` — **ingress для Anthropic Messages API** (Claude Code / Anthropic SDK подключаются напрямую; `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **ingress для Gemini API** (google-genai SDK подключается напрямую; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — обнаруживаемый каталог моделей (100+ моделей из `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — установка / список / отзыв зашифрованных ключей провайдеров
 - `GET/PUT /v1/routing` — смена стратегии (`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← из кэша, без запроса к upstream
 
 ### Интеграции
 
-Готовые конфиги для [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) и любого инструмента, говорящего на протоколе OpenAI Chat Completions. См. [`integrations/`](./integrations/).
+Готовые конфиги для [Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) и любого инструмента, говорящего на протоколе OpenAI Chat Completions, — плюс нативные wire-форматы Anthropic и Gemini. См. [`integrations/`](./integrations/).
 
 ## Чего намеренно нет
 
@@ -244,7 +268,7 @@ x-orca-cache: HIT          ← из кэша, без запроса к upstream
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | Слайс | Тесты | Что |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. Hosted-статус | 7 | `/v1/hosted` config-source + signup-URL surface |
 | 17. Hosted-auto-экономия | 3 | edge cases `_hosted_auto_savings` на синтетических каталогах |
 | 18. Недоступные модели | 7 | плитка «модели, до которых вы не дотянетесь» очищается, когда hosted включён |
-| **Всего** | **127** | |
+| 19. Мульти-протокольная аутентификация | 6 | скоупинг x-api-key / x-goog-api-key / ?key=, guard для /v1beta, 401-конверты для каждого протокола |
+| 20. Anthropic `/v1/messages` | 53 | трансляция request/response/stream + ingress-интеграция |
+| 21. Gemini `/v1beta` | 40 | трансляция, вкл. нормализацию schema-enum + ingress для generateContent/stream |
+| **Всего** | **403** | |
+
+Строки слайсов показывают тесты, добавленные при выпуске каждого слайса; итог — текущий полный набор тестов.
 
 ## Архитектура
 

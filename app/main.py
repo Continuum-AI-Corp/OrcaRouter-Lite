@@ -54,7 +54,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         seed = await seed_initial_state(s)
         if seed.created and seed.api_key:
             log.info("seed_complete", api_key=seed.api_key)
-            print(f"\n  ✓ orcarouter-lite ready. API key: {seed.api_key}\n")
+            try:
+                print(f"\n  ✓ orcarouter-lite ready. API key: {seed.api_key}\n")
+            except UnicodeEncodeError:
+                # Non-UTF-8 consoles (e.g. GBK-codepage Windows) can't
+                # encode "✓" — the banner must never kill startup.
+                print(f"\n  orcarouter-lite ready. API key: {seed.api_key}\n")
 
     log.info("lite_ready")
     yield
@@ -119,7 +124,9 @@ def create_app() -> FastAPI:
 
     from app.routes import (
         analytics,
+        anthropic_compat,
         chat,
+        gemini_compat,
         health,
         hosted,
         keys,
@@ -132,6 +139,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(providers.router)
     app.include_router(chat.router)
+    app.include_router(anthropic_compat.router)
+    app.include_router(gemini_compat.router)
     app.include_router(analytics.router)
     app.include_router(models.router)
     app.include_router(keys.router)

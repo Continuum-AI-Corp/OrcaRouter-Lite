@@ -246,6 +246,23 @@ async def chat_completions(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ):
+    return await execute_chat(body, kc, db)
+
+
+async def execute_chat(
+    body: ChatCompletionRequest,
+    kc: KeyContext,
+    db: AsyncSession,
+) -> JSONResponse | StreamingResponse:
+    """Protocol-agnostic chat engine — the full pipeline behind
+    POST /v1/chat/completions (allowlist → auto-resolution → prompt cache →
+    LiteLLM Router → RequestLog writeback), reusable by native-protocol
+    adapters (Anthropic /v1/messages, Gemini /v1beta) with a translated body.
+
+    Returns OpenAI-wire-format results: JSONResponse for blocking requests,
+    StreamingResponse emitting `data: {json}\\n\\n` frames with a terminal
+    `data: [DONE]` for streaming. Raises HTTPException on pre-stream errors.
+    """
     # Capture client intent before any mutation so the request log and the
     # `x-orca-requested-model` header always reflect what the user asked for,
     # not the post-resolution primary.

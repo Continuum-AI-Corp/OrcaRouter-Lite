@@ -5,7 +5,7 @@ OpenAI-compatible. BYOK. Single-workspace. Streaming. `model="auto"`.
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,34 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## Native protocol endpoints (Anthropic + Gemini)
+
+Lite speaks three inbound protocols against one routing pipeline. Clients that
+only talk Anthropic or Gemini wire formats connect directly — no OpenAI SDK
+required:
+
+```bash
+# Claude Code, pointed at Lite (no /v1 suffix in the base URL)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK, pointed at Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+Requests are translated at the edge into the same internal pipeline, so
+`model="auto"`, the cross-provider prompt cache (shared across protocols),
+routing strategies, and the analytics dashboard all work identically. Guides:
+[integrations/claude-code.md](./integrations/claude-code.md),
+[integrations/gemini-sdk.md](./integrations/gemini-sdk.md).
+
 ## Model catalog
 
 100+ chat models are loaded at startup from [LiteLLM's community-maintained pricing database](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — no model list to maintain manually. Each entry exposes:
@@ -194,6 +222,8 @@ for chunk in client.chat.completions.create(
 ## What's in the box
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cross-provider prompt cache
+- `POST /v1/messages` — **Anthropic Messages API ingress** (Claude Code / Anthropic SDKs connect directly; `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **Gemini API ingress** (google-genai SDK connects directly; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — discoverable model catalog (100+ models from `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys
 - `GET/PUT /v1/routing` — change strategy (`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +254,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 
 ### Integrations
 
-Drop-in configs for [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts), and any tool that speaks the OpenAI Chat Completions protocol. See [`integrations/`](./integrations/).
+Drop-in configs for [Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts), and any tool that speaks the OpenAI Chat Completions protocol — plus native Anthropic and Gemini wire formats. See [`integrations/`](./integrations/).
 
 ## What's deliberately not
 
@@ -244,7 +274,7 @@ Built test-first. Every behaviour shipped here had a failing test first.
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | Slice | Tests | What |
@@ -267,7 +297,12 @@ PYTHONPATH=. pytest -v
 | 16. Hosted status | 7 | `/v1/hosted` config-source + signup-URL surface |
 | 17. Hosted-auto savings | 3 | `_hosted_auto_savings` edge cases on synthetic catalogs |
 | 18. Unreachable models | 7 | "models you can't reach" tile clears when hosted is on |
-| **Total** | **127** | |
+| 19. Multi-protocol auth | 6 | x-api-key / x-goog-api-key / ?key= scoping, /v1beta guard, per-protocol 401 envelopes |
+| 20. Anthropic `/v1/messages` | 53 | request/response/stream translation + ingress integration |
+| 21. Gemini `/v1beta` | 40 | translation incl. schema-enum normalization + generateContent/stream ingress |
+| **Total** | **403** | |
+
+Slice rows show the tests added when each slice shipped; the total is the current full suite.
 
 ## Architecture
 

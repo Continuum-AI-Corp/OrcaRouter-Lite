@@ -5,7 +5,7 @@
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## 原生协议端点（Anthropic + Gemini）
+
+Lite 用同一条路由流水线对外支持三种入站协议。只使用 Anthropic 或 Gemini 传输格式的客户端可以直接连接 —— 无需 OpenAI SDK：
+
+```bash
+# Claude Code 指向 Lite（base URL 不带 /v1 后缀）
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK 指向 Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+请求在边缘层被转换进同一条内部流水线，因此 `model="auto"`、跨 provider 提示缓存（跨协议共享）、路由策略和分析仪表板全都以完全相同的方式工作。指南：[integrations/claude-code.md](./integrations/claude-code.md)、[integrations/gemini-sdk.md](./integrations/gemini-sdk.md)。
+
 ## 模型目录
 
 启动时会从 [LiteLLM 社区维护的定价数据库](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) 加载 100+ 个聊天模型 —— 没有需要手动维护的模型清单。每条记录都包含：
@@ -194,6 +216,8 @@ for chunk in client.chat.completions.create(
 ## 盒子里都有什么
 
 - `POST /v1/chat/completions` —— 代理 + 流式传输 + `model="auto"` + 跨 provider 提示缓存
+- `POST /v1/messages` —— **Anthropic Messages API 入口**（Claude Code / Anthropic SDK 可直接连接；`+ /count_tokens`）
+- `POST /v1beta/models/{model}:generateContent` —— **Gemini API 入口**（google-genai SDK 可直接连接；`+ :streamGenerateContent`、`GET /v1beta/models`）
 - `GET  /v1/models` —— 可发现的模型目录（来自 `litellm.model_cost` 的 100+ 模型）
 - `GET/PUT/DELETE /v1/providers/{provider}` —— 设置 / 列出 / 撤销加密的 provider 密钥
 - `GET/PUT /v1/routing` —— 切换策略（`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← 来自缓存，无上游调用
 
 ### 集成
 
-为 [Continue.dev](./integrations/continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel AI SDK](./integrations/vercel_ai.ts) 以及任何使用 OpenAI Chat Completions 协议的工具提供即插即用的配置。详见 [`integrations/`](./integrations/)。
+为 [Claude Code](./integrations/claude-code.md)、[Gemini SDK](./integrations/gemini-sdk.md)、[Continue.dev](./integrations/continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel AI SDK](./integrations/vercel_ai.ts) 以及任何使用 OpenAI Chat Completions 协议的工具提供即插即用的配置 —— 外加原生的 Anthropic 和 Gemini 传输格式。详见 [`integrations/`](./integrations/)。
 
 ## 刻意不做的事情
 
@@ -244,7 +268,7 @@ x-orca-cache: HIT          ← 来自缓存，无上游调用
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | 切片 | 测试数 | 内容 |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. 托管状态 | 7 | `/v1/hosted` 配置来源 + 注册 URL |
 | 17. 托管自动节省 | 3 | 合成目录上的 `_hosted_auto_savings` 边界用例 |
 | 18. 不可达模型 | 7 | 当托管开启时，「你够不到的模型」磁贴会清空 |
-| **合计** | **127** | |
+| 19. 多协议鉴权 | 6 | x-api-key / x-goog-api-key / ?key= 作用域、/v1beta 守卫、按协议的 401 信封 |
+| 20. Anthropic `/v1/messages` | 53 | 请求/响应/流的转换 + 入口集成 |
+| 21. Gemini `/v1beta` | 40 | 转换（含 schema-enum 归一化）+ generateContent/流式入口 |
+| **合计** | **403** | |
+
+切片行显示的是各切片交付时新增的测试；合计是当前的完整测试套件。
 
 ## 架构
 

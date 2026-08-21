@@ -5,7 +5,7 @@ OpenAI対応。ビヨク。単一のワークスペース。ストリーミン�
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![テスト](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![テスト](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![モデル](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![ライセンス](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## ネイティブ プロトコル エンドポイント (Anthropic + Gemini)
+
+Lite は 1 つのルーティング パイプラインに対して 3 つのインバウンド プロトコルを話します。Anthropic または Gemini のワイヤー フォーマットしか話さないクライアントも直接接続できます。OpenAI SDK は不要です:
+
+```bash
+# Claude Code, pointed at Lite (no /v1 suffix in the base URL)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK, pointed at Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+リクエストはエッジで同じ内部パイプラインに変換されるため、`model="auto"`、クロスプロバイダー プロンプト キャッシュ (プロトコル間で共有)、ルーティング戦略、分析ダッシュボードはすべて同じように機能します。ガイド: [integrations/claude-code.md](./integrations/claude-code.md)、[integrations/gemini-sdk.md](./integrations/gemini-sdk.md) を参照してください。
+
 ## モデルカタログ
 
 100 を超えるチャット モデルが起動時に [LiteLLM のコミュニティが管理する価格設定データベース](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) からロードされます。手動で管理するモデル リストはありません。各エントリは以下を公開します。
@@ -194,6 +216,8 @@ for chunk in client.chat.completions.create(
 ## 箱の中身は何ですか
 
 - `POST /v1/chat/completions` — プロキシ + ストリーミング + `model="auto"` + クロスプロバイダー プロンプト キャッシュ
+- `POST /v1/messages` — **Anthropic Messages API イングレス** (Claude Code / Anthropic SDK が直接接続。`+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **Gemini API イングレス** (google-genai SDK が直接接続。`+ :streamGenerateContent`、`GET /v1beta/models`)
 - `GET /v1/models` — 検出可能なモデル カタログ (`litellm.model_cost` からの 100 以上のモデル)
 - `GET/PUT/DELETE /v1/providers/{provider}` — 暗号化されたプロバイダー キーを設定 / リスト / 取り消し
 - `GET/PUT /v1/routing` — 戦略の変更 (`バランス` / `最安` / `最速` / `品質`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 
 ### 統合
 
-[Continue.dev](./integrations/ continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel AI] のドロップイン構成SDK](./integrations/vercel_ai.ts)、および OpenAI Chat Completions プロトコルを使用するツール。 [`integrations/`](./integrations/) を参照してください。
+[Claude Code](./integrations/claude-code.md)、[Gemini SDK](./integrations/gemini-sdk.md)、[Continue.dev](./integrations/ continue.json)、[Aider](./integrations/aider.md)、[Cursor](./integrations/cursor.md)、[LangChain](./integrations/langchain_orcarouter.py)、[LlamaIndex](./integrations/llamaindex_orcarouter.py)、[Vercel AI] のドロップイン構成SDK](./integrations/vercel_ai.ts)、および OpenAI Chat Completions プロトコルを使用するツール — さらにネイティブの Anthropic および Gemini ワイヤー フォーマットにも対応します。 [`integrations/`](./integrations/) を参照してください。
 
 ## 意図的にそうでないもの
 
@@ -244,7 +268,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 |スライス |テスト |何を |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. ホストのステータス | 7 | `/v1/hosted` 設定ソース + サインアップ URL 表面 |
 | 17. ホスト型自動節約 | 3 |合成カタログの「_hosted_auto_ Savings」エッジケース |
 | 18. 到達不可能なモデル | 7 |ホストがオンになっていると「アクセスできないモデル」タイルが消去される |
-| **合計** | **127** | |
+| 19. マルチプロトコル認証 | 6 |x-api-key / x-goog-api-key / ?key= のスコープ、/v1beta ガード、プロトコルごとの 401 エンベロープ |
+| 20. Anthropic `/v1/messages` | 53 |リクエスト/レスポンス/ストリームの変換 + イングレス統合 |
+| 21. Gemini `/v1beta` | 40 |schema-enum 正規化を含む変換 + generateContent/ストリーム イングレス |
+| **合計** | **403** | |
+
+スライス行は各スライスの出荷時に追加されたテストを示します。合計は現在の完全なテスト スイートです。
 
 ＃＃ 建築
 

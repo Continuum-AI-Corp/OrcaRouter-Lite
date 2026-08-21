@@ -5,7 +5,7 @@ Tương thích OpenAI. BYOK. Workspace đơn. Streaming. `model="auto"`.
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## Các endpoint giao thức native (Anthropic + Gemini)
+
+Lite nói ba giao thức đầu vào trên cùng một pipeline định tuyến. Các client chỉ nói định dạng wire của Anthropic hoặc Gemini có thể kết nối trực tiếp — không cần OpenAI SDK:
+
+```bash
+# Claude Code trỏ vào Lite (URL gốc không có hậu tố /v1)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK trỏ vào Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+Request được chuyển đổi ngay ở biên vào cùng một pipeline nội bộ, nên `model="auto"`, cache prompt liên-provider (dùng chung giữa các giao thức), các chiến lược định tuyến và dashboard analytics đều hoạt động y hệt nhau. Hướng dẫn: [integrations/claude-code.md](./integrations/claude-code.md), [integrations/gemini-sdk.md](./integrations/gemini-sdk.md).
+
 ## Danh mục mô hình
 
 Hơn 100 mô hình chat được nạp khi khởi động từ [cơ sở dữ liệu giá do cộng đồng duy trì của LiteLLM](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — không có danh sách mô hình nào phải bảo trì thủ công. Mỗi mục cung cấp:
@@ -194,6 +216,8 @@ Hơn 100 mô hình chat được nạp khi khởi động từ [cơ sở dữ li
 ## Có gì trong hộp
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cache prompt liên-provider
+- `POST /v1/messages` — **ngõ vào Anthropic Messages API** (Claude Code / các Anthropic SDK kết nối trực tiếp; `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **ngõ vào Gemini API** (google-genai SDK kết nối trực tiếp; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — danh mục mô hình có thể khám phá (100+ mô hình từ `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — đặt / liệt kê / thu hồi khoá provider được mã hoá
 - `GET/PUT /v1/routing` — đổi chiến lược (`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← phục vụ từ cache, không gọi upstream
 
 ### Tích hợp
 
-Cấu hình drop-in cho [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) và bất kỳ công cụ nào nói giao thức OpenAI Chat Completions. Xem [`integrations/`](./integrations/).
+Cấu hình drop-in cho [Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) và bất kỳ công cụ nào nói giao thức OpenAI Chat Completions — cộng thêm các định dạng wire native của Anthropic và Gemini. Xem [`integrations/`](./integrations/).
 
 ## Những gì cố ý không có
 
@@ -244,7 +268,7 @@ Xây dựng theo test-first. Mỗi hành vi giao ở đây đều có một test
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | Slice | Tests | Cái gì |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. Trạng thái hosted | 7 | `/v1/hosted` config-source + bề mặt URL signup |
 | 17. Tiết kiệm hosted-auto | 3 | trường hợp biên `_hosted_auto_savings` trên catalog tổng hợp |
 | 18. Mô hình không tới được | 7 | tile "mô hình bạn không tới được" rỗng khi hosted bật |
-| **Tổng** | **127** | |
+| 19. Auth đa giao thức | 6 | scoping x-api-key / x-goog-api-key / ?key=, guard /v1beta, envelope 401 theo từng giao thức |
+| 20. Anthropic `/v1/messages` | 53 | chuyển đổi request/response/stream + tích hợp ngõ vào |
+| 21. Gemini `/v1beta` | 40 | chuyển đổi gồm cả chuẩn hoá schema-enum + ngõ vào generateContent/stream |
+| **Tổng** | **403** | |
+
+Các hàng slice hiển thị số test được thêm khi từng slice ra mắt; tổng là bộ test đầy đủ hiện tại.
 
 ## Kiến trúc
 

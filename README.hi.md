@@ -5,7 +5,7 @@ OpenAI-compatible। BYOK। एकल-वर्कस्पेस। स्ट�
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## नेटिव प्रोटोकॉल एंडपॉइंट (Anthropic + Gemini)
+
+Lite एक ही रूटिंग पाइपलाइन पर तीन इनबाउंड प्रोटोकॉल बोलता है। जो क्लाइंट केवल Anthropic या Gemini wire फ़ॉर्मेट बोलते हैं, वे सीधे कनेक्ट होते हैं — किसी OpenAI SDK की आवश्यकता नहीं:
+
+```bash
+# Claude Code, Lite पर पॉइंट किया गया (बेस URL में /v1 सफ़िक्स नहीं)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# google-genai SDK, Lite पर पॉइंट किया गया
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+Requests को एज पर उसी आंतरिक पाइपलाइन में अनुवादित किया जाता है, इसलिए `model="auto"`, cross-provider प्रॉम्प्ट कैश (सभी प्रोटोकॉल में साझा), रूटिंग रणनीतियाँ और analytics डैशबोर्ड सभी एक जैसे काम करते हैं। गाइड: [integrations/claude-code.md](./integrations/claude-code.md), [integrations/gemini-sdk.md](./integrations/gemini-sdk.md)।
+
 ## मॉडल कैटलॉग
 
 स्टार्टअप पर 100+ चैट मॉडल [LiteLLM के समुदाय-संचालित मूल्य डेटाबेस](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) से लोड किए जाते हैं — कोई मॉडल सूची मैनुअली बनाए रखने के लिए नहीं। प्रत्येक प्रविष्टि उजागर करती है:
@@ -194,6 +216,8 @@ for chunk in client.chat.completions.create(
 ## बॉक्स में क्या है
 
 - `POST /v1/chat/completions` — proxy + स्ट्रीमिंग + `model="auto"` + cross-provider प्रॉम्प्ट कैश
+- `POST /v1/messages` — **Anthropic Messages API इनग्रेस** (Claude Code / Anthropic SDK सीधे कनेक्ट होते हैं; `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **Gemini API इनग्रेस** (google-genai SDK सीधे कनेक्ट होता है; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — खोज योग्य मॉडल कैटलॉग (`litellm.model_cost` से 100+ मॉडल)
 - `GET/PUT/DELETE /v1/providers/{provider}` — एन्क्रिप्टेड provider कुंजियाँ सेट / सूचीबद्ध / रद्द करें
 - `GET/PUT /v1/routing` — रणनीति बदलें (`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← कैश से सर्व, कोई upstream
 
 ### इंटीग्रेशन
 
-[Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) और किसी भी टूल के लिए drop-in कॉन्फ़िगरेशन जो OpenAI Chat Completions प्रोटोकॉल बोलता है। देखें [`integrations/`](./integrations/)।
+[Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) और किसी भी टूल के लिए drop-in कॉन्फ़िगरेशन जो OpenAI Chat Completions प्रोटोकॉल बोलता है — साथ ही नेटिव Anthropic और Gemini wire फ़ॉर्मेट भी। देखें [`integrations/`](./integrations/)।
 
 ## जो जानबूझकर नहीं है
 
@@ -244,7 +268,7 @@ x-orca-cache: HIT          ← कैश से सर्व, कोई upstream
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | स्लाइस | टेस्ट | क्या |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. Hosted स्थिति | 7 | `/v1/hosted` config-source + signup-URL surface |
 | 17. Hosted-auto बचत | 3 | सिंथेटिक कैटलॉग पर `_hosted_auto_savings` एज केस |
 | 18. अनुपलब्ध मॉडल | 7 | "जिन मॉडलों तक नहीं पहुँच सकते" टाइल hosted चालू होने पर खाली हो जाती है |
-| **कुल** | **127** | |
+| 19. मल्टी-प्रोटोकॉल auth | 6 | x-api-key / x-goog-api-key / ?key= स्कोपिंग, /v1beta guard, प्रति-प्रोटोकॉल 401 envelopes |
+| 20. Anthropic `/v1/messages` | 53 | request/response/stream अनुवाद + इनग्रेस एकीकरण |
+| 21. Gemini `/v1beta` | 40 | schema-enum सामान्यीकरण सहित अनुवाद + generateContent/stream इनग्रेस |
+| **कुल** | **403** | |
+
+स्लाइस पंक्तियाँ प्रत्येक स्लाइस के शिप होने पर जोड़े गए टेस्ट दिखाती हैं; कुल वर्तमान पूर्ण टेस्ट सुइट है।
 
 ## आर्किटेक्चर
 

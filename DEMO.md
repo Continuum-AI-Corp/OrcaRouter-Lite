@@ -93,3 +93,20 @@ Most LLM router pitches show a config table. This shows **a failure happening
 in real time and being absorbed transparently**. The viewer's brain resolves
 "so this is what would have prevented my 3am pager last month" and that's the
 share-worthy moment.
+
+## Bonus: native-protocol smoke (Anthropic + Gemini ingress)
+
+With the same running server, verify the native endpoints end-to-end — the
+Anthropic Messages API (`/v1/messages`, what Claude Code speaks) and the
+Gemini API (`/v1beta`):
+
+```bash
+ORCA_API_KEY="sk-orca-..." PYTHONPATH=. python scripts/smoke_native.py
+# 9/9 checks passed
+```
+
+The script exercises blocking, streaming, tool use, and count_tokens over
+raw HTTP, and — when `pip install anthropic google-genai` is present — the
+official SDKs pointed straight at Lite. See
+[integrations/claude-code.md](./integrations/claude-code.md) and
+[integrations/gemini-sdk.md](./integrations/gemini-sdk.md).

@@ -5,7 +5,7 @@ Compatible OpenAI. BYOK. Workspace unique. Streaming. `model="auto"`.
 
 ![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
 
-[![tests](https://img.shields.io/badge/tests-127_passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
@@ -171,6 +171,28 @@ for chunk in client.chat.completions.create(
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
+## Endpoints protocolaires natifs (Anthropic + Gemini)
+
+Lite parle trois protocoles entrants sur un seul pipeline de routage. Les clients qui ne parlent que les formats wire Anthropic ou Gemini se connectent directement — aucun SDK OpenAI requis :
+
+```bash
+# Claude Code, pointé sur Lite (pas de suffixe /v1 dans l'URL de base)
+export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_API_KEY=sk-orca-...
+claude
+```
+
+```python
+# SDK google-genai, pointé sur Lite
+from google import genai
+from google.genai.types import HttpOptions
+client = genai.Client(api_key="sk-orca-...",
+                      http_options=HttpOptions(base_url="http://localhost:8000"))
+client.models.generate_content(model="auto", contents="Hello!")
+```
+
+Les requêtes sont traduites à l'entrée vers le même pipeline interne, donc `model="auto"`, le cache de prompts inter-fournisseurs (partagé entre les protocoles), les stratégies de routage et le tableau de bord d'analytics fonctionnent tous à l'identique. Guides : [integrations/claude-code.md](./integrations/claude-code.md), [integrations/gemini-sdk.md](./integrations/gemini-sdk.md).
+
 ## Catalogue de modèles
 
 Plus de 100 modèles de chat sont chargés au démarrage depuis la [base de données de prix maintenue par la communauté de LiteLLM](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) — pas de liste de modèles à maintenir à la main. Chaque entrée expose :
@@ -194,6 +216,8 @@ Plus de 100 modèles de chat sont chargés au démarrage depuis la [base de donn
 ## Ce qu'il y a dans la boîte
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cache de prompts inter-fournisseurs
+- `POST /v1/messages` — **ingress de l'API Messages d'Anthropic** (Claude Code / les SDK Anthropic se connectent directement ; `+ /count_tokens`)
+- `POST /v1beta/models/{model}:generateContent` — **ingress de l'API Gemini** (le SDK google-genai se connecte directement ; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — catalogue de modèles découvrable (100+ modèles depuis `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — définir / lister / révoquer des clés de fournisseur chiffrées
 - `GET/PUT /v1/routing` — changer la stratégie (`balanced` / `cheapest` / `fastest` / `quality`)
@@ -224,7 +248,7 @@ x-orca-cache: HIT          ← servi depuis le cache, pas d'appel upstream
 
 ### Intégrations
 
-Configurations drop-in pour [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) et tout outil parlant le protocole OpenAI Chat Completions. Voir [`integrations/`](./integrations/).
+Configurations drop-in pour [Claude Code](./integrations/claude-code.md), [SDK Gemini](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) et tout outil parlant le protocole OpenAI Chat Completions — plus les formats wire natifs d'Anthropic et de Gemini. Voir [`integrations/`](./integrations/).
 
 ## Ce qui n'est délibérément pas inclus
 
@@ -244,7 +268,7 @@ Construit en test-first. Chaque comportement livré ici a d'abord eu un test qui
 ```bash
 pip install -e ".[dev]"
 PYTHONPATH=. pytest -v
-# 127 passed
+# 403 passed
 ```
 
 | Slice | Tests | Quoi |
@@ -267,7 +291,12 @@ PYTHONPATH=. pytest -v
 | 16. Statut hosted | 7 | `/v1/hosted` config-source + surface URL d'inscription |
 | 17. Économies hosted-auto | 3 | cas limites de `_hosted_auto_savings` sur catalogues synthétiques |
 | 18. Modèles inaccessibles | 7 | la tuile « modèles inaccessibles » se vide quand hosted est actif |
-| **Total** | **127** | |
+| 19. Auth multi-protocole | 6 | scoping x-api-key / x-goog-api-key / ?key=, garde /v1beta, enveloppes 401 par protocole |
+| 20. Anthropic `/v1/messages` | 53 | traduction requête/réponse/stream + intégration de l'ingress |
+| 21. Gemini `/v1beta` | 40 | traduction incluant la normalisation schema-enum + ingress generateContent/stream |
+| **Total** | **403** | |
+
+Les lignes de slice montrent les tests ajoutés à la livraison de chaque slice ; le total est la suite complète actuelle.
 
 ## Architecture
 
