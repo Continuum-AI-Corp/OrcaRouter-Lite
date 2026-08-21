@@ -106,7 +106,9 @@ _MSGS = [{"role": "user", "content": "hi"}]
 def _key(**overrides):
     from app.prompt_cache import cache_key
 
-    kwargs = dict(model="m", messages=_MSGS, temperature=0.0, tools=None,
+    # Default temperature to None (omitted) so the v2 key space can be
+    # exercised with an omitted temperature as distinct from 0.0.
+    kwargs = dict(model="m", messages=_MSGS, temperature=None, tools=None,
                   response_format=None, seed=None)
     kwargs.update(overrides)
     return cache_key(**kwargs)
