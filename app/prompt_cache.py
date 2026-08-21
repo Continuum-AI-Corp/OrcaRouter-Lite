@@ -52,7 +52,13 @@ def cache_key(
         "v": 2,
         "model": model,
         "messages": messages,
-        "temperature": temperature if temperature is not None else 0.0,
+        # Preserve the raw value, INCLUDING an omitted temperature (None).
+        # Coercing None to 0.0 here made `{seed, temp omitted}` (actually
+        # generated at the provider default of 1.0) and `{seed, temp: 0.0}`
+        # hash to the SAME key — serving a temperature-0 generation to a
+        # temperature-1 client. The seed pins determinism *per parameter
+        # combination*, not across different temperatures.
+        "temperature": temperature,
         "tools": tools or None,
         "response_format": response_format or None,
         "seed": seed,
