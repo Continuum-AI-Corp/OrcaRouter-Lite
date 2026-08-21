@@ -6,7 +6,6 @@ even after the request-scoped dependency session (`get_db()`) has exited and clo
 
 from __future__ import annotations
 
-import json
 import time
 from unittest.mock import AsyncMock
 
