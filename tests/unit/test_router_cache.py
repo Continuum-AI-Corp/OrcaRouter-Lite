@@ -100,14 +100,17 @@ def test_orcarouter_api_key_adds_hosted_upstream_per_model(monkeypatch):
     """
     from app.config import Settings
     from app.router_cache import build_deployments
-    from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
+    from packages.litellm_adapter.hosted_catalog import (
+        HOSTED_MODEL_ALIASES,
+        HOSTED_MODELS,
+    )
 
     monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-hosted-xyz")
     s = Settings(_env_file=None)
 
     deps = build_deployments(env_keys={}, db_keys=[], settings=s)
     orca_deps = [d for d in deps if d.provider == "orcarouter"]
-    assert len(orca_deps) == len(HOSTED_MODELS)
+    assert len(orca_deps) == len(HOSTED_MODELS) + len(HOSTED_MODEL_ALIASES)
     for d in orca_deps:
         assert d.api_base == "https://api.orcarouter.ai/v1"
         assert d.api_key == "sk-orca-hosted-xyz"
@@ -138,7 +141,10 @@ def test_orcarouter_db_row_enables_hosted_upstream():
     from app.router_cache import build_deployments
     from packages.auth.encryption import encrypt_credential
     from packages.db.models.provider_key import ProviderKey
-    from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
+    from packages.litellm_adapter.hosted_catalog import (
+        HOSTED_MODEL_ALIASES,
+        HOSTED_MODELS,
+    )
 
     s = Settings(_env_file=None)
     db_row = ProviderKey(
@@ -150,10 +156,27 @@ def test_orcarouter_db_row_enables_hosted_upstream():
     )
     deps = build_deployments(env_keys={}, db_keys=[db_row], settings=s)
     orca_deps = [d for d in deps if d.provider == "orcarouter"]
-    assert len(orca_deps) == len(HOSTED_MODELS)
+    assert len(orca_deps) == len(HOSTED_MODELS) + len(HOSTED_MODEL_ALIASES)
     for d in orca_deps:
         assert d.api_key == "sk-orca-from-dashboard"
         assert d.api_base == "https://api.orcarouter.ai/v1"
+
+
+def test_hosted_free_models_accept_exact_wire_ids(monkeypatch):
+    """Free hosted IDs copied from O2's model list work unchanged in Lite."""
+    from app.config import Settings
+    from app.router_cache import build_deployments
+    from packages.litellm_adapter.hosted_catalog import HOSTED_MODEL_ALIASES
+
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-hosted-xyz")
+    s = Settings(_env_file=None)
+    deps = build_deployments(env_keys={}, db_keys=[], settings=s)
+
+    by_group = {d.model_name: d for d in deps}
+    assert HOSTED_MODEL_ALIASES <= by_group.keys()
+    for wire_id in HOSTED_MODEL_ALIASES:
+        assert by_group[wire_id].litellm_model == wire_id
+        assert by_group[wire_id].provider == "orcarouter"
 
 
 def test_orcarouter_db_row_overrides_env_key(monkeypatch):

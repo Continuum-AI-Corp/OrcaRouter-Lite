@@ -15,7 +15,10 @@ from typing import TYPE_CHECKING
 
 from packages.auth.encryption import decrypt_credential
 from packages.litellm_adapter.catalog import models_for_provider
-from packages.litellm_adapter.hosted_catalog import HOSTED_MODELS
+from packages.litellm_adapter.hosted_catalog import (
+    HOSTED_MODEL_ALIASES,
+    HOSTED_MODELS,
+)
 from packages.litellm_adapter.types import ProviderDeployment
 
 if TYPE_CHECKING:
@@ -76,17 +79,22 @@ def build_deployments(
     hosted_key = db_provider_keys.get(HOSTED_PROVIDER_NAME) or settings.orcarouter_api_key
     if hosted_key:
         for provider, bare_id in HOSTED_MODELS:
-            deployments.append(
-                ProviderDeployment(
-                    model_name=bare_id,
-                    litellm_model=f"{provider}/{bare_id}",
-                    api_key=hosted_key,
-                    api_base=settings.orcarouter_base_url,
-                    provider=HOSTED_PROVIDER_NAME,
-                    custom_llm_provider="openai",
-                    extra_headers={"X-OrcaRouter-beta-usd": "response"},
+            wire_id = f"{provider}/{bare_id}"
+            model_groups = [bare_id]
+            if wire_id in HOSTED_MODEL_ALIASES:
+                model_groups.append(wire_id)
+            for model_group in model_groups:
+                deployments.append(
+                    ProviderDeployment(
+                        model_name=model_group,
+                        litellm_model=wire_id,
+                        api_key=hosted_key,
+                        api_base=settings.orcarouter_base_url,
+                        provider=HOSTED_PROVIDER_NAME,
+                        custom_llm_provider="openai",
+                        extra_headers={"X-OrcaRouter-beta-usd": "response"},
+                    )
                 )
-            )
 
     return deployments
 
