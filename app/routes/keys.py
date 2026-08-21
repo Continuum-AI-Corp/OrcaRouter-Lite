@@ -56,7 +56,10 @@ async def list_keys(
     require_unrestricted(kc)
     rows = (
         await db.execute(
-            select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
+            select(ApiKey).where(
+                ApiKey.workspace_id == kc.workspace_id,
+                ApiKey.is_deleted == 0,
+            ).order_by(ApiKey.created_at)
         )
     ).scalars().all()
     return {
@@ -114,7 +117,14 @@ async def revoke_key(
     require_unrestricted(kc)
     row = (
         await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+            select(ApiKey).where(
+                ApiKey.id == key_id,
+                # Workspace scoping: without this, any key could revoke any
+                # other workspace's keys (the write path has always been
+                # scoped; the read/delete paths were not).
+                ApiKey.workspace_id == kc.workspace_id,
+                ApiKey.is_deleted == 0,
+            )
         )
     ).scalar_one_or_none()
     if row is None:

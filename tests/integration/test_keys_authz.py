@@ -135,3 +135,62 @@ async def test_unrestricted_key_retains_full_management(keys_app, seeded_keys):
 
         revoked = await c.delete(f"/v1/keys/{child_id}", headers=h)
         assert revoked.status_code == 204
+
+
+# ── Workspace scoping (IDOR regression tests) ────────────────────────────
+
+
+async def _make_foreign_workspace_key(db_session) -> tuple[str, str]:
+    """A key belonging to a different workspace; returns (id, name)."""
+    from packages.auth.hashing import generate_api_key
+    from packages.db.models.api_key import ApiKey
+    from packages.db.models.workspace import Workspace
+
+    db_session.add(Workspace(id="ws-other", name="Other", slug="other"))
+    await db_session.flush()
+
+    full_key, key_hash, key_prefix = generate_api_key()
+    row = ApiKey(
+        workspace_id="ws-other",
+        name="foreign-key",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row.id, full_key
+
+
+async def test_list_keys_hides_other_workspaces(keys_app, seeded_keys, db_session):
+    root, *_ = seeded_keys
+    foreign_id, _foreign_key = await _make_foreign_workspace_key(db_session)
+
+    async with await _client(keys_app) as c:
+        r = await c.get(
+            "/v1/keys", headers={"Authorization": f"Bearer {root}"}
+        )
+
+    assert r.status_code == 200
+    listed_ids = {k["id"] for k in r.json()["keys"]}
+    assert foreign_id not in listed_ids
+
+
+async def test_revoke_rejects_other_workspaces_key(keys_app, seeded_keys, db_session):
+    from sqlalchemy import select
+
+    from packages.db.models.api_key import ApiKey
+
+    root, *_ = seeded_keys
+    foreign_id, _foreign_key = await _make_foreign_workspace_key(db_session)
+
+    async with await _client(keys_app) as c:
+        r = await c.delete(
+            f"/v1/keys/{foreign_id}",
+            headers={"Authorization": f"Bearer {root}"},
+        )
+
+    assert r.status_code == 404
+    row = (
+        await db_session.execute(select(ApiKey).where(ApiKey.id == foreign_id))
+    ).scalar_one()
+    assert row.is_active  # untouched
