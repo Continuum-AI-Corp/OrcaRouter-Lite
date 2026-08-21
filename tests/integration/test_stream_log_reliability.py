@@ -52,82 +52,86 @@ async def test_streaming_log_persistence_when_dependency_session_is_closed(monke
         )
         await s.commit()
 
-    # Set _session_factory for authentication middleware and _finalize()
-    session_mod._session_factory = factory
+    try:
+        # Set _session_factory for authentication middleware and _finalize()
+        session_mod._session_factory = factory
 
-    chunks = [
-        {
-            "id": "chatcmpl-stream-test",
-            "object": "chat.completion.chunk",
-            "model": "gpt-4o-mini",
-            "created": int(time.time()),
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": "Test stream chunk"},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
-            "_orca_meta": {"provider": "openai", "latency_ms": 10},
-        }
-    ]
-
-    fake_client = AsyncMock()
-
-    async def _stream_iter(chunk_list):
-        for c in chunk_list:
-            yield c
-
-    fake_client.acompletion = AsyncMock(
-        return_value=_stream_iter(chunks)
-    )
-
-    async def _fake_get_router(_session):
-        return fake_client
-
-    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
-
-    from app.deps import get_db
-
-    async def _override_get_db_that_closes_on_return():
-        async with factory() as session:
-            yield session
-            # Dependency scope ends here when chat_completions returns StreamingResponse,
-            # explicitly closing session before _finalize() runs!
-            await session.close()
-
-    from app.main import create_app
-
-    app = create_app()
-    app.dependency_overrides[get_db] = _override_get_db_that_closes_on_return
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {raw_key}"},
-    ) as c:
-        response = await c.post(
-            "/v1/chat/completions",
-            json={
+        chunks = [
+            {
+                "id": "chatcmpl-stream-test",
+                "object": "chat.completion.chunk",
                 "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": "hi"}],
-                "stream": True,
-            },
+                "created": int(time.time()),
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "Test stream chunk"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "_orca_meta": {"provider": "openai", "latency_ms": 10},
+            }
+        ]
+
+        fake_client = AsyncMock()
+
+        async def _stream_iter(chunk_list):
+            for c in chunk_list:
+                yield c
+
+        fake_client.acompletion = AsyncMock(
+            return_value=_stream_iter(chunks)
         )
-        assert response.status_code == 200
-        body_text = response.text
-        assert "data: [DONE]" in body_text
 
-    # Verify that the streaming request log WAS successfully written to DB via session_factory
-    async with factory() as check_session:
-        rows = (await check_session.execute(select(RequestLog))).scalars().all()
+        async def _fake_get_router(_session):
+            return fake_client
 
-    assert len(rows) == 1, (
-        f"Expected 1 RequestLog row for streaming completion, but found {len(rows)}. "
-        "Streaming log failed to persist when request-scoped db session was closed."
-    )
-    log = rows[0]
-    assert log.is_streaming is True
-    assert log.input_tokens == 5
-    assert log.output_tokens == 5
+        monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+        from app.deps import get_db
+
+        async def _override_get_db_that_closes_on_return():
+            async with factory() as session:
+                yield session
+                # Dependency scope ends here when chat_completions returns StreamingResponse,
+                # explicitly closing session before _finalize() runs!
+                await session.close()
+
+        from app.main import create_app
+
+        app = create_app()
+        app.dependency_overrides[get_db] = _override_get_db_that_closes_on_return
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {raw_key}"},
+        ) as c:
+            response = await c.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+            assert response.status_code == 200
+            body_text = response.text
+            assert "data: [DONE]" in body_text
+
+        # Verify that the streaming request log WAS successfully written to DB via session_factory
+        async with factory() as check_session:
+            rows = (await check_session.execute(select(RequestLog))).scalars().all()
+
+        assert len(rows) == 1, (
+            f"Expected 1 RequestLog row for streaming completion, but found {len(rows)}. "
+            "Streaming log failed to persist when request-scoped db session was closed."
+        )
+        log = rows[0]
+        assert log.is_streaming is True
+        assert log.input_tokens == 5
+        assert log.output_tokens == 5
+    finally:
+        session_mod._session_factory = None
+        await engine.dispose()

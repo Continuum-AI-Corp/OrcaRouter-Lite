@@ -533,14 +533,14 @@ async def chat_completions(
                 )
                 from packages.db import session as session_mod
 
-                if session_mod._session_factory is None:
-                    from app.config import get_settings
-                    session_mod.init_session_factory(get_settings().database_url)
-
                 try:
-                    async with session_mod._session_factory() as s:
-                        s.add(log)
-                        await s.commit()
+                    if session_mod._session_factory is not None:
+                        async with session_mod._session_factory() as s:
+                            s.add(log)
+                            await s.commit()
+                    else:
+                        db.add(log)
+                        await db.commit()
                 except Exception as commit_err:
                     logger.warning("request_log_commit_failed", error=str(commit_err))
 
