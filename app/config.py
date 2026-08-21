@@ -52,9 +52,16 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "info"
 
-    # ── Encryption (auto-generated on first run if empty) ──
+    # ── Encryption ──
+    # NOTE: credential_encryption_key is NOT auto-generated. If empty, the
+    # app seals provider keys with a publicly-known dev key (with a loud
+    # warning), and packages.db.guards refuses to boot once real
+    # credentials are at stake. Generate one: `openssl rand -hex 32`.
     credential_encryption_key: str = ""
     api_key_pepper: str = ""
+    # Explicit opt-out from the startup guard that refuses to run with the
+    # publicly-known dev encryption key when real credentials are at stake.
+    allow_insecure_dev_key: bool = False
 
     # ── Provider keys via env (alternative to UI-stored keys) ──
     # Keep in sync with `_PROVIDERS_FROM_ENV` above. Pydantic-settings reads
