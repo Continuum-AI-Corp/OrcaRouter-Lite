@@ -22,11 +22,33 @@ class CreateKey(BaseModel):
     name: str
 
 
+def require_unrestricted(kc: KeyContext) -> None:
+    """Key management is reserved for unrestricted keys.
+
+    A key that carries any restriction (`model_allowlist` or
+    `budget_limit_cents`) must not be able to mint, list, or revoke other
+    keys — otherwise it could create a sibling with no restrictions and
+    trivially bypass its own allowlist/budget. Unrestricted keys already
+    hold the maximum privilege this single-workspace edition exposes
+    (same trust level as PUT /v1/providers/*), so denying restricted keys
+    here grants nothing to anyone; it only closes the escalation path.
+    """
+    if kc.model_allowlist is not None or kc.budget_limit_cents is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Restricted API keys cannot manage keys. "
+                "Use an unrestricted key."
+            ),
+        )
+
+
 @router.get("")
 async def list_keys(
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(kc)
     rows = (
         await db.execute(
             select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
@@ -54,6 +76,7 @@ async def create_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(kc)
     full_key, key_hash, key_prefix = generate_api_key()
     row = ApiKey(
         workspace_id=kc.workspace_id,
@@ -76,9 +99,10 @@ async def create_key(
 @router.delete("/{key_id}", status_code=204)
 async def revoke_key(
     key_id: str,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    require_unrestricted(kc)
     row = (
         await db.execute(
             select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
