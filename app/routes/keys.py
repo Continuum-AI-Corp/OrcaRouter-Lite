@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,11 @@ router = APIRouter(prefix="/v1/keys", tags=["keys"])
 
 class CreateKey(BaseModel):
     name: str
+    # Optional restrictions for child keys. Only reachable by unrestricted
+    # callers (require_unrestricted above), so a restricted key can never
+    # mint a sibling with looser limits than its own — it can't mint at all.
+    model_allowlist: list[str] | None = None
+    budget_limit_cents: int | None = Field(default=None, gt=0)
 
 
 def require_unrestricted(kc: KeyContext) -> None:
@@ -83,6 +88,8 @@ async def create_key(
         name=body.name,
         key_hash=key_hash,
         key_prefix=key_prefix,
+        model_allowlist=body.model_allowlist,
+        budget_limit_cents=body.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -93,6 +100,8 @@ async def create_key(
         "name": row.name,
         "key_prefix": row.key_prefix,
         "api_key": full_key,  # plaintext shown ONCE
+        "model_allowlist": row.model_allowlist,
+        "budget_limit_cents": row.budget_limit_cents,
     }
 
 

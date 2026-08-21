@@ -31,6 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
+from packages.auth.spend import budget_exceeded, get_lifetime_spend_microcents
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -305,6 +306,21 @@ async def execute_chat(
             status_code=403,
             detail=f"Model '{body.model}' is not allowed for this API key",
         )
+
+    # Budget enforcement: `budget_limit_cents` is a lifetime cap on this
+    # key's billable (status < 400) spend. Checked before any routing,
+    # resolution, or cache work so an exhausted key costs the operator
+    # nothing — no upstream attempt, no cache fill.
+    if kc.budget_limit_cents is not None:
+        spend = await get_lifetime_spend_microcents(db, str(kc.key_id))
+        if budget_exceeded(spend, kc.budget_limit_cents):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "API key budget exhausted "
+                    f"({spend} of {kc.budget_limit_cents * 10_000} microcents spent)."
+                ),
+            )
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
