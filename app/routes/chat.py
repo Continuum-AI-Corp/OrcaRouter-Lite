@@ -154,7 +154,12 @@ async def _build_log_row(
             output_tokens=output_t,
             fallback_model=requested_model,
         ),
-        latency_ms=meta.get("latency_ms", latency_ms),
+        # `or latency_ms` (not `is None`): the streaming aggregator and the
+        # cache-hit path both emit a literal 0 when no real measurement
+        # exists, and 0 must fall back to the wall-clock measurement — a
+        # `default=` would silently accept the bogus zero and poison
+        # /v1/analytics/latency percentiles.
+        latency_ms=meta.get("latency_ms") or latency_ms,
         status_code=status_code,
         error_type=error_type,
         is_streaming=body.stream,
@@ -436,7 +441,10 @@ async def chat_completions(
             response={
                 "model": cached_model,
                 "usage": cache_hit_response.get("usage", {}),
-                "_orca_meta": {"provider": "cache", "latency_ms": 0},
+                # No latency_ms here: _build_log_row falls back to the
+                # measured serve time. Logging a hardcoded 0 dragged the
+                # analytics percentiles toward zero on every cache hit.
+                "_orca_meta": {"provider": "cache"},
             },
             status_code=200, error_type=None, started_perf=started_perf,
             strategy=strategy,
