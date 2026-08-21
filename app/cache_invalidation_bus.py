@@ -13,8 +13,8 @@ applies it locally. No Redis configured → every broadcast is a no-op and
 behavior is exactly the single-worker path. This module is transport
 only: it reuses the existing local ``invalidate_*()`` functions.
 
-# ponytail: one channel + string messages, no generic bus. Add a message
-# schema / more targets only when a third cache needs invalidating.
+Deliberately one channel + string messages, no generic bus. Add a message
+schema / more targets only when a third cache needs invalidating.
 """
 
 from __future__ import annotations
@@ -83,7 +83,15 @@ async def _get_redis_publisher_client():
     try:
         import redis.asyncio as aioredis
 
-        _redis_publisher_client = aioredis.from_url(redis_url, decode_responses=True)
+        # Tight timeouts: publish runs inside mutation requests, and an
+        # unreachable Redis must degrade to a logged warning, not stall
+        # the request for the OS TCP timeout.
+        _redis_publisher_client = aioredis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=5,
+        )
     except Exception as exc:  # redis extra not installed / bad url
         log.warning("invalidation_publisher_unavailable", error=str(exc))
         _redis_publisher_client = None
@@ -122,14 +130,18 @@ async def _subscribe_and_apply_invalidations(redis_url: str) -> None:
     import redis.asyncio as aioredis
 
     global _invalidation_listener_connection
+    backoff = 1.0
     while True:
         try:
+            # No socket_timeout here: the pubsub read blocks while the
+            # channel is idle, and a read timeout would churn the loop.
             _invalidation_listener_connection = aioredis.from_url(
-                redis_url, decode_responses=True
+                redis_url, decode_responses=True, socket_connect_timeout=5
             )
             pubsub = _invalidation_listener_connection.pubsub()
             await pubsub.subscribe(_INVALIDATION_CHANNEL)
             log.info("invalidation_listener_ready", channel=_INVALIDATION_CHANNEL)
+            backoff = 1.0
             async for msg in pubsub.listen():
                 if msg.get("type") == "message":
                     _apply_invalidation_message_locally(msg["data"])
@@ -137,9 +149,16 @@ async def _subscribe_and_apply_invalidations(redis_url: str) -> None:
             raise
         except Exception as exc:
             # A dropped connection must not silently strand this worker on
-            # stale caches — reconnect after a short backoff.
-            log.warning("invalidation_listener_error", error=str(exc))
-            await asyncio.sleep(1.0)
+            # stale caches — reconnect, backing off so a long Redis outage
+            # doesn't spam a warning per second.
+            log.warning("invalidation_listener_error", error=str(exc),
+                        retry_in_s=backoff)
+            if _invalidation_listener_connection is not None:
+                with contextlib.suppress(Exception):
+                    await _invalidation_listener_connection.aclose()
+                _invalidation_listener_connection = None
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
 
 
 async def start_invalidation_listener() -> None:
@@ -159,8 +178,9 @@ async def start_invalidation_listener() -> None:
 
 
 async def stop_invalidation_listener() -> None:
-    """Cancel the listener and close its connection (lifespan shutdown)."""
+    """Cancel the listener and close both connections (lifespan shutdown)."""
     global _invalidation_listener_task, _invalidation_listener_connection
+    global _redis_publisher_client, _redis_publisher_initialized
     if _invalidation_listener_task is not None:
         _invalidation_listener_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -170,3 +190,8 @@ async def stop_invalidation_listener() -> None:
         with contextlib.suppress(Exception):
             await _invalidation_listener_connection.aclose()
         _invalidation_listener_connection = None
+    if _redis_publisher_client is not None:
+        with contextlib.suppress(Exception):
+            await _redis_publisher_client.aclose()
+    _redis_publisher_client = None
+    _redis_publisher_initialized = False
