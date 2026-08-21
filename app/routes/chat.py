@@ -533,19 +533,16 @@ async def chat_completions(
                 )
                 from packages.db import session as session_mod
 
-                if session_mod._session_factory is not None:
-                    try:
+                try:
+                    if session_mod._session_factory is not None:
                         async with session_mod._session_factory() as s:
                             s.add(log)
                             await s.commit()
-                    except Exception as commit_err:
-                        logger.warning("request_log_commit_failed", error=str(commit_err))
-                else:
-                    db.add(log)
-                    try:
+                    else:
+                        db.add(log)
                         await db.commit()
-                    except Exception as commit_err:
-                        logger.warning("request_log_commit_failed", error=str(commit_err))
+                except Exception as commit_err:
+                    logger.warning("request_log_commit_failed", error=str(commit_err))
 
             try:
                 async for chunk in _aiter(stream_obj):
