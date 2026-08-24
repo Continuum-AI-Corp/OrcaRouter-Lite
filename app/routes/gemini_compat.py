@@ -123,4 +123,14 @@ async def gemini_generate(
 
     # No alt=sse: the REST default is a JSON array of chunks — aggregate.
     collected = [chunk async for chunk in chunks]
+    for chunk in collected:
+        err = chunk.get("error") if isinstance(chunk, dict) else None
+        if err:
+            # A mid-stream engine failure surfaces as an error chunk.
+            # Nothing has been sent yet, so render the native non-200
+            # envelope instead of burying the error in a 200 array.
+            return proto.error_response(
+                err.get("code") or 500,
+                err.get("message") or "Upstream provider error",
+            )
     return JSONResponse(collected, headers=forwarded_headers(inner))

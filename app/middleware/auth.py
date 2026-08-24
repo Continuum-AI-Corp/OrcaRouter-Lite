@@ -63,11 +63,13 @@ def _extract_credential(scope) -> str | None:
     Precedence: `Authorization: Bearer` → `x-api-key` → `x-goog-api-key`
     → `?key=` (the query-param form only on /v1beta/ paths, matching the
     legacy Google SDK that uses it, so credentials-in-URL stays contained).
+    An empty Bearer token (e.g. a proxy that blanks the header) falls
+    through to the other locations instead of short-circuiting the chain.
     """
     headers = scope.get("headers", [])
     auth_header = _get_header(headers, b"authorization")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:] or None
+    if auth_header.startswith("Bearer ") and auth_header[7:]:
+        return auth_header[7:]
     for name in (b"x-api-key", b"x-goog-api-key"):
         val = _get_header(headers, name)
         if val:

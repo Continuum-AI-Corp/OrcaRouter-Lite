@@ -122,13 +122,20 @@ def _translate_tool_config(tc: dict) -> str | dict | None:
     fcc = _alias(tc, "functionCallingConfig", "function_calling_config")
     if not isinstance(fcc, dict):
         return None
-    mode = (fcc.get("mode") or "").upper()
+    # tool_config is free-form in the wire schema — validate the field
+    # types here so malformed input renders as a native 400, not a 500.
+    mode_raw = fcc.get("mode")
+    if mode_raw is not None and not isinstance(mode_raw, str):
+        raise _invalid("functionCallingConfig.mode must be a string")
+    mode = (mode_raw or "").upper()
     if mode in ("", "MODE_UNSPECIFIED", "AUTO", "VALIDATED"):
         return "auto"
     if mode == "NONE":
         return "none"
     if mode == "ANY":
         allowed = _alias(fcc, "allowedFunctionNames", "allowed_function_names") or []
+        if not isinstance(allowed, list) or not all(isinstance(n, str) for n in allowed):
+            raise _invalid("functionCallingConfig.allowedFunctionNames must be a list of strings")
         if len(allowed) == 1:
             return {"type": "function", "function": {"name": allowed[0]}}
         return "required"
@@ -361,6 +368,21 @@ def to_gemini_response(resp: dict) -> dict:
 
 # ── Stream translation (OpenAI chunk frames → Gemini chunk dicts) ──────
 
+# Engine SSE error-frame `type` → HTTP-ish code for the Google envelope
+# (the Google status string derives from the code via
+# _STATUS_TO_GOOGLE_STATUS). Client retry/backoff logic keys off the
+# status, so a provider rate limit must surface as RESOURCE_EXHAUSTED,
+# not INTERNAL.
+_STREAM_ERROR_TYPE_TO_CODE = {
+    "rate_limit_error": 429,
+    "model_not_found": 404,
+    "context_length_exceeded": 400,
+    "upstream_auth_error": 503,
+    "upstream_timeout": 503,
+    "upstream_error": 503,
+}
+
+
 async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, None]:
     """Transform the engine's OpenAI chunk-dict stream into
     GenerateContentResponse-shaped chunk dicts. Text deltas stream through
@@ -380,13 +402,21 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
         async for frame in frames:
             if "error" in frame and "choices" not in frame:
                 err = frame.get("error") or {}
+                code = _STREAM_ERROR_TYPE_TO_CODE.get(err.get("type"), 500)
                 yield {
                     "error": {
-                        "code": 500,
+                        "code": code,
                         "message": err.get("message", "Upstream provider error"),
-                        "status": "INTERNAL",
+                        "status": _STATUS_TO_GOOGLE_STATUS.get(code, "INTERNAL"),
                     }
                 }
+                # Drain, don't return-and-aclose: the engine follows the
+                # error frame with [DONE] and completes normally, logging
+                # 503 + the real error type. aclose() would raise
+                # GeneratorExit at its suspended yield and the engine would
+                # mislog this as a 499 client disconnect.
+                async for _ in frames:
+                    pass
                 return
 
             model = frame.get("model") or model

@@ -138,6 +138,23 @@ def test_tool_config_any_with_single_allowed_name_pins_function():
     assert out["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
+@pytest.mark.parametrize("fcc", [
+    {"mode": {"x": 1}},                                     # mode not a string
+    {"mode": "ANY", "allowedFunctionNames": {"f": {}}},     # names not a list
+    {"mode": "ANY", "allowedFunctionNames": [{"name": "f"}]},  # entry not a string
+])
+def test_tool_config_wrong_field_types_render_native_400(fcc):
+    """toolConfig is free-form in the wire schema; wrong field types must
+    raise the native 400, not an AttributeError/KeyError that the route's
+    blanket except turns into a 500."""
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "toolConfig": {"functionCallingConfig": fcc},
+        })
+    assert exc.value.status_code == 400
+
+
 def test_generation_config_full_mapping():
     out = _translate({
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],

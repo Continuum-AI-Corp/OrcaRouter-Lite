@@ -323,6 +323,34 @@ async def test_stream_without_alt_sse_aggregates_json_array(native_client):
     assert "usageMetadata" in chunks[-1]
 
 
+async def test_stream_aggregate_mid_stream_error_returns_non_200(native_client):
+    """Regression: without ?alt=sse the whole stream is aggregated before
+    anything is sent, so a mid-stream engine failure must render the native
+    non-200 Google envelope — not HTTP 200 with an error object buried in
+    the JSON array."""
+    client, fake, key = native_client
+
+    async def _broken_stream():
+        yield _stream_chunks()[0]
+        raise RuntimeError("provider exploded")
+
+    async def _acompletion(**kwargs):
+        return _broken_stream()
+
+    fake.acompletion = AsyncMock(side_effect=_acompletion)
+
+    r = await client.post(
+        "/v1beta/models/gemini-1.5-flash:streamGenerateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    # a plain RuntimeError translates to upstream_error → 503 UNAVAILABLE
+    assert r.status_code == 503
+    body = r.json()
+    assert isinstance(body, dict)
+    assert body["error"]["code"] == 503
+    assert body["error"]["status"] == "UNAVAILABLE"
+
+
 # ── model listing + auto ──
 
 

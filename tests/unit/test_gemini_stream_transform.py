@@ -8,7 +8,10 @@ carries finishReason + usageMetadata.
 
 from __future__ import annotations
 
+import pytest
+
 from app.protocols.gemini import stream_chunks
+from app.protocols.sse import iter_openai_frames
 
 
 async def _agen(items):
@@ -102,7 +105,48 @@ async def test_engine_error_frame_becomes_google_error_chunk():
         {"error": {"message": "boom", "type": "upstream_error"}},
     ])
     assert chunks[-1] == {
-        "error": {"code": 500, "message": "boom", "status": "INTERNAL"},
+        "error": {"code": 503, "message": "boom", "status": "UNAVAILABLE"},
     }
     # no final finishReason chunk after an error
     assert all("usageMetadata" not in c for c in chunks)
+
+
+@pytest.mark.parametrize("etype,code,status", [
+    ("rate_limit_error", 429, "RESOURCE_EXHAUSTED"),
+    ("model_not_found", 404, "NOT_FOUND"),
+    ("context_length_exceeded", 400, "INVALID_ARGUMENT"),
+    ("upstream_timeout", 503, "UNAVAILABLE"),
+    ("something_unknown", 500, "INTERNAL"),
+    (None, 500, "INTERNAL"),
+])
+async def test_engine_error_type_maps_to_google_status(etype, code, status):
+    """The engine's translated error type must surface as the matching
+    Google status — client retry/backoff keys off it (a provider rate
+    limit presented as INTERNAL would not be backed off)."""
+    err: dict = {"message": "boom"}
+    if etype is not None:
+        err["type"] = etype
+    chunks = await _collect([{"error": err}])
+    assert chunks == [{"error": {"code": code, "message": "boom", "status": status}}]
+
+
+async def test_error_frame_drains_engine_source_instead_of_closing_it():
+    """Regression: after a mid-stream upstream error the engine emits an
+    error frame + [DONE] and then completes, logging 503 + the real error
+    type. The transformer must DRAIN the frame source to that natural
+    completion — aclose() raises GeneratorExit at the engine's suspended
+    yield, which its disconnect branch mislogs as a 499 client disconnect."""
+    state = {"exit": None}
+
+    async def engine_sse():
+        try:
+            yield 'data: {"error": {"message": "boom", "type": "rate_limit_error"}}\n\n'
+            yield "data: [DONE]\n\n"
+            state["exit"] = "completed"
+        except GeneratorExit:
+            state["exit"] = "generator_exit"
+            raise
+
+    chunks = [c async for c in stream_chunks(iter_openai_frames(engine_sse()))]
+    assert chunks[-1]["error"]["status"] == "RESOURCE_EXHAUSTED"
+    assert state["exit"] == "completed"

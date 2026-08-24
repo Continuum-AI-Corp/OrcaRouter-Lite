@@ -152,6 +152,48 @@ async def test_query_param_key_only_works_under_v1beta(app_with_auth, db_session
     assert allowed.status_code == 404  # passed auth, no such route
 
 
+async def test_empty_bearer_falls_through_to_x_api_key(app_with_auth, db_session):
+    """An empty `Authorization: Bearer ` (e.g. blanked by a proxy) must not
+    short-circuit the documented fallback chain — a valid key in x-api-key
+    still authenticates."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.seed import seed_initial_state
+
+    seed = await seed_initial_state(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get(
+            "/v1/protected",
+            headers={"Authorization": "Bearer ", "x-api-key": seed.api_key},
+        )
+    assert r.status_code == 200
+
+
+def test_extract_credential_empty_bearer_falls_through_each_location():
+    """Scope-level check of the precedence chain with an empty Bearer token
+    (immune to any client/transport header normalization)."""
+    from app.middleware.auth import _extract_credential
+
+    def scope(headers: dict[str, str], path="/v1/x", query=""):
+        return {
+            "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+            "path": path,
+            "query_string": query.encode(),
+        }
+
+    assert _extract_credential(
+        scope({"authorization": "Bearer ", "x-api-key": "sk-orca-a"})
+    ) == "sk-orca-a"
+    assert _extract_credential(
+        scope({"authorization": "Bearer ", "x-goog-api-key": "sk-orca-b"})
+    ) == "sk-orca-b"
+    assert _extract_credential(
+        scope({"authorization": "Bearer "}, path="/v1beta/models", query="key=sk-orca-c")
+    ) == "sk-orca-c"
+    assert _extract_credential(scope({"authorization": "Bearer "})) is None
+
+
 async def test_v1_messages_401_uses_anthropic_envelope(app_with_auth):
     """Auth failures on the Anthropic surface render the Anthropic error
     envelope, not the OpenAI one."""

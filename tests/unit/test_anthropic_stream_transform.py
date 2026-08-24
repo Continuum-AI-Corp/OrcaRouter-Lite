@@ -104,7 +104,9 @@ async def test_length_finish_maps_to_max_tokens():
     assert events[-2][1]["delta"]["stop_reason"] == "max_tokens"
 
 
-async def test_tool_call_stream_emits_tool_use_block_and_json_deltas():
+async def test_tool_call_stream_buffers_into_one_complete_tool_use_block():
+    """Fragments are buffered per index and flushed as ONE complete block
+    at end-of-stream (start → single full input_json_delta → stop)."""
     frames = [
         {
             "id": "chatcmpl-1", "model": "gpt-4o-mini",
@@ -137,7 +139,6 @@ async def test_tool_call_stream_emits_tool_use_block_and_json_deltas():
         "message_start",
         "content_block_start",
         "content_block_delta",
-        "content_block_delta",
         "content_block_stop",
         "message_delta",
         "message_stop",
@@ -149,6 +150,63 @@ async def test_tool_call_stream_emits_tool_use_block_and_json_deltas():
 
     partials = [d["delta"]["partial_json"] for n, d in events if n == "content_block_delta"]
     assert json.loads("".join(partials)) == {"city": "SF"}
+    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
+
+
+def _tool_fragment(index: int, args: str, call_id: str | None = None,
+                   name: str | None = None) -> dict:
+    tcd: dict = {"index": index, "function": {"arguments": args}}
+    if call_id:
+        tcd["id"] = call_id
+    if name:
+        tcd["function"]["name"] = name
+    return {
+        "id": "chatcmpl-1", "model": "gpt-4o-mini",
+        "choices": [{"index": 0, "delta": {"tool_calls": [tcd]}, "finish_reason": None}],
+    }
+
+
+async def test_interleaved_tool_call_fragments_stay_in_their_own_blocks():
+    """Regression: OpenAI-format streams interleave argument fragments of
+    concurrent tool calls across frames. The old block-reopen logic emitted
+    a NEW block (random id, empty name) per index switch, scattering each
+    call's JSON across nameless blocks. Buffered per index, the output must
+    be exactly one complete block per call, sequential, ids/names intact."""
+    frames = [
+        _tool_fragment(0, '{"ci', call_id="call_a", name="get_weather"),
+        _tool_fragment(1, '{"tz', call_id="call_b", name="get_time"),
+        _tool_fragment(0, 'ty": "SF"}'),
+        _tool_fragment(1, '": "UTC"}'),
+        {
+            "id": "chatcmpl-1", "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+        },
+        _USAGE_CHUNK,
+    ]
+    events = await _collect(frames)
+    starts = [d for n, d in events if n == "content_block_start"]
+    assert [(s["content_block"]["id"], s["content_block"]["name"]) for s in starts] == [
+        ("call_a", "get_weather"), ("call_b", "get_time"),
+    ]
+
+    # one complete input_json_delta per block, correctly reassembled
+    deltas = [d for n, d in events if n == "content_block_delta"]
+    by_index = {d["index"]: json.loads(d["delta"]["partial_json"]) for d in deltas}
+    assert by_index == {
+        starts[0]["index"]: {"city": "SF"},
+        starts[1]["index"]: {"tz": "UTC"},
+    }
+
+    # blocks are strictly sequential: start(i) → delta(i) → stop(i)
+    block_events = [(n, d["index"]) for n, d in events
+                    if n.startswith("content_block_")]
+    i0, i1 = starts[0]["index"], starts[1]["index"]
+    assert block_events == [
+        ("content_block_start", i0), ("content_block_delta", i0),
+        ("content_block_stop", i0),
+        ("content_block_start", i1), ("content_block_delta", i1),
+        ("content_block_stop", i1),
+    ]
     assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
 
 
@@ -186,6 +244,30 @@ async def test_engine_error_frame_becomes_error_event():
     assert err["error"]["type"] == "api_error"
     assert "boom" in err["error"]["message"]
     assert "message_stop" not in names
+
+
+async def test_error_frame_drains_engine_source_instead_of_closing_it():
+    """Regression: after a mid-stream upstream error the engine emits an
+    error frame + [DONE] and then completes, logging 503 + the real error
+    type. The transformer must DRAIN the frame source to that natural
+    completion — aclose() raises GeneratorExit at the engine's suspended
+    yield, which its disconnect branch mislogs as a 499 client disconnect."""
+    state = {"exit": None}
+
+    async def engine_sse():
+        try:
+            yield 'data: {"error": {"message": "boom", "type": "rate_limit_error"}}\n\n'
+            yield "data: [DONE]\n\n"
+            state["exit"] = "completed"
+        except GeneratorExit:
+            state["exit"] = "generator_exit"
+            raise
+
+    raw = [f async for f in stream_events(iter_openai_frames(engine_sse()))]
+    events = _parse_events(raw)
+    assert events[-1][0] == "error"
+    assert events[-1][1]["error"]["type"] == "rate_limit_error"
+    assert state["exit"] == "completed"
 
 
 async def test_empty_stream_still_emits_valid_skeleton():

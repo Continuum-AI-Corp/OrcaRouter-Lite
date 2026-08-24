@@ -14,6 +14,10 @@ documented in PLAN-NATIVE-PROTOCOLS.md §3; the load-bearing ones:
   `stream_options.include_usage`: the usage-bearing frame arrives AFTER
   the finish_reason frame, so `message_delta` (stop_reason + usage) is
   emitted at end-of-stream from recorded state.
+- Streamed tool-call fragments are buffered per tool-call index and
+  flushed as complete `tool_use` blocks at end-of-stream: OpenAI-format
+  streams may interleave fragments of concurrent tool calls, while
+  Anthropic content blocks are strictly sequential.
 """
 
 from __future__ import annotations
@@ -336,12 +340,17 @@ _STREAM_ERROR_TYPES = {"rate_limit_error", "overloaded_error", "api_error"}
 
 async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None]:
     """Transform the engine's OpenAI chunk-dict stream into Anthropic SSE
-    events. Stateful: tracks the open content block, the mapped stop_reason
-    (arrives before usage), and the usage frame (arrives last)."""
+    events. Stateful: tracks the open text block, the mapped stop_reason
+    (arrives before usage), and the usage frame (arrives last). Tool-call
+    fragments are buffered per index and flushed as complete tool_use
+    blocks at end-of-stream — OpenAI-format streams may interleave
+    fragments of concurrent calls, Anthropic blocks are strictly
+    sequential, so per-fragment emission would scatter one call's JSON
+    across several nameless blocks."""
     started = False
-    block_type: str | None = None   # None | "text" | "tool_use"
+    text_open = False
     block_index = -1
-    current_tool_key: int | None = None
+    tool_buf: dict[int, dict] = {}  # tool_calls[].index → {id, name, args}
     stop_reason: str | None = None
     usage: dict = {}
 
@@ -356,6 +365,12 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
+                # The real API counts the prompt up front; here the engine's
+                # usage frame only arrives at end-of-stream, so the input
+                # count is unknowable at message_start time. 0 is a
+                # placeholder — the true counts are reported in
+                # message_delta.usage (input_tokens included, which the
+                # real API omits there).
                 "usage": {"input_tokens": 0, "output_tokens": 0},
             },
         })
@@ -375,6 +390,13 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                         "message": err.get("message", "Upstream provider error"),
                     },
                 })
+                # Drain, don't return-and-aclose: the engine follows the
+                # error frame with [DONE] and completes normally, logging
+                # 503 + the real error type. aclose() would raise
+                # GeneratorExit at its suspended yield and the engine would
+                # mislog this as a 499 client disconnect.
+                async for _ in frames:
+                    pass
                 return
 
             if not started:
@@ -387,12 +409,9 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
 
             text = delta.get("content")
             if text:
-                if block_type != "text":
-                    if block_type is not None:
-                        yield _block_stop()
+                if not text_open:
+                    text_open = True
                     block_index += 1
-                    block_type = "text"
-                    current_tool_key = None
                     yield _ev("content_block_start", {
                         "type": "content_block_start",
                         "index": block_index,
@@ -405,38 +424,22 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                 })
 
             for tcd in delta.get("tool_calls") or []:
-                key = tcd.get("index", 0)
+                slot = tool_buf.setdefault(
+                    tcd.get("index", 0), {"id": "", "name": "", "args": ""}
+                )
+                if tcd.get("id"):
+                    slot["id"] = tcd["id"]
                 fn = tcd.get("function") or {}
-                if block_type != "tool_use" or key != current_tool_key:
-                    if block_type is not None:
-                        yield _block_stop()
-                    block_index += 1
-                    block_type = "tool_use"
-                    current_tool_key = key
-                    yield _ev("content_block_start", {
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tcd.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
-                            "name": fn.get("name", ""),
-                            "input": {},
-                        },
-                    })
-                args = fn.get("arguments")
-                if args:
-                    yield _ev("content_block_delta", {
-                        "type": "content_block_delta",
-                        "index": block_index,
-                        "delta": {"type": "input_json_delta", "partial_json": args},
-                    })
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["args"] += fn["arguments"]
 
             if choice.get("finish_reason"):
                 stop_reason = _STOP_REASON_MAP.get(choice["finish_reason"], "end_turn")
-                if block_type is not None:
+                if text_open:
                     yield _block_stop()
-                    block_type = None
-                    current_tool_key = None
+                    text_open = False
 
             if frame.get("usage"):
                 usage = frame["usage"]
@@ -444,7 +447,26 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
         # Normal end of stream ([DONE] consumed by iter_openai_frames).
         if not started:
             yield _start_event({})
-        if block_type is not None:
+        if text_open:
+            yield _block_stop()
+        for _, slot in sorted(tool_buf.items()):
+            block_index += 1
+            yield _ev("content_block_start", {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": slot["id"] or f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": slot["name"],
+                    "input": {},
+                },
+            })
+            if slot["args"]:
+                yield _ev("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {"type": "input_json_delta", "partial_json": slot["args"]},
+                })
             yield _block_stop()
         delta_usage: dict = {"output_tokens": usage.get("completion_tokens", 0) or 0}
         if usage.get("prompt_tokens"):
