@@ -108,11 +108,22 @@ def _translate_tools(tools: list[dict]) -> list[dict]:
                     "only functionDeclarations are"
                 )
         decls = _alias(tool, "functionDeclarations", "function_declarations") or []
+        # Repeated field on the wire, but free-form in our schema: a client
+        # sending a single declaration as a bare object would otherwise
+        # iterate its keys and blow up as a 500 the SDK retries forever.
+        if not isinstance(decls, list):
+            raise _invalid("functionDeclarations must be a list of declarations")
         for decl in decls:
-            if not decl.get("name"):
+            if not isinstance(decl, dict):
+                raise _invalid("each functionDeclaration must be an object")
+            if not isinstance(decl.get("name"), str) or not decl["name"]:
                 raise _invalid("functionDeclaration is missing 'name'")
             params = _alias(decl, "parameters", "parameters") \
                 or _alias(decl, "parametersJsonSchema", "parameters_json_schema")
+            if params is not None and not isinstance(params, dict):
+                raise _invalid(
+                    f"functionDeclaration '{decl['name']}' has non-object parameters"
+                )
             fn: dict = {
                 "name": decl["name"],
                 "parameters": normalize_gemini_schema(params)
@@ -210,11 +221,18 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
     for part in raw_parts:
         if not isinstance(part, dict):
             raise _invalid("Content part must be an object")
-        if part.get("thought") or (part and not (set(part) - _THOUGHT_PART_KEYS)):
-            # Thought(-summary)/signature parts mirror Anthropic thinking
-            # blocks: no internal equivalent — drop, never reject. Parts
-            # that carry a real payload NEXT TO a signature (e.g. a
-            # functionCall with thoughtSignature) are not dropped.
+        # `thought` and `thoughtSignature` mark model-internal reasoning.
+        # Neither has an internal equivalent, so they are dropped, never
+        # rejected — but both are part METADATA that can sit alongside a
+        # real payload: Google attaches signatures to functionCall parts
+        # and requires them echoed back in history, and `thought` is a
+        # sibling flag of the data union. So only the thought itself goes;
+        # a part carrying a payload keeps it. Dropping the whole part
+        # would silently delete a tool call from the turn — a wrong
+        # answer, not a rejection.
+        if part.get("thought"):
+            part = {k: v for k, v in part.items() if k != "text"}
+        if not set(part) - _THOUGHT_PART_KEYS:
             # debug, not warning: agentic clients resend full history every
             # request, so a per-part warning would grow O(n²) over a session.
             logger.debug("gemini_thought_part_dropped")

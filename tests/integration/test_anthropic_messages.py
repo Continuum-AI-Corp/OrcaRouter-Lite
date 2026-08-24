@@ -420,17 +420,20 @@ async def test_prompt_cache_is_shared_across_protocols(native_client):
     semantic request via /v1/chat/completions then /v1/messages must hit
     the same cache entry."""
     client, fake, key = native_client
+    # temperature 0 on both sides: only a deterministic request is cached
+    # at all (an omitted temperature means the upstream default of 1.0).
     openai_payload = {
         "model": "gpt-4o-mini",
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 128,
+        "temperature": 0,
     }
     r1 = await client.post("/v1/chat/completions", json=openai_payload,
                            headers={"Authorization": f"Bearer {key}"})
     assert r1.status_code == 200
     assert r1.headers["x-orca-cache"] == "MISS"
 
-    r2 = await client.post("/v1/messages", json=_messages_payload(),
+    r2 = await client.post("/v1/messages", json=_messages_payload(temperature=0),
                            headers={"x-api-key": key})
     assert r2.status_code == 200
     assert r2.headers["x-orca-cache"] == "HIT"
@@ -556,7 +559,7 @@ async def test_cache_is_not_shared_across_different_max_tokens(native_client):
     client, fake, key = native_client
 
     body = {
-        "model": "gpt-4o-mini", "max_tokens": 16,
+        "model": "gpt-4o-mini", "max_tokens": 16, "temperature": 0,
         "messages": [{"role": "user", "content": "cache probe"}],
     }
     first = await client.post("/v1/messages", json=body, headers={"x-api-key": key})
@@ -572,6 +575,25 @@ async def test_cache_is_not_shared_across_different_max_tokens(native_client):
         "/v1/messages", json={**body, "max_tokens": 4096}, headers={"x-api-key": key},
     )
     assert other.headers["x-orca-cache"] == "MISS"
+
+
+async def test_request_without_temperature_bypasses_the_cache(native_client):
+    """Regression: the native translators only forward a temperature the
+    client sent, and Claude Code never sends one — so the upstream samples
+    at its 1.0 default. Caching that would replay one arbitrary sample to
+    every later identical request (an agent's retries would get the same
+    stale answer)."""
+    client, fake, key = native_client
+
+    body = {
+        "model": "gpt-4o-mini", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "no temperature here"}],
+    }
+    first = await client.post("/v1/messages", json=body, headers={"x-api-key": key})
+    second = await client.post("/v1/messages", json=body, headers={"x-api-key": key})
+    assert first.headers["x-orca-cache"] == "BYPASS"
+    assert second.headers["x-orca-cache"] == "BYPASS"
+    assert fake.acompletion.call_count == 2, "both must reach the upstream"
 
 
 async def test_streaming_message_start_carries_an_input_token_estimate(native_client):

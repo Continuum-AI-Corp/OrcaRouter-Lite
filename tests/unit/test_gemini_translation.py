@@ -106,6 +106,25 @@ def test_schema_normalization_recurses_and_spares_property_named_type():
     assert norm["properties"]["items"]["items"]["type"] == "number"
 
 
+@pytest.mark.parametrize("tools", [
+    # a single declaration sent as a bare object instead of a list: the
+    # loop would iterate the dict's KEYS and AttributeError into a 500
+    [{"functionDeclarations": {"name": "foo", "parameters": {}}}],
+    [{"functionDeclarations": ["not-an-object"]}],
+    [{"functionDeclarations": [{"name": {"nested": 1}}]}],
+    [{"functionDeclarations": [{"name": "f", "parameters": "not-a-schema"}]}],
+])
+def test_malformed_function_declarations_render_native_400(tools):
+    """Google's API 400s these; a 500 would make SDKs back off and retry a
+    request that can never succeed."""
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "tools": tools,
+        })
+    assert exc.value.status_code == 400
+
+
 def test_server_side_tools_rejected():
     with pytest.raises(HTTPException) as exc:
         _translate({
@@ -173,6 +192,32 @@ def test_thought_parts_dropped_payload_parts_kept():
         {"role": "model", "parts": [{"thought": True, "text": "internal"}]},
     ]})
     assert thought_only["messages"][1] == {"role": "assistant", "content": ""}
+
+
+def test_thought_flagged_part_keeps_its_payload():
+    """Regression: `thought` is part METADATA that can sit next to a real
+    payload (Google attaches signatures to functionCall parts and requires
+    them echoed back). Dropping the whole part would silently delete a
+    tool call from the turn — a wrong answer, not a rejection. Only the
+    thought text goes."""
+    out = _translate({"contents": [
+        {"role": "user", "parts": [{"text": "hi"}]},
+        {"role": "model", "parts": [
+            {"thought": True, "text": "reasoning", "functionCall": {
+                "name": "f", "args": {"x": 1},
+            }},
+        ]},
+        {"role": "user", "parts": [
+            {"thought": True, "functionResponse": {"name": "f", "response": {"ok": 1}}},
+        ]},
+    ]})
+    model_msg = out["messages"][1]
+    assert model_msg["tool_calls"][0]["function"]["name"] == "f"
+    assert model_msg["content"] is None or "reasoning" not in model_msg["content"]
+    assert "reasoning" not in json.dumps(out)  # thought text never leaks
+    # the paired tool response survives too
+    assert out["messages"][2]["role"] == "tool"
+    assert json.loads(out["messages"][2]["content"]) == {"ok": 1}
 
 
 def test_stop_sequences_truncated_to_openai_cap():

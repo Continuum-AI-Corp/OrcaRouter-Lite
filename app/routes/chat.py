@@ -429,6 +429,8 @@ async def execute_chat(
             tool_choice=completion_kwargs.get("tool_choice"),
             top_p=completion_kwargs.get("top_p"),
             n=completion_kwargs.get("n"),
+            presence_penalty=completion_kwargs.get("presence_penalty"),
+            frequency_penalty=completion_kwargs.get("frequency_penalty"),
         )
         cached = await prompt_cache.get_backend().get(cache_lookup_key)
         if cached is not None:

@@ -76,6 +76,10 @@ def test_cache_key_differs_on_model():
     ("tool_choice", {"type": "function", "function": {"name": "f"}}),
     ("top_p", 0.5),
     ("n", 2),
+    # Both shift the logits before decoding, so they change the output
+    # even at temperature 0 — the only case that is cacheable at all.
+    ("presence_penalty", 1.5),
+    ("frequency_penalty", 1.5),
 ])
 def test_cache_key_differs_on_every_output_shaping_parameter(field, other):
     """Regression: the key covered only model/messages/temperature/tools/
@@ -111,14 +115,30 @@ def test_should_cache_skips_streaming_and_high_temperature():
 
     base = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
 
-    # Cacheable: temp=0 (or unset, defaults to 0 for safety) and not streaming
+    # Cacheable: an explicit temp=0, not streaming
     assert is_cacheable({**base, "temperature": 0.0, "stream": False}) is True
-    assert is_cacheable({**base, "stream": False}) is True  # temp unset → treat as deterministic
+    assert is_cacheable({**base, "temperature": 0, "stream": False}) is True
 
     # Not cacheable
     assert is_cacheable({**base, "stream": True}) is False
     assert is_cacheable({**base, "temperature": 0.7}) is False
     assert is_cacheable({**base, "temperature": 0.1}) is False
+
+
+def test_absent_temperature_is_not_treated_as_deterministic():
+    """Regression: an omitted temperature was assumed to be 0. Every
+    upstream defaults it to 1.0 (OpenAI, Anthropic, Gemini), so the
+    response is a sample — caching it replays one arbitrary sample to
+    every later caller. The native surfaces only forward a temperature
+    the client actually sent, and Claude Code never sends one, so this
+    was the default path for the new ingress."""
+    from app.prompt_cache import is_cacheable
+
+    base = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+    assert is_cacheable(base) is False
+    assert is_cacheable({**base, "temperature": None}) is False
+    # ...unless a seed pins the sample
+    assert is_cacheable({**base, "seed": 7}) is True
 
 
 def test_should_cache_skips_when_seed_unspecified_with_high_temp():

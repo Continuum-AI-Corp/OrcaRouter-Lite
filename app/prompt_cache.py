@@ -38,6 +38,8 @@ def cache_key(
     tool_choice: str | dict | None = None,
     top_p: float | None = None,
     n: int | None = None,
+    presence_penalty: float | None = None,
+    frequency_penalty: float | None = None,
 ) -> str:
     """Deterministic SHA-256 key over every input that shapes the output.
 
@@ -66,6 +68,10 @@ def cache_key(
         "tool_choice": tool_choice,
         "top_p": top_p,
         "n": n,
+        # Both shift the logits before decoding, so they change the output
+        # even at temperature 0 — exactly when a request is cacheable.
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()
@@ -76,16 +82,23 @@ def is_cacheable(body: dict) -> bool:
 
     - Streaming responses are skipped (caching SSE chunks correctly is more
       trouble than it's worth for v1).
-    - Non-zero temperature without an explicit seed → non-deterministic, skip.
+    - temperature == 0 → deterministic.
+    - Any other temperature, INCLUDING AN ABSENT ONE, needs an explicit
+      seed. Every upstream this proxies defaults temperature to 1.0 —
+      OpenAI, Anthropic and Gemini alike — so a request that omits it is
+      sampled, not deterministic, and caching it would replay one
+      arbitrary sample to every later caller. That is not a hypothetical
+      on the native surfaces: their translators only set temperature when
+      the wire request carried it, and Claude Code never sends one, so
+      omission is the norm there. An agent retrying an identical call
+      would keep getting the same stale answer.
     - With a seed, any temperature is fine — the seed pins the output.
     """
     if body.get("stream"):
         return False
-    temperature = body.get("temperature", 0.0) or 0.0
-    seed = body.get("seed")
-    if temperature == 0.0:
+    if body.get("temperature") == 0:
         return True
-    return seed is not None
+    return body.get("seed") is not None
 
 
 # ── Backends ──────────────────────────────────────────────────────────
