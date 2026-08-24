@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.protocols import clamp_stop_sequences
-from app.protocols.anthropic import _parse_json_object
+from app.protocols.anthropic import _parse_json_object, flatten_openai_content
 from app.protocols.sse import finish_quietly
 
 logger = structlog.get_logger()
@@ -175,9 +175,15 @@ def _system_text(si: str | dict) -> str:
     parts = si.get("parts") or []
     if isinstance(parts, dict):
         parts = [parts]
-    return "\n\n".join(
-        p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")
-    )
+    texts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
+    dropped = len(parts) - len(texts)
+    if dropped > 0:
+        # systemInstruction is text in every documented use; anything else
+        # has no system-message equivalent to translate to. Log it rather
+        # than dropping caller-supplied context in silence, matching the
+        # Anthropic sibling's anthropic_non_text_system_block_dropped.
+        logger.warning("gemini_non_text_system_part_dropped", count=dropped)
+    return "\n\n".join(texts)
 
 
 class _CallIdAllocator:
@@ -447,8 +453,9 @@ def to_gemini_response(resp: dict) -> dict:
     msg = choice.get("message") or {}
 
     parts: list[dict] = []
-    if msg.get("content"):
-        parts.append({"text": msg["content"]})
+    text = flatten_openai_content(msg.get("content"))
+    if text:
+        parts.append({"text": text})
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function") or {}
         parts.append({

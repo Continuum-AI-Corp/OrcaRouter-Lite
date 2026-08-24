@@ -315,6 +315,11 @@ async def execute_chat(
                     "model='auto' requires at least one provider with a "
                     "configured key. No deployable provider found."
                 ),
+                # Same operator-side, permanent condition the pinned-model
+                # path reports as no_providers_configured. Without the
+                # type the native surfaces would collapse this 422 to a
+                # client-blaming 400 while the pinned path renders 403.
+                headers={ERROR_TYPE_HEADER: "no_providers_configured"},
             )
         # `quality`, `balanced`, `fastest` all want AA-derived metrics.
         # `resolve_model_metrics` does the AA fetch + merges manual

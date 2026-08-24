@@ -96,6 +96,21 @@ def test_cache_key_differs_on_every_output_shaping_parameter(field, other):
     assert cache_key(**base) != cache_key(**base, **{field: other})
 
 
+def test_cache_key_distinguishes_absent_temperature_from_explicit_zero():
+    """Regression: an absent temperature was normalized to 0.0 in the key.
+    Both forms are cacheable when a seed pins them, but they are different
+    computations — the upstream defaults an absent temperature to 1.0 (a
+    seeded sample) while 0 is the greedy argmax — so sharing one entry
+    served one caller the other's response."""
+    from app.prompt_cache import cache_key
+
+    base = dict(
+        model="m", messages=[{"role": "user", "content": "hi"}],
+        tools=None, response_format=None, seed=7,
+    )
+    assert cache_key(**base, temperature=None) != cache_key(**base, temperature=0.0)
+
+
 def test_cache_key_ignores_user_identifier():
     """`user` is an abuse-monitoring hint that does not change the
     completion; keying on it would fragment the cache per caller."""

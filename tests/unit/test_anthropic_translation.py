@@ -380,6 +380,19 @@ def test_stop_reason_mapping(finish, expected):
     assert to_anthropic_response(resp)["stop_reason"] == expected
 
 
+def test_multipart_list_content_flattens_to_a_text_block():
+    """The OpenAI wire format allows a response message's content to be a
+    list of parts. Emitting it verbatim would produce a text block whose
+    `text` is an array, which the Anthropic SDK cannot parse."""
+    resp = _openai_response()
+    resp["choices"][0]["message"]["content"] = [
+        {"type": "text", "text": "Hello "},
+        {"type": "text", "text": "world"},
+    ]
+    out = to_anthropic_response(resp)
+    assert out["content"] == [{"type": "text", "text": "Hello world"}]
+
+
 def test_empty_content_and_no_tools_yields_empty_blocks():
     resp = _openai_response()
     resp["choices"][0]["message"]["content"] = None

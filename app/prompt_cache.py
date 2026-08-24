@@ -59,7 +59,12 @@ def cache_key(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": temperature if temperature is not None else 0.0,
+        # Keyed on the true wire value: an ABSENT temperature is not the
+        # same computation as an explicit 0. Both are cacheable when a
+        # seed pins them, but the upstream defaults an absent one to 1.0
+        # (a seeded sample) while 0 is the greedy argmax — normalizing
+        # None to 0.0 here would serve one caller the other's response.
+        "temperature": temperature,
         "tools": tools or None,
         "response_format": response_format or None,
         "seed": seed,

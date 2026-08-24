@@ -419,6 +419,41 @@ def test_text_response_maps_to_gemini_shape():
     assert out["responseId"] == "chatcmpl-1"
 
 
+def test_multipart_list_content_flattens_to_a_text_part():
+    """The OpenAI wire format allows a response message's content to be a
+    list of parts. Emitting it verbatim would produce a text part whose
+    `text` is an array, which google-genai cannot parse."""
+    out = to_gemini_response(_openai_response(choices=[{
+        "index": 0,
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Hello "},
+            {"type": "text", "text": "world"},
+        ]},
+        "finish_reason": "stop",
+    }]))
+    assert out["candidates"][0]["content"]["parts"] == [{"text": "Hello world"}]
+
+
+def test_non_text_system_instruction_parts_are_logged_when_dropped():
+    """systemInstruction is text in every documented use, but a dropped
+    part must not vanish silently — the Anthropic sibling logs too."""
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        out = _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "systemInstruction": {"parts": [
+                {"text": "be terse"},
+                {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+            ]},
+        })
+    assert out["messages"][0] == {"role": "system", "content": "be terse"}
+    assert any(
+        e["event"] == "gemini_non_text_system_part_dropped" and e["count"] == 1
+        for e in logs
+    )
+
+
 def test_tool_calls_become_function_call_parts():
     out = to_gemini_response(_openai_response(choices=[{
         "index": 0,

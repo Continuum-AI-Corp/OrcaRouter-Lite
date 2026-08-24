@@ -60,6 +60,34 @@ async def test_models_returns_openai_format_listing(lite_client):
     assert "owned_by" in sample
 
 
+async def test_models_returns_anthropic_format_for_anthropic_clients(lite_client):
+    """The native /v1/messages surface lives on the same base URL, so
+    `client.models.list()` from the Anthropic SDK hits this path too. It
+    always sends `anthropic-version` (no OpenAI client does), which is
+    what selects the Anthropic envelope."""
+    client, _ = lite_client
+    r = await client.get("/v1/models", headers={"anthropic-version": "2023-06-01"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "object" not in body  # not the OpenAI envelope
+    assert body["has_more"] is False
+    assert body["first_id"] == body["data"][0]["id"]
+    assert body["last_id"] == body["data"][-1]["id"]
+    sample = body["data"][0]
+    assert sample["type"] == "model"
+    assert sample["id"] and sample["display_name"]
+    # RFC 3339, per ModelInfo.created_at
+    assert sample["created_at"].endswith("Z")
+
+
+async def test_models_without_anthropic_header_stays_openai_shaped(lite_client):
+    """Regression guard: adding the Anthropic envelope must not change the
+    default shape every OpenAI client depends on."""
+    client, _ = lite_client
+    r = await client.get("/v1/models", headers={"user-agent": "openai-python/1.0"})
+    assert r.json()["object"] == "list"
+
+
 # ── /v1/keys ──────────────────────────────────────────────────────────
 
 async def test_list_keys_shows_seeded_key(lite_client):

@@ -337,6 +337,22 @@ def _parse_json_object(raw) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def flatten_openai_content(content) -> str:
+    """An OpenAI response message's `content` is normally a string, but the
+    wire format also permits the multi-part list form. Both native response
+    formats need a plain string here (Anthropic text blocks and Gemini text
+    parts are strings), so a list is flattened to its text; emitting the
+    list verbatim would put an array where the SDKs require a string."""
+    if content is None or isinstance(content, str):
+        return content or ""
+    if isinstance(content, list):
+        return "".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return str(content)
+
+
 def _message_id(raw: str | None) -> str:
     if raw and raw.startswith("msg_"):
         return raw
@@ -349,7 +365,7 @@ def to_anthropic_response(resp: dict) -> dict:
     msg = choice.get("message") or {}
 
     content: list[dict] = []
-    text = msg.get("content")
+    text = flatten_openai_content(msg.get("content"))
     if text:
         content.append({"type": "text", "text": text})
     for tc in msg.get("tool_calls") or []:

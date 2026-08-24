@@ -551,6 +551,22 @@ async def test_no_providers_configured_is_non_retryable(native_client):
     assert r.json()["error"]["type"] == "permission_error"
 
 
+async def test_auto_without_providers_matches_the_pinned_403(native_client):
+    """The same permanent operator-side condition must classify the same
+    way whether the model is pinned or auto-resolved: auto used to render
+    a client-blaming 400 invalid_request_error while a pinned model gave
+    403 permission_error."""
+    client, fake, key = native_client
+    fake._deployments = []  # no provider key configured anywhere
+
+    r = await client.post("/v1/messages", json={
+        "model": "auto", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 403
+    assert r.json()["error"]["type"] == "permission_error"
+
+
 async def test_cache_is_not_shared_across_different_max_tokens(native_client):
     """Regression: the prompt-cache key omitted max_tokens, so a second
     request differing only in its budget was served the first response
