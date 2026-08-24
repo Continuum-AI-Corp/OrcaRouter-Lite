@@ -280,7 +280,22 @@ def _apply_generation_config(gc: dict, out: dict) -> None:
         out["top_p"] = top_p
     max_tokens = _alias(gc, "maxOutputTokens", "max_output_tokens")
     if max_tokens is not None:
-        out["max_tokens"] = max_tokens
+        # generationConfig is free-form on the wire. A 0/negative budget
+        # can never succeed upstream, and the upstream's BadRequest would
+        # come back through the engine as a retryable 500 INTERNAL that
+        # SDKs back off and retry forever — reject it as a native 400
+        # instead. JSON numbers may arrive as an integral float (100.0).
+        if isinstance(max_tokens, bool):
+            valid = False
+        elif isinstance(max_tokens, int):
+            valid = max_tokens >= 1
+        elif isinstance(max_tokens, float):
+            valid = max_tokens.is_integer() and max_tokens >= 1
+        else:
+            valid = False
+        if not valid:
+            raise _invalid("maxOutputTokens must be an integer >= 1")
+        out["max_tokens"] = int(max_tokens)
     stop = _alias(gc, "stopSequences", "stop_sequences")
     if stop:
         if isinstance(stop, list):

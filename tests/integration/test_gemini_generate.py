@@ -392,6 +392,21 @@ async def test_get_single_model_accepts_resource_name_form(native_client):
     assert r.json()["name"] == f"models/{known}"
 
 
+async def test_generate_accepts_resource_name_form(native_client):
+    """Regression: the list endpoint presents "models/{id}", so a caller
+    following its own naming POSTs /v1beta/models/models/{id}:generate...
+    — the model half must be normalized to the bare id the engine knows,
+    matching GET /v1beta/models/{id}."""
+    client, fake, key = native_client
+    r = await client.post(
+        "/v1beta/models/models/gemini-1.5-flash:generateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 200
+    assert r.json()["candidates"][0]["content"]["parts"][0]["text"] == "Hello world"
+    assert fake.acompletion.call_args.kwargs["model"] == "gemini-1.5-flash"
+
+
 async def test_slashed_model_id_routes_to_generate(native_client):
     """Provider-qualified ids with '/' (the zero-credit models, e.g.
     "orcarouter/free") must reach the generate route — a single-segment

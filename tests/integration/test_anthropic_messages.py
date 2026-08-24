@@ -506,6 +506,42 @@ async def test_blocking_model_not_found_renders_404_not_found(native_client):
     assert body["error"]["type"] == "not_found_error"
 
 
+async def test_blocking_upstream_auth_error_is_non_retryable(native_client):
+    """OUR provider credential failing is permanent until the operator
+    fixes it. The engine reports it as a retryable 503; this surface must
+    render a non-retryable 403 permission_error (matching the Gemini
+    surface), NOT 500 api_error which SDKs retry with backoff — and not
+    401, since the caller's own key is fine."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "provider rejected the key", http_status=503,
+        error_type="upstream_auth_error",
+    ))
+    r = await client.post("/v1/messages", json={
+        "model": "gpt-4o-mini", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 403
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "permission_error"
+
+
+async def test_max_tokens_zero_is_native_400(native_client):
+    client, _, key = native_client
+    r = await client.post("/v1/messages", json={
+        "model": "gpt-4o-mini", "max_tokens": 0,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 400
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "max_tokens" in body["error"]["message"]
+
+
 async def test_count_tokens_unexpected_error_stays_in_anthropic_envelope(native_client):
     """Defense-in-depth: a schema-valid but malformed body that explodes
     inside the translator (non-dict image source → AttributeError) must

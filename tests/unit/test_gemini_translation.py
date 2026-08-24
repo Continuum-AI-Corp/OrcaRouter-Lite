@@ -248,6 +248,27 @@ def test_generation_config_full_mapping():
     assert "top_k" not in out and "topK" not in out
 
 
+@pytest.mark.parametrize("value", [0, -5, 1.5, "100", True])
+def test_non_positive_max_output_tokens_rejected(value):
+    """A budget < 1 (or a non-integral one) can never succeed upstream;
+    rejecting it here keeps it a native 400 instead of a retryable 500."""
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"maxOutputTokens": value},
+        })
+    assert exc.value.status_code == 400
+
+
+def test_integral_float_max_output_tokens_accepted():
+    """JSON numbers may decode as floats — 256.0 is a valid budget."""
+    out = _translate({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"maxOutputTokens": 256.0},
+    })
+    assert out["max_tokens"] == 256
+
+
 def test_candidate_count_above_one_rejected():
     with pytest.raises(HTTPException) as exc:
         _translate({

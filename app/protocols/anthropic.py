@@ -54,7 +54,11 @@ class AnthropicMessagesRequest(BaseModel):
 
     model: str
     messages: list[AnthropicMessage] = Field(min_length=1)
-    max_tokens: int
+    # The real API rejects max_tokens < 1 with a 400. Enforce it here or
+    # the upstream's own BadRequest comes back through the engine as a
+    # retryable 500 api_error, which SDKs back off and retry forever for
+    # a request that can never succeed.
+    max_tokens: int = Field(gt=0)
     system: str | list[dict] | None = None
     tools: list[dict] | None = None
     tool_choice: dict | None = None
@@ -345,17 +349,31 @@ def _ev(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-# Engine SSE error-frame `type` (packages/litellm_adapter/client.py
-# _translate_error) → Anthropic error taxonomy. Retry semantics matter:
-# a context overflow or missing model must not surface as a retryable
-# api_error. upstream_auth_error stays api_error — it's OUR provider
-# credential that failed, not the caller's key.
-_STREAM_ERROR_TYPE_MAP = {
-    "rate_limit_error": "rate_limit_error",
-    "overloaded_error": "overloaded_error",
-    "context_length_exceeded": "invalid_request_error",
-    "model_not_found": "not_found_error",
+# Engine error types (packages/litellm_adapter/client.py _translate_error,
+# reported on SSE error frames and via the x-orca-error-type header) → the
+# HTTP status this surface reports them as. The Anthropic error *type* is
+# then derived from the status through _STATUS_TO_ERROR_TYPE below, so the
+# streaming and blocking paths cannot drift apart.
+#
+# Retryability is the load-bearing part. Anthropic SDKs back off and retry
+# 429/500/529 but not 4xx, so a failure that can never succeed on retry
+# has to land on a 4xx: a context overflow or a missing model must not
+# read as a transient api_error. upstream_auth_error is OUR provider
+# credential failing — permanent until the operator fixes it — so it maps
+# to 403 permission_error, matching the Gemini surface. Deliberately NOT
+# 401 authentication_error: the caller's own key is fine.
+_ENGINE_ERROR_STATUS = {
+    "rate_limit_error": 429,
+    "overloaded_error": 529,
+    "context_length_exceeded": 400,
+    "model_not_found": 404,
+    "upstream_auth_error": 403,
 }
+
+
+def _anthropic_error_type(engine_type: str | None) -> str:
+    status = _ENGINE_ERROR_STATUS.get(engine_type or "", 500)
+    return _STATUS_TO_ERROR_TYPE.get(status, "api_error")
 
 
 async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None]:
@@ -406,7 +424,7 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                 yield _ev("error", {
                     "type": "error",
                     "error": {
-                        "type": _STREAM_ERROR_TYPE_MAP.get(etype, "api_error"),
+                        "type": _anthropic_error_type(etype),
                         "message": err.get("message", "Upstream provider error"),
                     },
                 })
@@ -520,13 +538,11 @@ _STATUS_TO_ERROR_TYPE = {
 def native_status(status: int, error_type: str | None) -> int:
     """Correct the engine's generic HTTP status using its translated
     error_type (relayed via the x-orca-error-type header) where the plain
-    status would misrepresent the failure on this surface: the engine uses
-    422 for model_not_found but Anthropic's contract is 404
-    not_found_error. Mirrors _STREAM_ERROR_TYPE_MAP so stream and blocking
-    agree."""
-    if error_type == "model_not_found":
-        return 404
-    return status
+    status would misrepresent the failure on this surface — e.g. the
+    engine uses 422 for model_not_found but Anthropic's contract is 404
+    not_found_error. Reads _ENGINE_ERROR_STATUS, the same table the
+    streaming path derives its error type from, so the two cannot drift."""
+    return _ENGINE_ERROR_STATUS.get(error_type or "", status)
 
 
 def error_response(status: int, message: str) -> JSONResponse:

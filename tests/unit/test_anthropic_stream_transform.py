@@ -254,6 +254,9 @@ async def test_engine_error_frame_becomes_error_event():
     ("overloaded_error", "overloaded_error"),
     ("context_length_exceeded", "invalid_request_error"),
     ("model_not_found", "not_found_error"),
+    # OUR provider credential — permanent, must not present as retryable
+    # (SDKs back off and retry api_error/500, but never a 4xx type).
+    ("upstream_auth_error", "permission_error"),
     ("upstream_timeout", "api_error"),
     ("something_unknown", "api_error"),
     (None, "api_error"),

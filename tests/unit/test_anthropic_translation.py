@@ -48,6 +48,17 @@ def test_missing_max_tokens_fails_validation():
         })
 
 
+@pytest.mark.parametrize("value", [0, -1])
+def test_non_positive_max_tokens_fails_validation(value):
+    """A budget < 1 can never succeed upstream; rejecting it here keeps it
+    a 400 invalid_request_error instead of a retryable 500 api_error."""
+    with pytest.raises(ValidationError):
+        AnthropicMessagesRequest.model_validate({
+            "model": "m", "max_tokens": value,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
+
 def test_system_string_becomes_leading_system_message():
     out = to_openai_request(_req(system="be brief"))
     assert out["messages"][0] == {"role": "system", "content": "be brief"}

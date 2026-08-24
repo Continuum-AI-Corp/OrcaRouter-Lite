@@ -152,6 +152,45 @@ async def test_query_param_key_only_works_under_v1beta(app_with_auth, db_session
     assert allowed.status_code == 404  # passed auth, no such route
 
 
+async def test_foreign_bearer_token_falls_through_to_x_api_key(app_with_auth, db_session):
+    """Regression: a reverse proxy / SSO gateway that injects its own
+    non-empty Bearer token must not mask the caller's valid key in
+    x-api-key — the rejected candidate falls through to the next one."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.seed import seed_initial_state
+
+    seed = await seed_initial_state(db_session)
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get(
+            "/v1/protected",
+            headers={
+                "Authorization": "Bearer gateway-injected-token",
+                "x-api-key": seed.api_key,
+            },
+        )
+    assert r.status_code == 200
+    assert r.json() == {"workspace_id": "default"}
+
+
+async def test_all_invalid_candidates_still_401(app_with_auth):
+    """Falling through the chain must not become fail-open: when every
+    candidate is rejected the request is still 401."""
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get(
+            "/v1/protected",
+            headers={
+                "Authorization": "Bearer sk-orca-bogus-1",
+                "x-api-key": "sk-orca-bogus-2",
+                "x-goog-api-key": "sk-orca-bogus-3",
+            },
+        )
+    assert r.status_code == 401
+
+
 async def test_empty_bearer_falls_through_to_x_api_key(app_with_auth, db_session):
     """An empty `Authorization: Bearer ` (e.g. blanked by a proxy) must not
     short-circuit the documented fallback chain — a valid key in x-api-key
@@ -170,10 +209,12 @@ async def test_empty_bearer_falls_through_to_x_api_key(app_with_auth, db_session
     assert r.status_code == 200
 
 
-def test_extract_credential_empty_bearer_falls_through_each_location():
-    """Scope-level check of the precedence chain with an empty Bearer token
-    (immune to any client/transport header normalization)."""
-    from app.middleware.auth import _extract_credential
+def test_extract_credentials_collects_every_location_in_order():
+    """Scope-level check of the candidate chain (immune to any
+    client/transport header normalization). Every location contributes a
+    candidate — an empty or foreign Bearer must not hide the others — and
+    duplicates collapse so the same key isn't validated twice."""
+    from app.middleware.auth import _extract_credentials
 
     def scope(headers: dict[str, str], path="/v1/x", query=""):
         return {
@@ -182,16 +223,25 @@ def test_extract_credential_empty_bearer_falls_through_each_location():
             "query_string": query.encode(),
         }
 
-    assert _extract_credential(
+    assert _extract_credentials(
         scope({"authorization": "Bearer ", "x-api-key": "sk-orca-a"})
-    ) == "sk-orca-a"
-    assert _extract_credential(
+    ) == ["sk-orca-a"]
+    assert _extract_credentials(
         scope({"authorization": "Bearer ", "x-goog-api-key": "sk-orca-b"})
-    ) == "sk-orca-b"
-    assert _extract_credential(
+    ) == ["sk-orca-b"]
+    assert _extract_credentials(
         scope({"authorization": "Bearer "}, path="/v1beta/models", query="key=sk-orca-c")
-    ) == "sk-orca-c"
-    assert _extract_credential(scope({"authorization": "Bearer "})) is None
+    ) == ["sk-orca-c"]
+    assert _extract_credentials(scope({"authorization": "Bearer "})) == []
+
+    # A proxy's own Bearer keeps precedence but no longer excludes the rest.
+    assert _extract_credentials(
+        scope({"authorization": "Bearer proxy-token", "x-api-key": "sk-orca-a"})
+    ) == ["proxy-token", "sk-orca-a"]
+    # Same key in two locations (Claude Code sends both) → one candidate.
+    assert _extract_credentials(
+        scope({"authorization": "Bearer sk-orca-a", "x-api-key": "sk-orca-a"})
+    ) == ["sk-orca-a"]
 
 
 async def test_v1_messages_401_uses_anthropic_envelope(app_with_auth):

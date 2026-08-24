@@ -77,6 +77,12 @@ async def gemini_generate(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ):
+    # The list endpoint presents Google resource names ("models/{id}"), so
+    # a caller following its own naming POSTs
+    # /v1beta/models/models/{id}:generateContent — accept that form here
+    # exactly as gemini_get_model does, or the model half would reach the
+    # engine as "models/{id}" and fail as model_not_found.
+    model_and_action = model_and_action.removeprefix("models/")
     if ":" not in model_and_action:
         return proto.error_response(
             404, f"POST is not supported for models/{model_and_action}"

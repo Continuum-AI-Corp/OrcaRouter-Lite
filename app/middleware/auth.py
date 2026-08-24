@@ -57,29 +57,40 @@ def _get_header(headers: list[tuple[bytes, bytes]], name: bytes) -> str:
     return ""
 
 
-def _extract_credential(scope) -> str | None:
-    """Pull the sk-orca-* key from wherever the client's SDK put it.
+def _extract_credentials(scope) -> list[str]:
+    """Collect the candidate sk-orca-* keys the client's SDK may have
+    sent, in precedence order, deduped.
 
-    Precedence: `Authorization: Bearer` → `x-api-key` → `x-goog-api-key`
-    → `?key=` (the query-param form only on /v1beta/ paths, matching the
-    legacy Google SDK that uses it, so credentials-in-URL stays contained).
-    An empty Bearer token (e.g. a proxy that blanks the header) falls
-    through to the other locations instead of short-circuiting the chain.
+    Order: `Authorization: Bearer` → `x-api-key` → `x-goog-api-key` →
+    `?key=` (the query-param form only on /v1beta/ paths, matching the
+    legacy Google SDK that uses it, so credentials-in-URL stays
+    contained).
+
+    Every location is a CANDIDATE, not a commitment. The caller controls
+    which header its SDK fills, but a reverse proxy or SSO gateway in
+    front of it may add an `Authorization` header of its own — blank, or
+    carrying the gateway's own token. Returning only the first location
+    found would 401 those requests even though the caller's real key is
+    sitting in `x-api-key`, so the middleware tries each in turn.
     """
     headers = scope.get("headers", [])
+    candidates: list[str] = []
+
+    def _add(value: str) -> None:
+        if value and value not in candidates:
+            candidates.append(value)
+
     auth_header = _get_header(headers, b"authorization")
-    if auth_header.startswith("Bearer ") and auth_header[7:]:
-        return auth_header[7:]
+    if auth_header.startswith("Bearer "):
+        _add(auth_header[7:])
     for name in (b"x-api-key", b"x-goog-api-key"):
-        val = _get_header(headers, name)
-        if val:
-            return val
+        _add(_get_header(headers, name))
     if scope.get("path", "").startswith("/v1beta/"):
         qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
         vals = qs.get("key")
-        if vals and vals[0]:
-            return vals[0]
-    return None
+        if vals:
+            _add(vals[0])
+    return candidates
 
 
 _ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error"}
@@ -136,8 +147,8 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        raw_key = _extract_credential(scope)
-        if not raw_key:
+        candidates = _extract_credentials(scope)
+        if not candidates:
             await _send_error(
                 send, path, 401,
                 "Missing or invalid API key. Send it as 'Authorization: Bearer', "
@@ -156,16 +167,32 @@ class AuthMiddleware:
         if session_mod._session_factory is None:
             from app.config import get_settings
             session_mod.init_session_factory(get_settings().database_url)
+        key_context = None
+        auth_error: AuthError | None = None
         try:
             async with session_mod._session_factory() as session:
-                key_context = await validate_api_key(raw_key, session)
-            scope.setdefault("state", {})["key_context"] = key_context
-            scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
-        except AuthError as e:
-            await _send_error(send, path, e.status_code, e.message, "auth_error")
-            return
+                # Try every candidate location before giving up — a
+                # rejected proxy-injected token must not mask the caller's
+                # valid key in another header. A non-AuthError (DB down,
+                # decryption failure) is infrastructure, not a bad key, so
+                # it aborts the whole chain below rather than falling
+                # through to the next candidate.
+                for raw_key in candidates:
+                    try:
+                        key_context = await validate_api_key(raw_key, session)
+                        break
+                    except AuthError as e:
+                        auth_error = e
         except Exception:
             await _send_error(send, path, 503, "Service temporarily unavailable", "server_error")
             return
+
+        if key_context is None:
+            status = auth_error.status_code if auth_error else 401
+            message = auth_error.message if auth_error else "Invalid API key"
+            await _send_error(send, path, status, message, "auth_error")
+            return
+        scope.setdefault("state", {})["key_context"] = key_context
+        scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
 
         await self.app(scope, receive, send)
