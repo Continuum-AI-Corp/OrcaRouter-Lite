@@ -379,6 +379,77 @@ async def test_get_single_model_and_native_404(native_client):
     assert r.json()["error"]["status"] == "NOT_FOUND"
 
 
+async def test_get_single_model_accepts_resource_name_form(native_client):
+    """The list endpoint presents "models/{id}" resource names; following
+    one (GET /v1beta/models/models/{id}) must resolve, not 404."""
+    client, _, key = native_client
+    from packages.litellm_adapter.catalog import CATALOG
+
+    known = CATALOG[0].id
+    r = await client.get(f"/v1beta/models/models/{known}",
+                         headers={"x-goog-api-key": key})
+    assert r.status_code == 200
+    assert r.json()["name"] == f"models/{known}"
+
+
+async def test_slashed_model_id_routes_to_generate(native_client):
+    """Provider-qualified ids with '/' (the zero-credit models, e.g.
+    "orcarouter/free") must reach the generate route — a single-segment
+    path param would fall through to the app-wide OpenAI-shaped 404."""
+    client, fake, key = native_client
+    r = await client.post(
+        "/v1beta/models/orcarouter/free:generateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 200
+    assert r.json()["candidates"][0]["content"]["parts"][0]["text"] == "Hello world"
+    assert fake.acompletion.call_args.kwargs["model"] == "orcarouter/free"
+
+
+async def test_blocking_model_not_found_renders_404_not_found(native_client):
+    """The engine reports model_not_found as HTTP 422; on this surface it
+    must render 404 NOT_FOUND (Google's contract), matching the streaming
+    error map — not collapse to 400 INVALID_ARGUMENT."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "model does not exist", http_status=422, error_type="model_not_found",
+    ))
+    r = await client.post(
+        "/v1beta/models/gemini-1.5-flash:generateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 404
+    err = r.json()["error"]
+    assert err["code"] == 404
+    assert err["status"] == "NOT_FOUND"
+
+
+async def test_stream_aggregate_unexpected_error_renders_google_envelope(
+    native_client, monkeypatch,
+):
+    """Defense-in-depth: a RAW exception out of the chunk source (not the
+    engine's in-band error frame) during aggregation must render the Google
+    envelope, not FastAPI's OpenAI-shaped 500."""
+    client, _, key = native_client
+    from app.routes import gemini_compat as gc
+
+    async def _boom(_frames):
+        raise RuntimeError("adapter exploded")
+        yield  # pragma: no cover — makes this an async generator
+
+    monkeypatch.setattr(gc.proto, "stream_chunks", _boom)
+    r = await client.post(
+        "/v1beta/models/gemini-1.5-flash:streamGenerateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 500
+    err = r.json()["error"]
+    assert err["code"] == 500
+    assert err["status"] == "INTERNAL"
+
+
 async def test_model_auto_resolves_through_gemini_ingress(native_client):
     client, fake, key = native_client
 

@@ -486,6 +486,26 @@ async def test_count_tokens_requires_auth(native_client):
     assert r.json()["type"] == "error"
 
 
+async def test_blocking_model_not_found_renders_404_not_found(native_client):
+    """The engine reports model_not_found as HTTP 422; on this surface it
+    must render 404 not_found_error (Anthropic's contract), matching the
+    streaming error map — not collapse to 400 invalid_request_error."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "model does not exist", http_status=422, error_type="model_not_found",
+    ))
+    r = await client.post("/v1/messages", json={
+        "model": "gpt-4o-mini", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 404
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "not_found_error"
+
+
 async def test_count_tokens_unexpected_error_stays_in_anthropic_envelope(native_client):
     """Defense-in-depth: a schema-valid but malformed body that explodes
     inside the translator (non-dict image source → AttributeError) must

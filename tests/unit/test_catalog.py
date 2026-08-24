@@ -88,3 +88,33 @@ def test_catalog_pricing_metadata_available():
     gpt4o = CATALOG_BY_ID["gpt-4o"]
     assert gpt4o.input_cost_per_token > 0
     assert gpt4o.output_cost_per_token > 0
+
+
+def test_catalog_lists_hosted_free_models_with_zero_cost():
+    """The zero-credit O2 models are discoverable in the catalog (feeding
+    GET /v1/models and /v1beta/models) under the provider-qualified wire
+    IDs O2's own listing uses — each has a matching hosted deployment via
+    HOSTED_MODEL_ALIASES."""
+    from packages.litellm_adapter.catalog import CATALOG_BY_ID
+    from packages.litellm_adapter.hosted_catalog import HOSTED_MODEL_ALIASES
+
+    for wire_id in HOSTED_MODEL_ALIASES:
+        m = CATALOG_BY_ID.get(wire_id)
+        assert m is not None, f"{wire_id} missing from catalog"
+        assert m.input_cost_per_token == 0.0
+        assert m.output_cost_per_token == 0.0
+
+
+def test_free_models_are_listed_but_not_auto_eligible():
+    """Deliberate interaction: choose_auto_model excludes zero-blended-cost
+    entries (unpriced ≠ free in litellm's catalog, and zero-cost wins would
+    skew the savings math), so the free models are discoverable + pinnable
+    but never auto-selected."""
+    from app.auto_routing import choose_auto_model
+    from packages.litellm_adapter.catalog import CATALOG_BY_ID
+
+    m = CATALOG_BY_ID["orcarouter/free"]
+    chosen, _ = choose_auto_model(
+        needs=set(), deployable={"orcarouter/free"}, candidates=[m],
+    )
+    assert chosen == []

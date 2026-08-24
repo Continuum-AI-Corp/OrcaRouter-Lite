@@ -115,6 +115,8 @@ async def test_engine_error_frame_becomes_google_error_chunk():
     ("rate_limit_error", 429, "RESOURCE_EXHAUSTED"),
     ("model_not_found", 404, "NOT_FOUND"),
     ("context_length_exceeded", 400, "INVALID_ARGUMENT"),
+    # OUR provider credential — permanent, must not present as retryable.
+    ("upstream_auth_error", 403, "PERMISSION_DENIED"),
     ("upstream_timeout", 503, "UNAVAILABLE"),
     ("something_unknown", 500, "INTERNAL"),
     (None, 500, "INTERNAL"),

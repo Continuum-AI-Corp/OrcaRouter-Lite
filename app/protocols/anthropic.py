@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.protocols import clamp_stop_sequences
 from app.protocols.sse import aclose_quietly
 
 logger = structlog.get_logger()
@@ -256,7 +257,9 @@ def to_openai_request(req: AnthropicMessagesRequest) -> dict:
     if req.top_p is not None:
         out["top_p"] = req.top_p
     if req.stop_sequences:
-        out["stop"] = req.stop_sequences
+        out["stop"] = clamp_stop_sequences(
+            req.stop_sequences, event="anthropic_stop_sequences_truncated"
+        )
     if req.metadata and isinstance(req.metadata.get("user_id"), str):
         out["user"] = req.metadata["user_id"]
     if req.tools is not None:
@@ -512,6 +515,18 @@ _STATUS_TO_ERROR_TYPE = {
     500: "api_error",
     529: "overloaded_error",
 }
+
+
+def native_status(status: int, error_type: str | None) -> int:
+    """Correct the engine's generic HTTP status using its translated
+    error_type (relayed via the x-orca-error-type header) where the plain
+    status would misrepresent the failure on this surface: the engine uses
+    422 for model_not_found but Anthropic's contract is 404
+    not_found_error. Mirrors _STREAM_ERROR_TYPE_MAP so stream and blocking
+    agree."""
+    if error_type == "model_not_found":
+        return 404
+    return status
 
 
 def error_response(status: int, message: str) -> JSONResponse:

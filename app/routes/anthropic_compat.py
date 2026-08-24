@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.deps import get_db, get_key_context
 from app.protocols import anthropic as proto
 from app.protocols.sse import iter_openai_frames
-from app.routes.chat import execute_chat
+from app.routes.chat import ERROR_TYPE_HEADER, execute_chat
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 
@@ -78,7 +78,15 @@ async def anthropic_messages(
         openai_body = ChatCompletionRequest.model_validate(proto.to_openai_request(areq))
         inner = await execute_chat(openai_body, kc, db)
     except HTTPException as exc:
-        return proto.error_response(exc.status_code, str(exc.detail))
+        # native_status: the engine relays its translated error type in a
+        # header (e.g. model_not_found is 422 there, 404 not_found_error
+        # on this surface).
+        return proto.error_response(
+            proto.native_status(
+                exc.status_code, (exc.headers or {}).get(ERROR_TYPE_HEADER)
+            ),
+            str(exc.detail),
+        )
     except ValidationError as exc:
         return proto.error_response(400, _validation_message(exc))
     except Exception as exc:  # defense-in-depth: never leak the OpenAI envelope
@@ -96,11 +104,15 @@ async def anthropic_messages(
             },
         )
 
-    payload = json.loads(bytes(inner.body))
-    return JSONResponse(
-        proto.to_anthropic_response(payload),
-        headers=forwarded_headers(inner),
-    )
+    try:
+        payload = json.loads(bytes(inner.body))
+        return JSONResponse(
+            proto.to_anthropic_response(payload),
+            headers=forwarded_headers(inner),
+        )
+    except Exception as exc:  # defense-in-depth: never leak the OpenAI envelope
+        logger.warning("anthropic_compat_error", error=str(exc))
+        return proto.error_response(500, "Internal server error")
 
 
 @router.post("/v1/messages/count_tokens")

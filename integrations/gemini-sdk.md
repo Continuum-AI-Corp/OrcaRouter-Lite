@@ -53,7 +53,10 @@ logs; the header form doesn't.
   server-side tools (`googleSearch`, `codeExecution`, `urlContext`)
   return 400. Function declarations are fully supported (uppercase proto
   type enums are normalized automatically).
-- `safetySettings`, `thinkingConfig`, and `topK` are dropped.
+- `safetySettings`, `thinkingConfig`, and `topK` are dropped; `thought` /
+  `thoughtSignature` parts in history are dropped the same way.
+- `stopSequences` beyond the OpenAI wire cap of 4 are truncated to the
+  first 4 (a `structlog` warning is emitted).
 - `responseMimeType: "application/json"` maps to JSON mode;
   `responseSchema` itself is not yet enforced.
 - `streamGenerateContent` without `?alt=sse` returns the full JSON array

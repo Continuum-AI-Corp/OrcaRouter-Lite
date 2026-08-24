@@ -138,6 +138,51 @@ def test_tool_config_any_with_single_allowed_name_pins_function():
     assert out["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
+def test_empty_model_turn_keeps_empty_content():
+    """Regression: a model turn with empty/missing parts (safety-filtered
+    or compacted history echoes) must not become content=None with no
+    tool_calls — the engine's exclude_none dump would send a bare
+    {"role": "assistant"}, which upstreams reject."""
+    out = _translate({"contents": [
+        {"role": "user", "parts": [{"text": "hi"}]},
+        {"role": "model", "parts": []},
+        {"role": "user", "parts": [{"text": "and?"}]},
+    ]})
+    assert out["messages"][1] == {"role": "assistant", "content": ""}
+
+
+def test_thought_parts_dropped_payload_parts_kept():
+    """Thought(-summary)/signature parts are dropped like Anthropic
+    thinking blocks; a functionCall carrying a thoughtSignature is a real
+    payload and survives. A thought-only turn keeps content ""."""
+    out = _translate({"contents": [
+        {"role": "user", "parts": [{"text": "hi"}]},
+        {"role": "model", "parts": [
+            {"thought": True, "text": "internal reasoning"},
+            {"thoughtSignature": "sig"},
+            {"functionCall": {"name": "f", "args": {"x": 1}}, "thoughtSignature": "sig2"},
+        ]},
+        {"role": "user", "parts": [{"functionResponse": {"name": "f", "response": {}}}]},
+    ]})
+    model_msg = out["messages"][1]
+    assert model_msg["tool_calls"][0]["function"]["name"] == "f"
+    assert "internal reasoning" not in json.dumps(out)  # thought text never leaks
+
+    thought_only = _translate({"contents": [
+        {"role": "user", "parts": [{"text": "hi"}]},
+        {"role": "model", "parts": [{"thought": True, "text": "internal"}]},
+    ]})
+    assert thought_only["messages"][1] == {"role": "assistant", "content": ""}
+
+
+def test_stop_sequences_truncated_to_openai_cap():
+    out = _translate({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "generationConfig": {"stopSequences": ["a", "b", "c", "d", "e"]},
+    })
+    assert out["stop"] == ["a", "b", "c", "d"]
+
+
 def test_tool_config_any_with_multiple_names_constrains_tools_to_subset():
     """Google's ANY + allowedFunctionNames means "must call one of THESE";
     OpenAI "required" alone means "must call some tool", so the declared

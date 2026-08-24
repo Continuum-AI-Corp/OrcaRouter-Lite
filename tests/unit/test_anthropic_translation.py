@@ -195,6 +195,11 @@ def test_thinking_param_and_history_blocks_dropped_not_rejected():
     assert out["messages"][0] == {"role": "assistant", "content": "answer"}
 
 
+def test_stop_sequences_truncated_to_openai_cap():
+    out = to_openai_request(_req(stop_sequences=["a", "b", "c", "d", "e"]))
+    assert out["stop"] == ["a", "b", "c", "d"]
+
+
 def test_thinking_only_assistant_message_keeps_empty_content():
     """Regression: an assistant turn of ONLY thinking blocks (Claude Code
     sends these on extended-thinking/compacted histories) must not become

@@ -41,6 +41,8 @@ Streaming (`client.messages.stream(...)`) and tool use work as usual.
 - `thinking` (extended thinking) is accepted but **dropped** — the request
   still works, without a thinking budget. A `structlog` warning is emitted.
 - `top_k` is dropped; `temperature` / `top_p` pass through.
+- `stop_sequences` beyond the OpenAI wire cap of 4 are truncated to the
+  first 4 (a `structlog` warning is emitted).
 - Server-side tools (web search, computer use), PDF `document` blocks, and
   the Files API return 400. Custom function tools are fully supported.
 - `POST /v1/messages/count_tokens` returns an estimate

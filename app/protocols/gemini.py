@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.protocols import clamp_stop_sequences
 from app.protocols.anthropic import _parse_json_object
 from app.protocols.sse import aclose_quietly
 
@@ -90,6 +91,10 @@ _UNSUPPORTED_TOOL_KEYS = (
     ("codeExecution", "code_execution"),
     ("urlContext", "url_context"),
 )
+
+# Part keys that only carry thinking metadata (a part made of nothing but
+# these has no translatable payload).
+_THOUGHT_PART_KEYS = {"thought", "thoughtSignature", "thought_signature"}
 
 
 def _translate_tools(tools: list[dict]) -> list[dict]:
@@ -204,6 +209,15 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
     for part in raw_parts:
         if not isinstance(part, dict):
             raise _invalid("Content part must be an object")
+        if part.get("thought") or (part and not (set(part) - _THOUGHT_PART_KEYS)):
+            # Thought(-summary)/signature parts mirror Anthropic thinking
+            # blocks: no internal equivalent — drop, never reject. Parts
+            # that carry a real payload NEXT TO a signature (e.g. a
+            # functionCall with thoughtSignature) are not dropped.
+            # debug, not warning: agentic clients resend full history every
+            # request, so a per-part warning would grow O(n²) over a session.
+            logger.debug("gemini_thought_part_dropped")
+            continue
         if "text" in part:
             texts.append(part.get("text") or "")
             parts_out.append({"type": "text", "text": part.get("text") or ""})
@@ -239,6 +253,13 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
         out: dict = {"role": "assistant", "content": "".join(texts) or None}
         if tool_calls:
             out["tool_calls"] = tool_calls
+        if out["content"] is None and not tool_calls:
+            # Same guard as the Anthropic sibling: a model turn with no
+            # representable parts (empty parts echoed back in history,
+            # thought-only turns) must keep content "" — the engine's
+            # exclude_none dump would otherwise send a bare
+            # {"role": "assistant"}, which upstreams reject.
+            out["content"] = ""
         return [out]
 
     out_messages = tool_messages
@@ -262,6 +283,10 @@ def _apply_generation_config(gc: dict, out: dict) -> None:
         out["max_tokens"] = max_tokens
     stop = _alias(gc, "stopSequences", "stop_sequences")
     if stop:
+        if isinstance(stop, list):
+            stop = clamp_stop_sequences(
+                stop, event="gemini_stop_sequences_truncated"
+            )
         out["stop"] = stop
     seed = gc.get("seed")
     if seed is not None:
@@ -403,7 +428,9 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     "rate_limit_error": 429,
     "model_not_found": 404,
     "context_length_exceeded": 400,
-    "upstream_auth_error": 503,
+    # OUR provider credential failed — permanent until the operator fixes
+    # it, so it must not surface as a retryable 503/UNAVAILABLE.
+    "upstream_auth_error": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
 }
@@ -513,6 +540,16 @@ _STATUS_TO_GOOGLE_STATUS = {
     500: "INTERNAL",
     503: "UNAVAILABLE",
 }
+
+
+def native_status(status: int, error_type: str | None) -> int:
+    """Correct the engine's generic HTTP status using its translated
+    error_type (relayed via the x-orca-error-type header) where the plain
+    status would misrepresent the failure on this surface — e.g. the
+    engine uses 422 for model_not_found but Google's contract is 404
+    NOT_FOUND. Derived from _STREAM_ERROR_TYPE_TO_CODE (rather than a
+    hand-kept mirror) so the stream and blocking paths cannot drift."""
+    return _STREAM_ERROR_TYPE_TO_CODE.get(error_type, status)
 
 
 def error_response(status: int, message: str) -> JSONResponse:

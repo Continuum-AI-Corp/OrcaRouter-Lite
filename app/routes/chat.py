@@ -38,6 +38,12 @@ from packages.litellm_adapter.types import UpstreamProviderError
 logger = structlog.get_logger()
 router = APIRouter(prefix="/v1", tags=["Chat Completions"])
 
+# Relays the engine's translated error type (rate_limit_error,
+# model_not_found, ...) on engine-raised HTTPExceptions so the
+# native-protocol routes can re-render the failure in their own
+# status/error taxonomy.
+ERROR_TYPE_HEADER = "x-orca-error-type"
+
 
 def _chunk_to_dict(chunk) -> dict:
     """Normalize a litellm chunk (Pydantic model or dict) into a plain dict."""
@@ -491,6 +497,10 @@ async def execute_chat(
             raise HTTPException(
                 status_code=exc.http_status,
                 detail=f"Upstream provider error: {exc}",
+                # The generic HTTP status alone loses the translated type
+                # (e.g. model_not_found is 422 here but 404 on the
+                # Anthropic/Gemini surfaces).
+                headers={ERROR_TYPE_HEADER: exc.error_type},
             ) from exc
         except Exception as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
@@ -520,7 +530,6 @@ async def execute_chat(
                 nonlocal log_written, agg_provider
                 if log_written:
                     return
-                log_written = True
                 # Real LiteLLM stream chunks don't carry _orca_meta (the
                 # adapter only injects it on non-stream responses, since
                 # wrapping every chunk would be wasteful). Look up provider
@@ -550,19 +559,40 @@ async def execute_chat(
                 )
                 from packages.db import session as session_mod
 
-                if session_mod._session_factory is not None:
-                    try:
+                async def _commit_row() -> None:
+                    if session_mod._session_factory is not None:
                         async with session_mod._session_factory() as s:
                             s.add(log)
                             await s.commit()
-                    except Exception as commit_err:
-                        logger.warning("request_log_commit_failed", error=str(commit_err))
-                else:
-                    db.add(log)
-                    try:
+                    else:
+                        db.add(log)
                         await db.commit()
+
+                # At-most-once: mark the attempt BEFORE it starts so the
+                # other _finalize call site never retries — a retry after an
+                # ambiguous failure (commit acked, teardown raised) would
+                # double-insert the row. Durability against a close/cancel
+                # landing mid-commit (e.g. a disconnect delivered during the
+                # protocol adapters' post-[DONE] drain) comes from running
+                # the commit in its own task: cancellation aimed at THIS
+                # task can't abort the INSERT.
+                log_written = True
+                commit_task = asyncio.ensure_future(_commit_row())
+                try:
+                    await asyncio.shield(commit_task)
+                except Exception as commit_err:
+                    logger.warning("request_log_commit_failed", error=str(commit_err))
+                except BaseException:
+                    # CancelledError/GeneratorExit aimed at us, not at the
+                    # commit — wait the commit out so the row isn't dropped,
+                    # then let the cancellation propagate.
+                    try:
+                        await commit_task
                     except Exception as commit_err:
                         logger.warning("request_log_commit_failed", error=str(commit_err))
+                    except BaseException:
+                        pass
+                    raise
 
             try:
                 async for chunk in _aiter(stream_obj):
@@ -713,6 +743,9 @@ async def execute_chat(
         raise HTTPException(
             status_code=exc.http_status,
             detail=f"Upstream provider error: {exc}",
+            # See the streaming-path twin: lets the native routes map the
+            # translated type to their surface's status/error taxonomy.
+            headers={ERROR_TYPE_HEADER: exc.error_type},
         ) from exc
     except Exception as exc:
         status_code = 503
