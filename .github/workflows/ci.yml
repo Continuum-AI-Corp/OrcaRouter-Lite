@@ -8,6 +8,7 @@ on:
       - "packages/**"
       - "tests/**"
       - "scripts/**"
+      - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
       - ".github/workflows/ci.yml"
@@ -17,6 +18,7 @@ on:
       - "packages/**"
       - "tests/**"
       - "scripts/**"
+      - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
       - ".github/workflows/ci.yml"
@@ -39,6 +41,38 @@ jobs:
         continue-on-error: false
       - name: pytest
         run: PYTHONPATH=. pytest -v --tb=short
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade build twine
+      - name: build wheel + sdist
+        run: python -m build
+      - name: metadata is valid for PyPI
+        run: twine check --strict dist/*
+      - name: wheel installs, boots and serves the dashboard
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --quiet dist/*.whl
+          /tmp/verify/bin/orcarouter-lite --version
+          DATABASE_URL=sqlite+aiosqlite:////tmp/verify.db /tmp/verify/bin/orcarouter-lite --port 8123 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:8123/health >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8123/health || { echo "::error::wheel did not boot"; exit 1; }
+          # The SPA only ships if pyproject force-includes design/ into app/design.
+          curl -sf http://localhost:8123/ | grep -qi "<html" || { echo "::error::dashboard is missing from the wheel"; exit 1; }
+          echo "✓ wheel boots and serves the dashboard"
 
   smoke:
     name: docker smoke
