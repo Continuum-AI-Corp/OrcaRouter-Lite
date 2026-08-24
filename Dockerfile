@@ -13,12 +13,22 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml .
-RUN mkdir -p app packages \
-    && pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir "."
+
+# Install the runtime dependencies only, read straight out of pyproject. The
+# project itself is deliberately NOT installed here — the runtime stage puts
+# the source on PYTHONPATH instead — so this layer is invalidated only when
+# the dependency list changes, never on a code or README edit.
+RUN pip install --no-cache-dir --upgrade pip \
+    && python -c 'import tomllib;f=open("pyproject.toml","rb");print(*tomllib.load(f)["project"]["dependencies"],sep=chr(10))' > /tmp/requirements.txt \
+    && pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ── Runtime stage ─────────────────────────────────────
 FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="OrcaRouter Lite" \
+      org.opencontainers.image.description="Self-hosted LLM router with a managed safety net. OpenAI-compatible, BYOK." \
+      org.opencontainers.image.source="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 

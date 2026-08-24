@@ -7,6 +7,7 @@ the full lifespan and pre-create tables themselves.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,25 @@ import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+
+def _find_design_dir() -> str | None:
+    """Locate the dashboard SPA. Three layouts have to work:
+
+      * ``$ORCA_DESIGN_DIR``   — explicit override (custom build of the SPA)
+      * ``app/design``         — installed wheel; pyproject force-includes the
+                                 repo-root ``design/`` tree to this path
+      * ``../design``          — repo checkout and the Docker image
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (
+        os.environ.get("ORCA_DESIGN_DIR"),
+        os.path.join(here, "design"),
+        os.path.join(here, os.pardir, "design"),
+    ):
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    return None
 
 
 @asynccontextmanager
@@ -145,13 +165,11 @@ def create_app() -> FastAPI:
     app.include_router(quality.router)
 
     # ── Static SPA (provider keys, routing, analytics, keys) ──
-    import os
-
     from fastapi.responses import FileResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
 
-    design_dir = os.path.join(os.path.dirname(__file__), "..", "design")
-    if os.path.isdir(design_dir):
+    design_dir = _find_design_dir()
+    if design_dir:
         app.mount("/static", StaticFiles(directory=design_dir), name="static")
 
         @app.get("/", include_in_schema=False)

@@ -2,8 +2,29 @@
 name = "orcarouter-lite"
 version = "0.1.0"
 description = "Self-hosted LLM router with a managed safety net. OpenAI-compatible, BYOK, single-workspace edition of OrcaRouter."
+readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Continuum AI Corp" }]
+keywords = [
+    "llm", "router", "proxy", "gateway", "openai", "anthropic", "gemini",
+    "litellm", "self-hosted", "byok", "fastapi",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -39,12 +60,32 @@ dev = [
     "ruff>=0.4.0",
 ]
 
-[build-system]
-requires = ["setuptools>=69.0"]
-build-backend = "setuptools.build_meta"
+[project.scripts]
+orcarouter-lite = "app.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["app*", "packages*"]
+[project.urls]
+Homepage = "https://www.orcarouter.ai"
+Repository = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite"
+Issues = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/issues"
+Changelog = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+# `app` and `packages` are the two importable roots; `design/` is the dashboard
+# SPA, which lives at the repo root for dev/Docker but has to travel inside the
+# wheel so `pip install orcarouter-lite` still serves the UI. force-include maps
+# it to `app/design/` at build time — no file move, no drift in the package list.
+[tool.hatch.build.targets.wheel]
+packages = ["app", "packages"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"design" = "app/design"
+
+[tool.hatch.build.targets.sdist]
+include = ["app", "packages", "design", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml"]
+exclude = ["**/__pycache__", "**/*.pyc", "design/test_i18n_unittest.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
