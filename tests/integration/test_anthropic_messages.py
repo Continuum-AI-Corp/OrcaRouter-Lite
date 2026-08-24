@@ -484,3 +484,20 @@ async def test_count_tokens_requires_auth(native_client):
     })
     assert r.status_code == 401
     assert r.json()["type"] == "error"
+
+
+async def test_count_tokens_unexpected_error_stays_in_anthropic_envelope(native_client):
+    """Defense-in-depth: a schema-valid but malformed body that explodes
+    inside the translator (non-dict image source → AttributeError) must
+    render the Anthropic error envelope, not FastAPI's default 500 body."""
+    client, _, key = native_client
+    r = await client.post("/v1/messages/count_tokens", json={
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": "not-a-dict"},
+        ]}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 500
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"

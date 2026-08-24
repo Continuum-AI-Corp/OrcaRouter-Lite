@@ -45,6 +45,7 @@ async def iter_openai_frames(body_iterator: AsyncIterable) -> AsyncGenerator[dic
     """
     buffer = ""
     done = False
+    drained = False
     try:
         async for piece in body_iterator:
             if isinstance(piece, bytes):
@@ -73,6 +74,14 @@ async def iter_openai_frames(body_iterator: AsyncIterable) -> AsyncGenerator[dic
             # naturally (the engine emits nothing after [DONE]).
             async for _ in body_iterator:
                 pass
+        drained = True
     finally:
-        if not done:
+        # not done: closed/cancelled before [DONE] — forward the close so
+        # the engine's disconnect handling runs (harmless no-op when the
+        # source simply ended without a sentinel).
+        # done but not drained: closed/cancelled DURING the post-[DONE]
+        # drain — the engine is still suspended at its [DONE] yield with
+        # the request-log writeback pending; forward the close so the
+        # writeback runs now rather than at GC finalization (or never).
+        if not done or not drained:
             await aclose_quietly(body_iterator)

@@ -137,6 +137,13 @@ def _translate_assistant_message(blocks: list[dict]) -> dict:
     out: dict = {"role": "assistant", "content": "".join(texts) or None}
     if tool_calls:
         out["tool_calls"] = tool_calls
+    if out["content"] is None and not tool_calls:
+        # Every block was dropped (thinking-only turn — Claude Code sends
+        # these on extended-thinking/compacted histories). The engine's
+        # `exclude_none` dump would strip the None and upstreams reject a
+        # bare {"role": "assistant"}; keep the turn with empty content
+        # rather than leaking dropped thinking text or losing the turn.
+        out["content"] = ""
     return out
 
 
@@ -335,7 +342,17 @@ def _ev(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-_STREAM_ERROR_TYPES = {"rate_limit_error", "overloaded_error", "api_error"}
+# Engine SSE error-frame `type` (packages/litellm_adapter/client.py
+# _translate_error) → Anthropic error taxonomy. Retry semantics matter:
+# a context overflow or missing model must not surface as a retryable
+# api_error. upstream_auth_error stays api_error — it's OUR provider
+# credential that failed, not the caller's key.
+_STREAM_ERROR_TYPE_MAP = {
+    "rate_limit_error": "rate_limit_error",
+    "overloaded_error": "overloaded_error",
+    "context_length_exceeded": "invalid_request_error",
+    "model_not_found": "not_found_error",
+}
 
 
 async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None]:
@@ -386,7 +403,7 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                 yield _ev("error", {
                     "type": "error",
                     "error": {
-                        "type": etype if etype in _STREAM_ERROR_TYPES else "api_error",
+                        "type": _STREAM_ERROR_TYPE_MAP.get(etype, "api_error"),
                         "message": err.get("message", "Upstream provider error"),
                     },
                 })

@@ -118,10 +118,18 @@ def _translate_tools(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _translate_tool_config(tc: dict) -> str | dict | None:
+def _translate_tool_config(tc: dict) -> tuple[str | dict | None, list[str] | None]:
+    """Returns (tool_choice, allowed_function_names).
+
+    `allowed` is non-None only for mode ANY with MULTIPLE names: OpenAI's
+    "required" means "must call SOME tool", so the caller must also
+    constrain the tools list to the allowed subset — otherwise the model
+    may call a function the Gemini caller explicitly excluded. The
+    single-name case needs no filtering (a specific-function tool_choice
+    already pins the call)."""
     fcc = _alias(tc, "functionCallingConfig", "function_calling_config")
     if not isinstance(fcc, dict):
-        return None
+        return None, None
     # tool_config is free-form in the wire schema — validate the field
     # types here so malformed input renders as a native 400, not a 500.
     mode_raw = fcc.get("mode")
@@ -129,16 +137,18 @@ def _translate_tool_config(tc: dict) -> str | dict | None:
         raise _invalid("functionCallingConfig.mode must be a string")
     mode = (mode_raw or "").upper()
     if mode in ("", "MODE_UNSPECIFIED", "AUTO", "VALIDATED"):
-        return "auto"
+        return "auto", None
     if mode == "NONE":
-        return "none"
+        return "none", None
     if mode == "ANY":
         allowed = _alias(fcc, "allowedFunctionNames", "allowed_function_names") or []
         if not isinstance(allowed, list) or not all(isinstance(n, str) for n in allowed):
             raise _invalid("functionCallingConfig.allowedFunctionNames must be a list of strings")
         if len(allowed) == 1:
-            return {"type": "function", "function": {"name": allowed[0]}}
-        return "required"
+            return {"type": "function", "function": {"name": allowed[0]}}, None
+        if allowed:
+            return "required", allowed
+        return "required", None
     raise _invalid(f"Unsupported functionCallingConfig mode: {mode!r}")
 
 
@@ -308,7 +318,23 @@ def to_openai_request(req: GeminiGenerateRequest, *, model: str, stream: bool) -
         if tools:
             out["tools"] = tools
     if req.tool_config:
-        tc = _translate_tool_config(req.tool_config)
+        tc, allowed = _translate_tool_config(req.tool_config)
+        if allowed is not None:
+            # ANY + multiple allowedFunctionNames: Google's contract is
+            # "must call one of THESE"; OpenAI's "required" alone is only
+            # "must call some tool", so restrict the declared tools to the
+            # allowed subset (undeclared allowed names are ignored, matching
+            # this module's lenient stance elsewhere).
+            allowed_set = set(allowed)
+            subset = [
+                t for t in out.get("tools") or []
+                if t["function"]["name"] in allowed_set
+            ]
+            if not subset:
+                raise _invalid(
+                    "allowedFunctionNames does not match any declared functionDeclaration"
+                )
+            out["tools"] = subset
         if tc is not None:
             out["tool_choice"] = tc
     if req.generation_config:

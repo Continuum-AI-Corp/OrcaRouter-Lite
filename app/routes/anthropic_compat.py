@@ -122,12 +122,14 @@ async def anthropic_count_tokens(
         raw = {**raw, "max_tokens": raw.get("max_tokens") or 1}
         areq = proto.AnthropicMessagesRequest.model_validate(raw)
         openai_body = proto.to_openai_request(areq)
+        return JSONResponse({"input_tokens": _count_input_tokens(openai_body)})
     except HTTPException as exc:
         return proto.error_response(exc.status_code, str(exc.detail))
     except ValidationError as exc:
         return proto.error_response(400, _validation_message(exc))
-
-    return JSONResponse({"input_tokens": _count_input_tokens(openai_body)})
+    except Exception as exc:  # defense-in-depth: never leak the OpenAI envelope
+        logger.warning("anthropic_count_tokens_error", error=str(exc))
+        return proto.error_response(500, "Internal server error")
 
 
 def _count_input_tokens(openai_body: dict) -> int:

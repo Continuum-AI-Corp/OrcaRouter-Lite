@@ -195,6 +195,23 @@ def test_thinking_param_and_history_blocks_dropped_not_rejected():
     assert out["messages"][0] == {"role": "assistant", "content": "answer"}
 
 
+def test_thinking_only_assistant_message_keeps_empty_content():
+    """Regression: an assistant turn of ONLY thinking blocks (Claude Code
+    sends these on extended-thinking/compacted histories) must not become
+    content=None with no tool_calls — the engine's exclude_none dump would
+    then send a bare {"role": "assistant"}, which OpenAI-compatible
+    upstreams reject with a 400."""
+    out = to_openai_request(_req(messages=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "...", "signature": "s"},
+            {"type": "redacted_thinking", "data": "x"},
+        ]},
+        {"role": "user", "content": "and?"},
+    ]))
+    assert out["messages"][1] == {"role": "assistant", "content": ""}
+
+
 def test_document_block_rejected_with_400():
     with pytest.raises(HTTPException) as exc:
         to_openai_request(_req(messages=[{

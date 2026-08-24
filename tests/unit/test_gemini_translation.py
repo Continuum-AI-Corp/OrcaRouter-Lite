@@ -138,6 +138,36 @@ def test_tool_config_any_with_single_allowed_name_pins_function():
     assert out["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
+def test_tool_config_any_with_multiple_names_constrains_tools_to_subset():
+    """Google's ANY + allowedFunctionNames means "must call one of THESE";
+    OpenAI "required" alone means "must call some tool", so the declared
+    tools must be restricted to the allowed subset (undeclared allowed
+    names are ignored, lenient)."""
+    out = _translate({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "tools": [{"functionDeclarations": [
+            {"name": "a"}, {"name": "b"}, {"name": "c"},
+        ]}],
+        "toolConfig": {"functionCallingConfig": {
+            "mode": "ANY", "allowedFunctionNames": ["c", "a", "ghost"],
+        }},
+    })
+    assert out["tool_choice"] == "required"
+    assert [t["function"]["name"] for t in out["tools"]] == ["a", "c"]
+
+
+def test_tool_config_any_with_no_matching_names_rejected():
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "tools": [{"functionDeclarations": [{"name": "a"}]}],
+            "toolConfig": {"functionCallingConfig": {
+                "mode": "ANY", "allowedFunctionNames": ["x", "y"],
+            }},
+        })
+    assert exc.value.status_code == 400
+
+
 @pytest.mark.parametrize("fcc", [
     {"mode": {"x": 1}},                                     # mode not a string
     {"mode": "ANY", "allowedFunctionNames": {"f": {}}},     # names not a list

@@ -7,7 +7,10 @@ Also covers `iter_openai_frames` itself.
 
 from __future__ import annotations
 
+import asyncio
 import json
+
+import pytest
 
 from app.protocols.anthropic import stream_events
 from app.protocols.sse import iter_openai_frames
@@ -246,6 +249,28 @@ async def test_engine_error_frame_becomes_error_event():
     assert "message_stop" not in names
 
 
+@pytest.mark.parametrize("engine_type,anthropic_type", [
+    ("rate_limit_error", "rate_limit_error"),
+    ("overloaded_error", "overloaded_error"),
+    ("context_length_exceeded", "invalid_request_error"),
+    ("model_not_found", "not_found_error"),
+    ("upstream_timeout", "api_error"),
+    ("something_unknown", "api_error"),
+    (None, "api_error"),
+])
+async def test_engine_error_type_maps_to_anthropic_taxonomy(engine_type, anthropic_type):
+    """The engine's translated error types must map into the Anthropic
+    taxonomy — a context overflow or missing model presented as a generic
+    api_error would be retried by clients even though it can never
+    succeed."""
+    err: dict = {"message": "boom"}
+    if engine_type is not None:
+        err["type"] = engine_type
+    events = await _collect([{"error": err}])
+    assert events[-1][0] == "error"
+    assert events[-1][1]["error"]["type"] == anthropic_type
+
+
 async def test_error_frame_drains_engine_source_instead_of_closing_it():
     """Regression: after a mid-stream upstream error the engine emits an
     error frame + [DONE] and then completes, logging 503 + the real error
@@ -315,4 +340,39 @@ async def test_iter_openai_frames_forwards_close_to_source():
     gen = iter_openai_frames(_Source())
     assert (await gen.__anext__()) == {"a": 1}
     await gen.aclose()
+    assert closed["value"] is True
+
+
+async def test_close_during_post_done_drain_still_forwards_close_to_source():
+    """Regression: a cancel/close landing DURING the post-[DONE] drain must
+    still forward the close to the source — otherwise the engine generator
+    stays suspended at its [DONE] yield and its request-log writeback only
+    runs at GC finalization (or never, if the process exits first)."""
+    closed = {"value": False}
+    drain_entered = asyncio.Event()
+
+    class _Source:
+        def __init__(self):
+            self._sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._sent:
+                self._sent = True
+                return 'data: {"a": 1}\n\ndata: [DONE]\n\n'
+            drain_entered.set()
+            await asyncio.Event().wait()  # suspend in the drain until cancelled
+
+        async def aclose(self):
+            closed["value"] = True
+
+    gen = iter_openai_frames(_Source())
+    assert (await gen.__anext__()) == {"a": 1}
+    task = asyncio.create_task(gen.__anext__())
+    await drain_entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     assert closed["value"] is True
