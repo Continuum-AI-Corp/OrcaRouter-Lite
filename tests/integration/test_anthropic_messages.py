@@ -340,7 +340,7 @@ async def test_streaming_event_sequence_and_request_log(native_client):
 
 async def test_streaming_client_disconnect_closes_upstream_and_logs_499(native_client):
     """Client bails mid-stream. The cancellation must propagate through the
-    adapter's generator chain (transformer → iter_openai_frames → engine)
+    adapter's generator chain (transformer → OpenAIFrameStream → engine)
     so the engine's disconnect handling still runs: upstream aclose() gets
     called (stop burning tokens) and the RequestLog row records
     499/client_disconnect. Mirrors test_streaming.py's disconnect test."""
@@ -527,6 +527,72 @@ async def test_blocking_upstream_auth_error_is_non_retryable(native_client):
     body = r.json()
     assert body["type"] == "error"
     assert body["error"]["type"] == "permission_error"
+
+
+async def test_no_providers_configured_is_non_retryable(native_client):
+    """A fresh install with no provider key is permanent until the
+    operator adds one — it must not render as a retryable 500 api_error
+    the SDK keeps backing off against."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "No provider keys configured.", http_status=503,
+        error_type="no_providers_configured",
+    ))
+    r = await client.post("/v1/messages", json={
+        "model": "gpt-4o-mini", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 403
+    assert r.json()["error"]["type"] == "permission_error"
+
+
+async def test_cache_is_not_shared_across_different_max_tokens(native_client):
+    """Regression: the prompt-cache key omitted max_tokens, so a second
+    request differing only in its budget was served the first response
+    (x-orca-cache: HIT). The Anthropic surface sends max_tokens on every
+    request, so the collision was reachable in normal use."""
+    client, fake, key = native_client
+
+    body = {
+        "model": "gpt-4o-mini", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "cache probe"}],
+    }
+    first = await client.post("/v1/messages", json=body, headers={"x-api-key": key})
+    assert first.status_code == 200
+    assert first.headers["x-orca-cache"] == "MISS"
+
+    # identical request → served from cache
+    again = await client.post("/v1/messages", json=body, headers={"x-api-key": key})
+    assert again.headers["x-orca-cache"] == "HIT"
+
+    # same prompt, different budget → must NOT reuse the entry
+    other = await client.post(
+        "/v1/messages", json={**body, "max_tokens": 4096}, headers={"x-api-key": key},
+    )
+    assert other.headers["x-orca-cache"] == "MISS"
+
+
+async def test_streaming_message_start_carries_an_input_token_estimate(native_client):
+    """The protocol reports the input count in message_start; 0 there made
+    every streaming response understate usage to the SDK."""
+    client, _, key = native_client
+    r = await client.post("/v1/messages", json={
+        "model": "gpt-4o-mini", "max_tokens": 16, "stream": True,
+        "messages": [{"role": "user", "content": "hello there, how are you?"}],
+    }, headers={"x-api-key": key})
+    assert r.status_code == 200
+
+    start = None
+    for line in r.text.splitlines():
+        if line.startswith("data: "):
+            payload = json.loads(line[len("data: "):])
+            if payload.get("type") == "message_start":
+                start = payload
+                break
+    assert start is not None
+    assert start["message"]["usage"]["input_tokens"] > 0
 
 
 async def test_max_tokens_zero_is_native_400(native_client):

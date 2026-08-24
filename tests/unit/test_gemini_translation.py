@@ -248,6 +248,25 @@ def test_generation_config_full_mapping():
     assert "top_k" not in out and "topK" not in out
 
 
+@pytest.mark.parametrize("field,value", [
+    ("temperature", 2.5),
+    ("temperature", -0.5),
+    ("temperature", "hot"),
+    ("topP", 1.5),
+    ("topP", -1),
+])
+def test_out_of_range_sampling_params_rejected(field, value):
+    """Out-of-range values are rejected by the upstream as a BadRequest,
+    which reaches the caller as a retryable 500/503 — bound them here so
+    the failure stays an honest native 400."""
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {field: value},
+        })
+    assert exc.value.status_code == 400
+
+
 @pytest.mark.parametrize("value", [0, -5, 1.5, "100", True])
 def test_non_positive_max_output_tokens_rejected(value):
     """A budget < 1 (or a non-integral one) can never succeed upstream;

@@ -57,6 +57,12 @@ logs; the header form doesn't.
   `thoughtSignature` parts in history are dropped the same way.
 - `stopSequences` beyond the OpenAI wire cap of 4 are truncated to the
   first 4 (a `structlog` warning is emitted).
+- `temperature` (0–2), `topP` (0–1) and `maxOutputTokens` (>= 1) are
+  range-checked and rejected with a 400 INVALID_ARGUMENT rather than
+  forwarded — an upstream rejection would reach you as a retryable 500.
+- `functionCallingConfig.mode: ANY` with several `allowedFunctionNames`
+  restricts the tools sent upstream to that subset, so the model cannot
+  call a function you excluded.
 - `responseMimeType: "application/json"` maps to JSON mode;
   `responseSchema` itself is not yet enforced.
 - `streamGenerateContent` without `?alt=sse` returns the full JSON array

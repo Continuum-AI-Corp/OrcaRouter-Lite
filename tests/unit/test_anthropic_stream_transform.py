@@ -1,8 +1,8 @@
 """Anthropic streaming transformer — pure-transformer unit tests (slice S4).
 
-Feeds synthetic OpenAI chunk dicts (what `iter_openai_frames` yields after
+Feeds synthetic OpenAI chunk dicts (what `OpenAIFrameStream` yields after
 parsing the engine's SSE) and asserts the exact Anthropic event sequence.
-Also covers `iter_openai_frames` itself.
+Also covers `OpenAIFrameStream` itself.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import pytest
 
 from app.protocols.anthropic import stream_events
-from app.protocols.sse import iter_openai_frames
+from app.protocols.sse import OpenAIFrameStream
 
 
 async def _agen(items):
@@ -89,6 +89,20 @@ async def test_text_stream_event_sequence():
     assert msg_delta["delta"]["stop_reason"] == "end_turn"
     assert msg_delta["usage"]["output_tokens"] == 2
     assert msg_delta["usage"]["input_tokens"] == 4
+
+
+async def test_message_start_reports_the_supplied_input_token_estimate():
+    """The protocol puts the input count in message_start (SDKs read it
+    there), but the engine only knows the true value at end-of-stream, so
+    the route passes its own estimate in and the exact count follows in
+    message_delta."""
+    raw = [f async for f in stream_events(
+        _agen([_text_chunk("hi"), _FINISH_CHUNK, _USAGE_CHUNK]), input_tokens=37,
+    )]
+    events = _parse_events(raw)
+    assert events[0][1]["message"]["usage"] == {"input_tokens": 37, "output_tokens": 0}
+    # exact count from the engine's usage frame still lands in message_delta
+    assert events[-2][1]["usage"]["input_tokens"] == 4
 
 
 async def test_usage_frame_missing_still_terminates_with_zero_usage():
@@ -291,11 +305,33 @@ async def test_error_frame_drains_engine_source_instead_of_closing_it():
             state["exit"] = "generator_exit"
             raise
 
-    raw = [f async for f in stream_events(iter_openai_frames(engine_sse()))]
+    raw = [f async for f in stream_events(OpenAIFrameStream(engine_sse()))]
     events = _parse_events(raw)
     assert events[-1][0] == "error"
     assert events[-1][1]["error"]["type"] == "rate_limit_error"
     assert state["exit"] == "completed"
+
+
+async def test_terminal_events_reach_the_client_before_the_engine_writeback():
+    """Ordering regression: resuming the engine past [DONE] runs its
+    `finally` — the RequestLog DB commit. That write must not sit between
+    the last content the client sees and message_stop, or a slow/wedged DB
+    leaves the SDK waiting for a stream that has no terminal event."""
+    order: list[str] = []
+
+    async def engine_sse():
+        yield 'data: {"id":"c1","model":"m","choices":[{"index":0,' \
+              '"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+        # Whoever resumes the engine past [DONE] awaits this.
+        order.append("engine_writeback")
+
+    async for raw in stream_events(OpenAIFrameStream(engine_sse())):
+        order.append(raw.splitlines()[0][len("event: "):])
+
+    assert "engine_writeback" in order, "the engine must still be drained"
+    assert order.index("message_stop") < order.index("engine_writeback")
+    assert order[-1] == "engine_writeback"
 
 
 async def test_empty_stream_still_emits_valid_skeleton():
@@ -304,30 +340,54 @@ async def test_empty_stream_still_emits_valid_skeleton():
     assert names == ["message_start", "message_delta", "message_stop"]
 
 
-# ── iter_openai_frames ──
+# ── OpenAIFrameStream ──
 
 
-async def test_iter_openai_frames_parses_and_stops_at_done():
+async def test_frame_stream_parses_stops_at_done_then_drains_on_finish():
+    """Iteration stops at [DONE] leaving the engine suspended; finish()
+    is what resumes it to natural completion."""
+    resumed = {"value": False}
+
     async def producer():
         yield 'data: {"a": 1}\n\n'
         yield 'data: {"b": 2}\n\n'
         yield "data: [DONE]\n\n"
-        yield 'data: {"never": true}\n\n'
+        resumed["value"] = True
 
-    frames = [f async for f in iter_openai_frames(producer())]
+    stream = OpenAIFrameStream(producer())
+    frames = [f async for f in stream]
     assert frames == [{"a": 1}, {"b": 2}]
+    assert resumed["value"] is False, "the engine must not be resumed by iteration"
+    await stream.finish()
+    assert resumed["value"] is True
 
 
-async def test_iter_openai_frames_handles_split_and_bytes_frames():
+async def test_frame_stream_handles_split_and_bytes_frames():
     async def producer():
         yield b'data: {"a"'
         yield b': 1}\n\ndata: [DONE]\n\n'
 
-    frames = [f async for f in iter_openai_frames(producer())]
-    assert frames == [{"a": 1}]
+    stream = OpenAIFrameStream(producer())
+    assert [f async for f in stream] == [{"a": 1}]
 
 
-async def test_iter_openai_frames_forwards_close_to_source():
+async def test_frame_stream_finish_is_idempotent():
+    drains = {"count": 0}
+
+    async def producer():
+        yield 'data: {"a": 1}\n\ndata: [DONE]\n\n'
+        drains["count"] += 1
+
+    stream = OpenAIFrameStream(producer())
+    assert [f async for f in stream] == [{"a": 1}]
+    await stream.finish()
+    await stream.finish()
+    assert drains["count"] == 1
+
+
+async def test_frame_stream_finish_forwards_close_when_done_not_reached():
+    """No [DONE] seen (client disconnected mid-stream) → forward the close
+    so the engine's own disconnect handling runs."""
     closed = {"value": False}
 
     class _Source:
@@ -340,9 +400,9 @@ async def test_iter_openai_frames_forwards_close_to_source():
         async def aclose(self):
             closed["value"] = True
 
-    gen = iter_openai_frames(_Source())
-    assert (await gen.__anext__()) == {"a": 1}
-    await gen.aclose()
+    stream = OpenAIFrameStream(_Source())
+    assert (await stream.__aiter__().__anext__()) == {"a": 1}
+    await stream.finish()
     assert closed["value"] is True
 
 
@@ -371,9 +431,9 @@ async def test_close_during_post_done_drain_still_forwards_close_to_source():
         async def aclose(self):
             closed["value"] = True
 
-    gen = iter_openai_frames(_Source())
-    assert (await gen.__anext__()) == {"a": 1}
-    task = asyncio.create_task(gen.__anext__())
+    stream = OpenAIFrameStream(_Source())
+    assert [f async for f in stream] == [{"a": 1}]
+    task = asyncio.create_task(stream.finish())
     await drain_entered.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

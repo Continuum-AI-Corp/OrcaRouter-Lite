@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_key_context
 from app.protocols import anthropic as proto
-from app.protocols.sse import iter_openai_frames
+from app.protocols.sse import OpenAIFrameStream
 from app.routes.chat import ERROR_TYPE_HEADER, execute_chat
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
@@ -75,7 +75,8 @@ async def anthropic_messages(
 ):
     try:
         areq = await parse_native_body(request, proto.AnthropicMessagesRequest)
-        openai_body = ChatCompletionRequest.model_validate(proto.to_openai_request(areq))
+        translated = proto.to_openai_request(areq)
+        openai_body = ChatCompletionRequest.model_validate(translated)
         inner = await execute_chat(openai_body, kc, db)
     except HTTPException as exc:
         # native_status: the engine relays its translated error type in a
@@ -95,7 +96,15 @@ async def anthropic_messages(
 
     if isinstance(inner, StreamingResponse):
         return StreamingResponse(
-            proto.stream_events(iter_openai_frames(inner.body_iterator)),
+            proto.stream_events(
+                OpenAIFrameStream(inner.body_iterator),
+                # The protocol reports the input count in message_start,
+                # which is emitted before the engine knows it (its usage
+                # frame lands at end-of-stream), so send the same estimate
+                # /v1/messages/count_tokens would return. The exact count
+                # follows in message_delta.usage.
+                input_tokens=_count_input_tokens(translated),
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

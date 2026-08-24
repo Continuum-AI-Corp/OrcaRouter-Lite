@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.protocols.gemini import stream_chunks
-from app.protocols.sse import iter_openai_frames
+from app.protocols.sse import OpenAIFrameStream
 
 
 async def _agen(items):
@@ -149,6 +149,26 @@ async def test_error_frame_drains_engine_source_instead_of_closing_it():
             state["exit"] = "generator_exit"
             raise
 
-    chunks = [c async for c in stream_chunks(iter_openai_frames(engine_sse()))]
+    chunks = [c async for c in stream_chunks(OpenAIFrameStream(engine_sse()))]
     assert chunks[-1]["error"]["status"] == "RESOURCE_EXHAUSTED"
     assert state["exit"] == "completed"
+
+
+async def test_final_chunk_reaches_the_client_before_the_engine_writeback():
+    """Ordering regression: resuming the engine past [DONE] runs its
+    RequestLog commit, which must not sit between the last content chunk
+    and the terminal finishReason chunk."""
+    order: list[str] = []
+
+    async def engine_sse():
+        yield 'data: {"id":"c1","model":"m","choices":[{"index":0,' \
+              '"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+        order.append("engine_writeback")
+
+    async for chunk in stream_chunks(OpenAIFrameStream(engine_sse())):
+        order.append(
+            "final" if "usageMetadata" in chunk else "content"
+        )
+
+    assert order == ["content", "final", "engine_writeback"]

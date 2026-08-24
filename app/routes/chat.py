@@ -424,6 +424,11 @@ async def execute_chat(
             tools=completion_kwargs.get("tools"),
             response_format=completion_kwargs.get("response_format"),
             seed=completion_kwargs.get("seed"),
+            max_tokens=completion_kwargs.get("max_tokens"),
+            stop=completion_kwargs.get("stop"),
+            tool_choice=completion_kwargs.get("tool_choice"),
+            top_p=completion_kwargs.get("top_p"),
+            n=completion_kwargs.get("n"),
         )
         cached = await prompt_cache.get_backend().get(cache_lookup_key)
         if cached is not None:

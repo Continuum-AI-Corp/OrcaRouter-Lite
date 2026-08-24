@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_key_context
 from app.protocols import gemini as proto
-from app.protocols.sse import aclose_quietly, iter_openai_frames
+from app.protocols.sse import OpenAIFrameStream, aclose_quietly
 from app.routes.anthropic_compat import (
     _validation_message,
     forwarded_headers,
@@ -126,7 +126,7 @@ async def gemini_generate(
             logger.warning("gemini_compat_error", error=str(exc))
             return proto.error_response(500, "Internal server error")
 
-    chunks = proto.stream_chunks(iter_openai_frames(inner.body_iterator))
+    chunks = proto.stream_chunks(OpenAIFrameStream(inner.body_iterator))
     if alt_sse:
         async def sse():
             try:

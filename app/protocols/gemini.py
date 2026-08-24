@@ -1,7 +1,8 @@
 """Gemini (Google AI Studio) API ↔ internal OpenAI format translation.
 
-Pure functions + one pure async stream transformer. Mapping decisions are
-documented in PLAN-NATIVE-PROTOCOLS.md §4; the load-bearing ones:
+Pure functions + one pure async stream transformer. The caller-visible
+limitations are listed in integrations/gemini-sdk.md; the load-bearing
+mapping decisions are:
 
 - Wire fields are accepted in BOTH camelCase (REST / google-genai SDK)
   and snake_case (some client serializations).
@@ -30,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.protocols import clamp_stop_sequences
 from app.protocols.anthropic import _parse_json_object
-from app.protocols.sse import aclose_quietly
+from app.protocols.sse import finish_quietly
 
 logger = structlog.get_logger()
 
@@ -271,31 +272,50 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
     return out_messages
 
 
+# generationConfig is free-form on the wire, so its numbers are validated
+# here against the API's documented ranges. Out-of-range values are
+# rejected by the upstream as a BadRequest, which the engine reports as a
+# retryable 500 INTERNAL / 503 UNAVAILABLE — SDKs then back off and retry
+# forever a request that can never succeed. Catching them here keeps the
+# failure an honest native 400.
+
+def _bounded_number(value, *, field: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _invalid(f"{field} must be a number between {low} and {high}")
+    # NaN/inf fail the comparison and land in the same 400.
+    if not low <= value <= high:
+        raise _invalid(f"{field} must be between {low} and {high}")
+    return value
+
+
+def _positive_int(value, *, field: str) -> int:
+    """A budget < 1 can never succeed upstream. JSON numbers may decode as
+    an integral float (100.0), which is accepted and narrowed."""
+    if isinstance(value, bool):
+        ok = False
+    elif isinstance(value, int):
+        ok = value >= 1
+    elif isinstance(value, float):
+        ok = value.is_integer() and value >= 1
+    else:
+        ok = False
+    if not ok:
+        raise _invalid(f"{field} must be an integer >= 1")
+    return int(value)
+
+
 def _apply_generation_config(gc: dict, out: dict) -> None:
     temperature = gc.get("temperature")
     if temperature is not None:
-        out["temperature"] = temperature
+        out["temperature"] = _bounded_number(
+            temperature, field="temperature", low=0.0, high=2.0
+        )
     top_p = _alias(gc, "topP", "top_p")
     if top_p is not None:
-        out["top_p"] = top_p
+        out["top_p"] = _bounded_number(top_p, field="topP", low=0.0, high=1.0)
     max_tokens = _alias(gc, "maxOutputTokens", "max_output_tokens")
     if max_tokens is not None:
-        # generationConfig is free-form on the wire. A 0/negative budget
-        # can never succeed upstream, and the upstream's BadRequest would
-        # come back through the engine as a retryable 500 INTERNAL that
-        # SDKs back off and retry forever — reject it as a native 400
-        # instead. JSON numbers may arrive as an integral float (100.0).
-        if isinstance(max_tokens, bool):
-            valid = False
-        elif isinstance(max_tokens, int):
-            valid = max_tokens >= 1
-        elif isinstance(max_tokens, float):
-            valid = max_tokens.is_integer() and max_tokens >= 1
-        else:
-            valid = False
-        if not valid:
-            raise _invalid("maxOutputTokens must be an integer >= 1")
-        out["max_tokens"] = int(max_tokens)
+        out["max_tokens"] = _positive_int(max_tokens, field="maxOutputTokens")
     stop = _alias(gc, "stopSequences", "stop_sequences")
     if stop:
         if isinstance(stop, list):
@@ -443,9 +463,11 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     "rate_limit_error": 429,
     "model_not_found": 404,
     "context_length_exceeded": 400,
-    # OUR provider credential failed — permanent until the operator fixes
-    # it, so it must not surface as a retryable 503/UNAVAILABLE.
+    # Operator-side and permanent until they act (credential rejected, or
+    # no provider key configured at all) — must not surface as a retryable
+    # 503/UNAVAILABLE that SDKs keep backing off against.
     "upstream_auth_error": 403,
+    "no_providers_configured": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
 }
@@ -478,11 +500,11 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
                         "status": _STATUS_TO_GOOGLE_STATUS.get(code, "INTERNAL"),
                     }
                 }
-                # Drain, don't return-and-aclose: the engine follows the
-                # error frame with [DONE] and completes normally, logging
-                # 503 + the real error type. aclose() would raise
-                # GeneratorExit at its suspended yield and the engine would
-                # mislog this as a 499 client disconnect.
+                # Read on to the [DONE] the engine sends after its error
+                # frame, so `finish()` below drains it to a normal
+                # completion and it logs 503 + the real error type.
+                # Returning here without that would leave it suspended and
+                # `finish()` would close it, mislogging a 499 disconnect.
                 async for _ in frames:
                     pass
                 return
@@ -541,7 +563,10 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
             "usageMetadata": _usage_metadata(usage),
         })
     finally:
-        await aclose_quietly(frames)
+        # Last, deliberately: this drains the engine (running its
+        # RequestLog commit), so the final chunk above always reaches the
+        # client ahead of that DB write. See OpenAIFrameStream.
+        await finish_quietly(frames)
 
 
 # ── Error envelope ──────────────────────────────────────────────────────

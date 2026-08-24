@@ -1,7 +1,8 @@
 """Anthropic Messages API ↔ internal OpenAI format translation.
 
-Pure functions + one pure async stream transformer. Mapping decisions are
-documented in PLAN-NATIVE-PROTOCOLS.md §3; the load-bearing ones:
+Pure functions + one pure async stream transformer. The caller-visible
+limitations are listed in integrations/claude-code.md; the load-bearing
+mapping decisions are:
 
 - `thinking` (request param and history blocks) is DROPPED with a log
   warning, never rejected — Claude Code sends it whenever extended
@@ -32,7 +33,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.protocols import clamp_stop_sequences
-from app.protocols.sse import aclose_quietly
+from app.protocols.sse import finish_quietly
 
 logger = structlog.get_logger()
 
@@ -62,9 +63,13 @@ class AnthropicMessagesRequest(BaseModel):
     system: str | list[dict] | None = None
     tools: list[dict] | None = None
     tool_choice: dict | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k: int | None = None
+    # Ranges are the Anthropic API's own. Out-of-range values would be
+    # rejected by the upstream as a BadRequest, which the engine reports
+    # as a retryable 500 api_error — so bound them here, where the failure
+    # is still an honest 400 invalid_request_error.
+    temperature: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=0)
     stop_sequences: list[str] | None = None
     stream: bool = False
     metadata: dict | None = None
@@ -78,13 +83,24 @@ def _invalid(message: str) -> HTTPException:
 
 
 def _system_text(system: str | list[dict]) -> str:
+    """The `system` param is text-only per the Anthropic API (string or
+    text blocks). Anything else — an image block a client tucked into a
+    role:"system" message inside messages[], which this surface tolerates
+    — has no OpenAI system-message equivalent, so it is dropped with a
+    log rather than silently vanishing."""
     if isinstance(system, str):
         return system
-    parts = [
-        b.get("text", "") for b in system
-        if isinstance(b, dict) and b.get("type") == "text"
-    ]
-    return "\n\n".join(p for p in parts if p)
+    parts: list[str] = []
+    dropped = 0
+    for b in system:
+        if isinstance(b, dict) and b.get("type") == "text":
+            if b.get("text"):
+                parts.append(b["text"])
+        else:
+            dropped += 1
+    if dropped:
+        logger.warning("anthropic_non_text_system_block_dropped", count=dropped)
+    return "\n\n".join(parts)
 
 
 def _image_part(block: dict) -> dict:
@@ -101,19 +117,33 @@ def _image_part(block: dict) -> dict:
     raise _invalid(f"Unsupported image source type: {stype!r}")
 
 
-def _flatten_tool_result_content(content) -> str:
-    """tool_result.content is a string or a list of blocks — flatten to text."""
+def _split_tool_result_content(content) -> tuple[str, list[dict]]:
+    """Split tool_result.content into (text, image parts).
+
+    tool_result.content is a string or a list of text/image blocks. An
+    OpenAI `role: "tool"` message carries a plain string, so the text is
+    flattened into it and any images are handed back for the caller to
+    attach to the user message that follows the tool results — a tool
+    returning a screenshot is the common case, and dropping it would
+    silently compute the answer without context the caller supplied.
+    """
     if content is None:
-        return ""
+        return "", []
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        texts = [
-            b.get("text", "") for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "\n\n".join(t for t in texts if t)
-    return str(content)
+        return content, []
+    if not isinstance(content, list):
+        return str(content), []
+    texts: list[str] = []
+    images: list[dict] = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text":
+            if b.get("text"):
+                texts.append(b["text"])
+        elif b.get("type") == "image":
+            images.append(_image_part(b))
+    return "\n\n".join(texts), images
 
 
 _DROPPED_BLOCK_TYPES = {"thinking", "redacted_thinking"}
@@ -155,17 +185,21 @@ def _translate_assistant_message(blocks: list[dict]) -> dict:
 def _translate_user_message(blocks: list[dict]) -> list[dict]:
     """One Anthropic user message may carry tool_result blocks plus regular
     content. OpenAI needs the tool results as their own `role: "tool"`
-    messages (first), then the remaining content as a user message."""
+    messages (first), then the remaining content as a user message —
+    which is also where images returned by a tool end up, since an OpenAI
+    tool message can only hold text."""
     tool_messages: list[dict] = []
     parts: list[dict] = []
     for block in blocks:
         btype = block.get("type")
         if btype == "tool_result":
+            text, images = _split_tool_result_content(block.get("content"))
             tool_messages.append({
                 "role": "tool",
                 "tool_call_id": block.get("tool_use_id", ""),
-                "content": _flatten_tool_result_content(block.get("content")),
+                "content": text,
             })
+            parts.extend(images)
         elif btype == "text":
             parts.append({"type": "text", "text": block.get("text", "")})
         elif btype == "image":
@@ -358,16 +392,19 @@ def _ev(name: str, data: dict) -> str:
 # Retryability is the load-bearing part. Anthropic SDKs back off and retry
 # 429/500/529 but not 4xx, so a failure that can never succeed on retry
 # has to land on a 4xx: a context overflow or a missing model must not
-# read as a transient api_error. upstream_auth_error is OUR provider
-# credential failing — permanent until the operator fixes it — so it maps
-# to 403 permission_error, matching the Gemini surface. Deliberately NOT
-# 401 authentication_error: the caller's own key is fine.
+# read as a transient api_error. The two operator-side conditions —
+# upstream_auth_error (OUR provider credential rejected) and
+# no_providers_configured (no key set at all) — are permanent until the
+# operator acts, so they map to 403 permission_error, matching the Gemini
+# surface. Deliberately NOT 401 authentication_error: the caller's own key
+# is fine.
 _ENGINE_ERROR_STATUS = {
     "rate_limit_error": 429,
     "overloaded_error": 529,
     "context_length_exceeded": 400,
     "model_not_found": 404,
     "upstream_auth_error": 403,
+    "no_providers_configured": 403,
 }
 
 
@@ -376,7 +413,9 @@ def _anthropic_error_type(engine_type: str | None) -> str:
     return _STATUS_TO_ERROR_TYPE.get(status, "api_error")
 
 
-async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None]:
+async def stream_events(
+    frames: AsyncIterable[dict], *, input_tokens: int = 0,
+) -> AsyncGenerator[str, None]:
     """Transform the engine's OpenAI chunk-dict stream into Anthropic SSE
     events. Stateful: tracks the open text block, the mapped stop_reason
     (arrives before usage), and the usage frame (arrives last). Tool-call
@@ -384,7 +423,14 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
     blocks at end-of-stream — OpenAI-format streams may interleave
     fragments of concurrent calls, Anthropic blocks are strictly
     sequential, so per-fragment emission would scatter one call's JSON
-    across several nameless blocks."""
+    across several nameless blocks.
+
+    `input_tokens` is the caller's prompt-size estimate, reported in
+    message_start where the protocol puts it (SDKs read the input count
+    from there). The engine only knows the true count at end-of-stream —
+    its usage frame arrives after the last content — so the exact value
+    additionally goes out in message_delta.usage, which SDKs that merge
+    both events pick up."""
     started = False
     text_open = False
     block_index = -1
@@ -403,13 +449,7 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                # The real API counts the prompt up front; here the engine's
-                # usage frame only arrives at end-of-stream, so the input
-                # count is unknowable at message_start time. 0 is a
-                # placeholder — the true counts are reported in
-                # message_delta.usage (input_tokens included, which the
-                # real API omits there).
-                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "usage": {"input_tokens": input_tokens, "output_tokens": 0},
             },
         })
 
@@ -428,11 +468,11 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
                         "message": err.get("message", "Upstream provider error"),
                     },
                 })
-                # Drain, don't return-and-aclose: the engine follows the
-                # error frame with [DONE] and completes normally, logging
-                # 503 + the real error type. aclose() would raise
-                # GeneratorExit at its suspended yield and the engine would
-                # mislog this as a 499 client disconnect.
+                # Read on to the [DONE] the engine sends after its error
+                # frame, so `finish()` below drains it to a normal
+                # completion and it logs 503 + the real error type.
+                # Returning here without that would leave it suspended and
+                # `finish()` would close it, mislogging a 499 disconnect.
                 async for _ in frames:
                     pass
                 return
@@ -482,7 +522,7 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
             if frame.get("usage"):
                 usage = frame["usage"]
 
-        # Normal end of stream ([DONE] consumed by iter_openai_frames).
+        # Normal end of stream ([DONE] consumed by the frame source).
         if not started:
             yield _start_event({})
         if text_open:
@@ -516,9 +556,12 @@ async def stream_events(frames: AsyncIterable[dict]) -> AsyncGenerator[str, None
         })
         yield _ev("message_stop", {"type": "message_stop"})
     finally:
-        # Forward client-side close down the chain so the engine's own
-        # disconnect handling (upstream aclose + log writeback) runs.
-        await aclose_quietly(frames)
+        # Last, deliberately: this drains the engine to completion (or
+        # forwards a close), which runs its RequestLog commit. Doing it
+        # here rather than mid-transform keeps that DB write behind the
+        # terminal events above, so the client always has message_stop
+        # before the writeback happens. See OpenAIFrameStream.
+        await finish_quietly(frames)
 
 
 # ── Error envelope ──────────────────────────────────────────────────────

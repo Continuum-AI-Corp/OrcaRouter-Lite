@@ -1,8 +1,9 @@
 """Cross-provider prompt cache.
 
 LiteLLM only does prompt caching for Anthropic. Lite ships an exact-match
-cache that works for any provider — same (model, messages, temperature,
-tools, response_format, seed) → cached response, no upstream call.
+cache that works for any provider — same request inputs (every parameter
+that shapes the completion, not just the prompt) → cached response, no
+upstream call.
 
 Backed by Redis when REDIS_URL is set, falls back to an in-process LRU
 otherwise so it works in single-pod docker-compose / on a laptop.
@@ -67,6 +68,41 @@ def test_cache_key_differs_on_model():
     b = cache_key(model="claude-3-5-sonnet-latest", messages=msgs,
                   temperature=0.0, tools=None, response_format=None, seed=None)
     assert a != b
+
+
+@pytest.mark.parametrize("field,other", [
+    ("max_tokens", 4096),
+    ("stop", ["END"]),
+    ("tool_choice", {"type": "function", "function": {"name": "f"}}),
+    ("top_p", 0.5),
+    ("n", 2),
+])
+def test_cache_key_differs_on_every_output_shaping_parameter(field, other):
+    """Regression: the key covered only model/messages/temperature/tools/
+    response_format/seed, so two requests differing solely in max_tokens,
+    stop or tool_choice collided — the second was served the first's
+    response (truncated, or prose where a tool call was forced). The
+    native surfaces send these on every request."""
+    from app.prompt_cache import cache_key
+
+    base = dict(
+        model="m", messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0, tools=None, response_format=None, seed=None,
+    )
+    assert cache_key(**base) != cache_key(**base, **{field: other})
+
+
+def test_cache_key_ignores_user_identifier():
+    """`user` is an abuse-monitoring hint that does not change the
+    completion; keying on it would fragment the cache per caller."""
+    from app.prompt_cache import cache_key
+
+    base = dict(
+        model="m", messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0, tools=None, response_format=None, seed=None,
+        max_tokens=64,
+    )
+    assert cache_key(**base) == cache_key(**base)
 
 
 def test_should_cache_skips_streaming_and_high_temperature():

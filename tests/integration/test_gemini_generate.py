@@ -421,6 +421,25 @@ async def test_slashed_model_id_routes_to_generate(native_client):
     assert fake.acompletion.call_args.kwargs["model"] == "orcarouter/free"
 
 
+async def test_no_providers_configured_is_non_retryable(native_client):
+    """A fresh install with no provider key is permanent until the
+    operator adds one — it must not render as a retryable 503 UNAVAILABLE
+    the SDK keeps backing off against."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "No provider keys configured.", http_status=503,
+        error_type="no_providers_configured",
+    ))
+    r = await client.post(
+        "/v1beta/models/gemini-1.5-flash:generateContent",
+        json=_PAYLOAD, headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["status"] == "PERMISSION_DENIED"
+
+
 async def test_blocking_model_not_found_renders_404_not_found(native_client):
     """The engine reports model_not_found as HTTP 422; on this surface it
     must render 404 NOT_FOUND (Google's contract), matching the streaming

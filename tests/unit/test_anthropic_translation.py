@@ -124,6 +124,48 @@ def test_assistant_tool_use_becomes_tool_calls():
     assert json.loads(tc["function"]["arguments"]) == {"city": "SF"}
 
 
+@pytest.mark.parametrize("field,value", [
+    ("temperature", 1.5),
+    ("temperature", -0.1),
+    ("top_p", 1.5),
+    ("top_k", -1),
+])
+def test_out_of_range_sampling_params_fail_validation(field, value):
+    """Out-of-range values are rejected by the upstream as a BadRequest,
+    which the engine reports as a retryable 500 api_error — bound them
+    here so the caller gets an honest 400 instead."""
+    with pytest.raises(ValidationError):
+        _req(**{field: value})
+
+
+def test_tool_result_image_rides_along_in_the_following_user_message():
+    """An OpenAI tool message can only carry text, so an image returned by
+    a tool (a screenshot, the common case) is attached to the user message
+    that follows the tool results rather than being dropped."""
+    out = to_openai_request(_req(messages=[
+        {"role": "user", "content": "look"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_1", "name": "shot", "input": {}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_1", "content": [
+                {"type": "text", "text": "captured"},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "AAAA",
+                }},
+            ]},
+        ]},
+    ]))
+    tool_msg, user_msg = out["messages"][-2], out["messages"][-1]
+    assert tool_msg == {
+        "role": "tool", "tool_call_id": "call_1", "content": "captured",
+    }
+    assert user_msg["role"] == "user"
+    assert user_msg["content"] == [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+
+
 def test_tool_result_splits_into_tool_message_then_user_message():
     out = to_openai_request(_req(messages=[
         {"role": "user", "content": "weather?"},
