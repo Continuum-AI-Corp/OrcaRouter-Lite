@@ -72,6 +72,20 @@ async def guard_native_stream(gen, render_error, *, event: str):
             await aclose_quietly(gen)
 
 
+def check_model_allowlist(model: str, kc: KeyContext) -> None:
+    """The same first check execute_chat applies to every completion: a key
+    with an allowlist may not touch models outside it. The count-token
+    endpoints never reach the engine, so they enforce it themselves —
+    otherwise a restricted key could probe denied models through them.
+    "auto" is exempt exactly as in the engine (it is never a literal in an
+    allowlist; the engine filters the resolved candidates instead)."""
+    if model != "auto" and kc.model_allowlist is not None and model not in kc.model_allowlist:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{model}' is not allowed for this API key",
+        )
+
+
 async def parse_native_body(request: Request, model_cls: type[BaseModel]) -> BaseModel:
     """Read + validate the native request body manually so validation
     failures render in the native envelope instead of the app-wide 422."""
@@ -97,7 +111,10 @@ async def anthropic_messages(
         areq = await parse_native_body(request, proto.AnthropicMessagesRequest)
         translated = proto.to_openai_request(areq)
         openai_body = ChatCompletionRequest.model_validate(translated)
-        inner = await execute_chat(openai_body, kc, db)
+        # log_status: the RequestLog row must record the status this
+        # surface actually delivers (404 for model_not_found, 403 for the
+        # operator-side conditions), not the engine's generic 422.
+        inner = await execute_chat(openai_body, kc, db, log_status=proto.native_status)
     except HTTPException as exc:
         # native_status: the engine relays its translated error type in a
         # header (e.g. model_not_found is 422 there, 404 not_found_error
@@ -165,6 +182,7 @@ async def anthropic_count_tokens(
         # Same schema as /v1/messages minus max_tokens/stream requirements.
         raw = {**raw, "max_tokens": raw.get("max_tokens") or 1}
         areq = proto.AnthropicMessagesRequest.model_validate(raw)
+        check_model_allowlist(areq.model, kc)
         openai_body = proto.to_openai_request(areq)
         return JSONResponse({"input_tokens": _count_input_tokens(openai_body)})
     except HTTPException as exc:

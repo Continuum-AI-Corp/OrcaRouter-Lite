@@ -11,9 +11,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 @asynccontextmanager
@@ -76,8 +77,34 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    @app.exception_handler(HTTPException)
-    async def http_exc_handler(_req, exc: HTTPException):
+    def _native_error(request, status: int, message: str) -> JSONResponse | None:
+        """The native surfaces promise their own error envelope on every
+        non-200. Failures that never reach a route body — an unknown
+        /v1beta path, a 405 on GET /v1/messages, a validation error on a
+        native route — land in these app-wide handlers, so they must speak
+        the caller's protocol too (same signals the auth middleware uses)."""
+        from app.middleware.auth import protocol_for_scope
+
+        protocol = protocol_for_scope(request.scope)
+        if protocol == "anthropic":
+            from app.protocols import anthropic as proto
+
+            return proto.error_response(status, message)
+        if protocol == "gemini":
+            from app.protocols import gemini as proto
+
+            return proto.error_response(status, message)
+        return None
+
+    # Registered on Starlette's base class: routing-level 404/405 are raised
+    # as starlette.exceptions.HTTPException, which a handler keyed on the
+    # FastAPI subclass never sees (they would fall to Starlette's bare
+    # {"detail": ...} body — neither envelope).
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exc_handler(request, exc: StarletteHTTPException):
+        native = _native_error(request, exc.status_code, str(exc.detail))
+        if native is not None:
+            return native
         type_map = {
             401: "auth_error",
             403: "forbidden",
@@ -97,17 +124,23 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def val_exc_handler(_req, exc: RequestValidationError):
+    async def val_exc_handler(request, exc: RequestValidationError):
         msg = "; ".join(
             f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
         )
+        native = _native_error(request, 422, msg)
+        if native is not None:
+            return native
         return JSONResponse(
             status_code=422,
             content={"error": {"message": msg, "type": "validation_error"}},
         )
 
     @app.exception_handler(Exception)
-    async def unhandled(_req, exc: Exception):
+    async def unhandled(request, exc: Exception):
+        native = _native_error(request, 500, "Internal server error")
+        if native is not None:
+            return native
         return JSONResponse(
             status_code=500,
             content={

@@ -53,7 +53,11 @@ def _is_static(path: str) -> bool:
 def _get_header(headers: list[tuple[bytes, bytes]], name: bytes) -> str:
     for k, v in headers:
         if k == name:
-            return v.decode()
+            # Lenient decode: a raw non-UTF-8 byte in a credential header is
+            # an unauthenticated, remotely reachable input — it must end as
+            # a clean 401 for a key that can never validate, not as an
+            # unhandled 500 out of the middleware.
+            return v.decode("utf-8", "replace")
     return ""
 
 
@@ -97,7 +101,7 @@ _ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error"}
 _GOOGLE_STATUSES = {401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 503: "UNAVAILABLE"}
 
 
-def _protocol_for(scope) -> str:
+def protocol_for_scope(scope) -> str:
     """Which error envelope the caller's SDK parses: "anthropic" for the
     /v1/messages surface AND for any request carrying `anthropic-version`
     (the Anthropic SDK / Claude Code always send it — that is how
@@ -135,7 +139,7 @@ def _error_payload(protocol: str, status: int, message: str, error_type: str) ->
 
 
 async def _send_error(send, scope, status: int, message: str, error_type: str) -> None:
-    body = _error_payload(_protocol_for(scope), status, message, error_type)
+    body = _error_payload(protocol_for_scope(scope), status, message, error_type)
     await send({
         "type": "http.response.start",
         "status": status,

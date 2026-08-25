@@ -33,6 +33,7 @@ from app.protocols.sse import OpenAIFrameStream, aclose_quietly
 from app.routes.anthropic_compat import (
     _count_input_tokens,
     _validation_message,
+    check_model_allowlist,
     forwarded_headers,
     guard_native_stream,
     parse_native_body,
@@ -100,14 +101,16 @@ async def gemini_generate(
     alt_sse = request.query_params.get("alt", "").lower() == "sse"
 
     if action == "countTokens":
-        return await _count_tokens(model, request)
+        return await _count_tokens(model, request, kc)
 
     try:
         greq = await parse_native_body(request, proto.GeminiGenerateRequest)
         openai_body = ChatCompletionRequest.model_validate(
             proto.to_openai_request(greq, model=model, stream=stream)
         )
-        inner = await execute_chat(openai_body, kc, db)
+        # log_status: RequestLog records the status this surface delivers
+        # (404 NOT_FOUND / 403 PERMISSION_DENIED), not the engine's 422.
+        inner = await execute_chat(openai_body, kc, db, log_status=proto.native_status)
     except HTTPException as exc:
         # native_status: the engine relays its translated error type in a
         # header (e.g. model_not_found is 422 there, 404 NOT_FOUND here).
@@ -178,7 +181,7 @@ async def gemini_generate(
     return JSONResponse(collected, headers=forwarded_headers(inner))
 
 
-async def _count_tokens(model: str, request: Request) -> JSONResponse:
+async def _count_tokens(model: str, request: Request, kc: KeyContext) -> JSONResponse:
     """POST /v1beta/models/{model}:countTokens — the google-genai SDK calls
     this for context tracking in agentic loops (client.models.count_tokens),
     exactly as Claude Code calls /v1/messages/count_tokens. The body is
@@ -186,6 +189,7 @@ async def _count_tokens(model: str, request: Request) -> JSONResponse:
     {...}} form; an estimate is enough (same counter as the Anthropic
     sibling)."""
     try:
+        check_model_allowlist(model, kc)
         try:
             raw = await request.json()
         except Exception:

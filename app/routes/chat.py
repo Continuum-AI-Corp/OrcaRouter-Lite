@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterable
+from collections.abc import AsyncGenerator, AsyncIterable, Callable
 
 import anyio
 import structlog
@@ -266,6 +266,8 @@ async def execute_chat(
     body: ChatCompletionRequest,
     kc: KeyContext,
     db: AsyncSession,
+    *,
+    log_status: Callable[[int, str | None], int] | None = None,
 ) -> JSONResponse | StreamingResponse:
     """Protocol-agnostic chat engine — the full pipeline behind
     POST /v1/chat/completions (allowlist → auto-resolution → prompt cache →
@@ -275,6 +277,11 @@ async def execute_chat(
     Returns OpenAI-wire-format results: JSONResponse for blocking requests,
     StreamingResponse emitting `data: {json}\\n\\n` frames with a terminal
     `data: [DONE]` for streaming. Raises HTTPException on pre-stream errors.
+
+    `log_status(engine_status, error_type)` lets a native-protocol caller
+    record in the RequestLog the status IT will deliver for a blocking
+    upstream failure (e.g. 404 for model_not_found where this engine says
+    422), so the persisted outcome matches what went over the wire.
     """
     # Capture client intent before any mutation so the request log and the
     # `x-orca-requested-model` header always reflect what the user asked for,
@@ -872,6 +879,8 @@ async def execute_chat(
         logger.warning("chat_completion_upstream_error", error=str(exc))
         raise HTTPException(status_code=503, detail=f"Upstream provider error: {exc}") from exc
     finally:
+        if log_status is not None and error_type is not None:
+            status_code = log_status(status_code, error_type)
         log = await _build_log_row(
             body=body, kc=kc, response=response if isinstance(response, dict) else {},
             status_code=status_code, error_type=error_type,

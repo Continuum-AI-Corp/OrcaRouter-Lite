@@ -271,8 +271,19 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
                 "image_url": {"url": f"data:{mime};base64,{blob.get('data', '')}"},
             })
         elif "functionCall" in part or "function_call" in part:
+            if not is_model:
+                # Only a model turn can carry calls; in a user turn the
+                # call would have nowhere to go and the turn would vanish
+                # from the upstream conversation without a trace — a wrong
+                # answer, not a rejection. Reject like fileData/unknown keys.
+                raise _invalid(
+                    "functionCall parts are only valid in a role:'model' content; "
+                    "return results as functionResponse parts"
+                )
             fc = _alias(part, "functionCall", "function_call") or {}
-            name = fc.get("name", "")
+            name = fc.get("name")
+            if not isinstance(name, str) or not name:
+                raise _invalid("functionCall part requires a non-empty string 'name'")
             tool_calls.append({
                 "id": ids.new_call(name),
                 "type": "function",

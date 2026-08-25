@@ -162,11 +162,16 @@ def _translate_assistant_message(blocks: list[dict]) -> dict:
         if btype == "text":
             texts.append(require_text(block.get("text"), field="messages[].content[].text"))
         elif btype == "tool_use":
+            name = block.get("name")
+            if not isinstance(name, str) or not name:
+                # The upstream rejects an empty function name with a 400
+                # the engine would report as a retryable 503 — fail here.
+                raise _invalid("tool_use block requires a non-empty string 'name'")
             tool_calls.append({
                 "id": block.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
                 "type": "function",
                 "function": {
-                    "name": block.get("name", ""),
+                    "name": name,
                     "arguments": json.dumps(block.get("input") or {}),
                 },
             })
@@ -198,10 +203,16 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
     for block in blocks:
         btype = block.get("type")
         if btype == "tool_result":
+            tool_use_id = block.get("tool_use_id")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                # Same rule as tool definitions: an empty/missing id reaches
+                # the upstream as a malformed tool message and comes back
+                # as a retryable 503 for a request that can never succeed.
+                raise _invalid("tool_result block requires a non-empty string 'tool_use_id'")
             text, images = _split_tool_result_content(block.get("content"))
             tool_messages.append({
                 "role": "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
+                "tool_call_id": tool_use_id,
                 "content": text,
             })
             parts.extend(images)
