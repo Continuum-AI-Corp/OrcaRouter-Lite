@@ -227,7 +227,20 @@ class _CallIdAllocator:
 
 
 def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
-    role = content.get("role") or "user"
+    raw_parts = content.get("parts") or []
+    if isinstance(raw_parts, dict):
+        raw_parts = [raw_parts]
+
+    role = content.get("role")
+    if not role:
+        # `role` is optional in the REST API. A turn carrying functionCall
+        # parts can only be the model's, so infer that instead of reading
+        # it as a user turn and rejecting the call below — the google-genai
+        # SDK always sets the role, hand-rolled history replay may not.
+        role = "model" if any(
+            isinstance(p, dict) and ("functionCall" in p or "function_call" in p)
+            for p in raw_parts
+        ) else "user"
     if role not in ("user", "model"):
         raise _invalid(f"Unsupported content role: {role!r}")
     is_model = role == "model"
@@ -236,10 +249,6 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
     parts_out: list[dict] = []
     tool_calls: list[dict] = []
     tool_messages: list[dict] = []
-
-    raw_parts = content.get("parts") or []
-    if isinstance(raw_parts, dict):
-        raw_parts = [raw_parts]
     for part in raw_parts:
         if not isinstance(part, dict):
             raise _invalid("Content part must be an object")
@@ -264,6 +273,16 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
             texts.append(text)
             parts_out.append({"type": "text", "text": text})
         elif "inlineData" in part or "inline_data" in part:
+            if is_model:
+                # An OpenAI assistant message carries text and tool calls,
+                # nothing else, so a model-turn image has no representation.
+                # Reject rather than drop it: the turn would otherwise reach
+                # the upstream missing content the caller sent, and the
+                # model would answer a history that never existed.
+                raise _invalid(
+                    "inlineData parts in a role:'model' content are not supported "
+                    "by this endpoint"
+                )
             blob = _alias(part, "inlineData", "inline_data") or {}
             mime = _alias(blob, "mimeType", "mime_type") or "application/octet-stream"
             parts_out.append({
@@ -290,6 +309,15 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
                 "function": {"name": name, "arguments": json.dumps(fc.get("args") or {})},
             })
         elif "functionResponse" in part or "function_response" in part:
+            if is_model:
+                # Mirror of the functionCall rule: a result belongs to the
+                # caller's turn. In a model turn it would be discarded with
+                # the tool messages AND consume a pending call id, so a
+                # later genuine response for the same name would pair to
+                # the wrong call.
+                raise _invalid(
+                    "functionResponse parts are only valid in a role:'user' content"
+                )
             fr = _alias(part, "functionResponse", "function_response") or {}
             name = fr.get("name", "")
             tool_messages.append({
@@ -547,6 +575,8 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
     finish: str | None = None
     usage: dict = {}
     tool_buf: dict[int, dict] = {}
+    flushed_names: dict[int, str] = {}  # index → name, for already-emitted calls
+    failed = False
 
     def _base(extra: dict) -> dict:
         return {"modelVersion": model, "responseId": resp_id, **extra}
@@ -564,8 +594,10 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
         ]
         if not ready:
             return None
-        for idx, _ in ready:
+        for idx, slot in ready:
             del tool_buf[idx]
+            if only_complete:
+                flushed_names[idx] = slot["name"]
         return _base({
             "candidates": [{
                 "content": {
@@ -636,7 +668,19 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
                 })
 
             for tcd in delta.get("tool_calls") or []:
-                slot = tool_buf.setdefault(tcd.get("index", 0), {"name": "", "args": ""})
+                idx = tcd.get("index", 0)
+                if idx not in tool_buf and idx in flushed_names:
+                    # More fragments for a call already emitted as a
+                    # complete part (its arguments parsed at that point and
+                    # text followed). The part cannot be amended, so carry
+                    # the name over to the remainder and log it.
+                    logger.warning(
+                        "gemini_tool_fragments_after_flush",
+                        index=idx, name=flushed_names[idx],
+                    )
+                slot = tool_buf.setdefault(
+                    idx, {"name": flushed_names.get(idx, ""), "args": ""}
+                )
                 fn = tcd.get("function") or {}
                 if fn.get("name"):
                     slot["name"] = fn["name"]
@@ -659,6 +703,11 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
             }],
             "usageMetadata": _usage_metadata(usage),
         })
+    except Exception:
+        # See the Anthropic twin: an adapter fault must reach the engine as
+        # one, not as a close it would file as a client disconnect.
+        failed = True
+        raise
     finally:
         # Last, deliberately: this drains the engine (running its
         # RequestLog commit), so the final chunk above always reaches the
@@ -667,7 +716,7 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
         # lands here as task-group cancellation, and an unshielded await
         # would abort the forwarding before it reaches the engine.
         with anyio.CancelScope(shield=True):
-            await finish_quietly(frames)
+            await finish_quietly(frames, failed=failed)
 
 
 def stream_error_chunk(message: str) -> dict:

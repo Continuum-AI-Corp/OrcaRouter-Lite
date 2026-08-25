@@ -103,15 +103,26 @@ _GOOGLE_STATUSES = {401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 503: "UNAV
 
 def protocol_for_scope(scope) -> str:
     """Which error envelope the caller's SDK parses: "anthropic" for the
-    /v1/messages surface AND for any request carrying `anthropic-version`
-    (the Anthropic SDK / Claude Code always send it — that is how
-    GET /v1/models serves them the Anthropic listing, so its auth failures
-    must speak the same envelope), "gemini" for /v1beta/, else "openai"."""
+    /v1/messages surface, "gemini" for /v1beta/, else "openai".
+
+    A request carrying `anthropic-version` (the Anthropic SDK and Claude
+    Code always send it) also gets the Anthropic envelope — that is how
+    GET /v1/models serves them the Anthropic listing, so its failures must
+    speak the same language. The header signal is scoped to /v1 paths
+    OTHER than /v1/chat/completions: an OpenAI-surface caller that happens
+    to send the header must keep the OpenAI envelope and its statuses, and
+    the dashboard/admin routes under /api are never rewritten."""
     path = scope.get("path", "")
-    if path.startswith("/v1/messages") or _get_header(scope.get("headers", []), b"anthropic-version"):
+    if path.startswith("/v1/messages"):
         return "anthropic"
     if path.startswith("/v1beta/"):
         return "gemini"
+    if (
+        path.startswith("/v1/")
+        and not path.startswith("/v1/chat/completions")
+        and _get_header(scope.get("headers", []), b"anthropic-version")
+    ):
+        return "anthropic"
     return "openai"
 
 

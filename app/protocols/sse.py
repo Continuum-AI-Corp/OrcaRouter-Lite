@@ -31,14 +31,54 @@ async def aclose_quietly(obj) -> None:
         pass
 
 
-async def finish_quietly(source) -> None:
+class AdapterError(Exception):
+    """Thrown INTO the engine's SSE generator when the protocol adapter
+    itself failed mid-stream.
+
+    A plain `aclose()` is indistinguishable from a client disconnect at the
+    engine's suspended yield, so an adapter bug used to be recorded as
+    499/client_disconnect — the user blamed for our own fault, and the
+    regression invisible in analytics. The engine recognises this
+    exception and logs the server-side failure instead.
+    """
+
+
+async def abort_quietly(source) -> None:
+    """Signal the frame source that WE failed, not the client, then close.
+
+    Falls back to a plain close for a source that cannot be thrown into
+    (a bare async iterable in the unit tests).
+    """
+    athrow = getattr(source, "athrow", None)
+    if athrow is not None:
+        try:
+            await athrow(AdapterError())
+        except (StopAsyncIteration, AdapterError, RuntimeError):
+            pass
+        except Exception:
+            pass
+    await aclose_quietly(source)
+
+
+async def finish_quietly(source, *, failed: bool = False) -> None:
     """Hand end-of-stream cleanup back to the frame source.
 
     `OpenAIFrameStream.finish()` when it is one (drain-or-close, see that
     class), a plain close for any other async iterable — which keeps the
     protocol transformers usable with a bare async generator of frame
     dicts, the property that lets them be unit-tested without an app.
+
+    `failed=True` means the transformer is unwinding on its OWN exception:
+    the source is aborted rather than closed, so the engine records an
+    adapter fault instead of a client disconnect.
     """
+    if failed:
+        abort = getattr(source, "abort", None)
+        if abort is not None:
+            await abort()
+            return
+        await abort_quietly(source)
+        return
     finish = getattr(source, "finish", None)
     if finish is not None:
         await finish()
@@ -107,6 +147,14 @@ class OpenAIFrameStream:
         # Source ended without a sentinel: the engine already ran to
         # completion, so there is nothing left to drain or close.
         self._done = True
+
+    async def abort(self) -> None:
+        """The adapter above us failed: tell the engine that, rather than
+        letting a plain close read as a client disconnect."""
+        if self._finished:
+            return
+        self._finished = True
+        await abort_quietly(self._source)
 
     async def finish(self) -> None:
         if self._finished:

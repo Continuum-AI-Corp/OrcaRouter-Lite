@@ -28,6 +28,7 @@ from app.auto_routing import (
 )
 from app.config import get_settings
 from app.deps import get_db, get_key_context
+from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
@@ -789,6 +790,25 @@ async def execute_chat(
                         pass
                 # Re-raise so asyncio/Starlette see proper cancel propagation.
                 raise
+            except AdapterError:
+                # The protocol adapter downstream of us failed and threw
+                # this in rather than closing us: our own fault, not the
+                # caller's. Without this branch the close would be
+                # indistinguishable from a disconnect and every adapter bug
+                # would be filed as 499/client_disconnect.
+                error_type = "adapter_error"
+                status_code = 500
+                logger.warning(
+                    "chat_completion_stream_adapter_error", served_model=agg_model,
+                )
+                aclose = getattr(stream_obj, "aclose", None)
+                with anyio.CancelScope(shield=True):
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            pass
+                return
             except Exception as exc:
                 # Translate the underlying LiteLLM exception so the request
                 # log records the meaningful error_type (rate_limit_error,

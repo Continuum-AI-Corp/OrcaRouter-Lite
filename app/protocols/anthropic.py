@@ -512,8 +512,10 @@ async def stream_events(
     text_open = False
     block_index = -1
     tool_buf: dict[int, dict] = {}  # tool_calls[].index → {id, name, args}
+    flushed_names: dict[int, str] = {}  # index → name, for already-closed blocks
     stop_reason: str | None = None
     usage: dict = {}
+    failed = False
 
     def _start_event(frame: dict) -> str:
         return _ev("message_start", {
@@ -547,6 +549,8 @@ async def stream_events(
             if only_complete and not _args_complete(slot["args"]):
                 continue
             del tool_buf[idx]
+            if only_complete:
+                flushed_names[idx] = slot["name"]
             block_index += 1
             out.append(_ev("content_block_start", {
                 "type": "content_block_start",
@@ -631,8 +635,19 @@ async def stream_events(
                 yield _block_stop()
                 text_open = False
             for tcd in tool_deltas:
+                idx = tcd.get("index", 0)
+                if idx not in tool_buf and idx in flushed_names:
+                    # More fragments for a call we already flushed (its
+                    # arguments happened to parse at that point and text
+                    # followed). We cannot reopen a closed block, so the
+                    # remainder becomes its own block — carry the name over
+                    # so it is at least identifiable, and say so in the log.
+                    logger.warning(
+                        "anthropic_tool_fragments_after_flush",
+                        index=idx, name=flushed_names[idx],
+                    )
                 slot = tool_buf.setdefault(
-                    tcd.get("index", 0), {"id": "", "name": "", "args": ""}
+                    idx, {"id": "", "name": flushed_names.get(idx, ""), "args": ""}
                 )
                 if tcd.get("id"):
                     slot["id"] = tcd["id"]
@@ -667,6 +682,12 @@ async def stream_events(
             "usage": delta_usage,
         })
         yield _ev("message_stop", {"type": "message_stop"})
+    except Exception:
+        # Our own fault, not the client's: mark it so the cleanup below
+        # aborts the engine (503/adapter_error) instead of closing it,
+        # which the engine cannot tell apart from a client disconnect.
+        failed = True
+        raise
     finally:
         # Last, deliberately: this drains the engine to completion (or
         # forwards a close), which runs its RequestLog commit. Doing it
@@ -681,7 +702,7 @@ async def stream_events(
         # writeback would wait for GC finalization (or never run). Same
         # reason the engine shields its own cleanup.
         with anyio.CancelScope(shield=True):
-            await finish_quietly(frames)
+            await finish_quietly(frames, failed=failed)
 
 
 def stream_error_event(message: str) -> str:
