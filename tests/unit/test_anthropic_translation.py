@@ -453,6 +453,9 @@ def test_non_string_text_values_render_native_400(payload):
 
 
 def test_null_text_values_are_treated_as_empty():
+    """A null/empty text block carries nothing: it is left out rather than
+    emitted as an empty part (which upstreams reject, coming back as a
+    retryable 5xx). Here the turn still has real text, so it survives."""
     out = to_openai_request(_req(
         system=[{"type": "text", "text": None}],
         messages=[{"role": "user", "content": [
@@ -460,7 +463,42 @@ def test_null_text_values_are_treated_as_empty():
         ]}],
     ))
     # an all-empty system yields no system message at all
-    assert out["messages"][0]["role"] == "user"
-    assert out["messages"][0]["content"] == [
-        {"type": "text", "text": ""}, {"type": "text", "text": "hi"},
-    ]
+    assert out["messages"] == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.parametrize("content", [
+    "",
+    [{"type": "text", "text": ""}],
+    [{"type": "text", "text": None}],
+    [{"type": "text", "text": ""}, {"type": "text", "text": ""}],
+])
+def test_user_turn_with_only_empty_text_is_rejected(content):
+    """`{"role": "user", "content": ""}` reaching the upstream is a
+    BadRequest there, which the engine reports as a retryable 5xx for a
+    request that can never succeed. The real API rejects it as a 400."""
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(messages=[{"role": "user", "content": content}]))
+    assert exc.value.status_code == 400
+
+
+def test_empty_text_alongside_a_tool_result_leaves_just_the_tool_message():
+    out = to_openai_request(_req(messages=[
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "f", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "done"},
+            {"type": "text", "text": ""},
+        ]},
+    ]))
+    assert out["messages"][-1] == {"role": "tool", "tool_call_id": "t1", "content": "done"}
+
+
+def test_empty_assistant_content_is_still_preserved():
+    """Only USER turns are rejected — a thinking-only assistant turn keeps
+    its empty content so the turn is not lost from the history."""
+    out = to_openai_request(_req(messages=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": ""},
+    ]))
+    assert out["messages"][-1] == {"role": "assistant", "content": ""}

@@ -217,10 +217,14 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
             })
             parts.extend(images)
         elif btype == "text":
-            parts.append({
-                "type": "text",
-                "text": require_text(block.get("text"), field="messages[].content[].text"),
-            })
+            text = require_text(block.get("text"), field="messages[].content[].text")
+            if text:
+                # An empty text block carries nothing. Keeping it would emit
+                # `{"role": "user", "content": ""}`, which upstreams reject
+                # as a BadRequest — reported back as a retryable 5xx for a
+                # request that can never succeed. A turn left with no
+                # content at all is rejected below, as `content: []` is.
+                parts.append({"type": "text", "text": text})
         elif btype == "image":
             parts.append(_image_part(block))
         elif btype in _DROPPED_BLOCK_TYPES:
@@ -258,6 +262,12 @@ def _translate_message(m: AnthropicMessage) -> list[dict]:
     if m.role not in ("user", "assistant"):
         raise _invalid(f"Unsupported message role: {m.role!r}")
     if isinstance(m.content, str):
+        if m.role == "user" and not m.content:
+            # Same rule as the block form below: the real API rejects empty
+            # user content, and forwarding it earns a retryable 5xx from the
+            # upstream. (An empty ASSISTANT turn is deliberately kept — see
+            # _translate_assistant_message.)
+            raise _invalid("user message 'content' must be non-empty")
         return [{"role": m.role, "content": m.content}]
     if m.role == "assistant":
         return [_translate_assistant_message(m.content)]
@@ -478,6 +488,13 @@ _ENGINE_ERROR_STATUS = {
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
     "no_capable_provider": 403,
+    # A provider timeout is transient by definition. The Anthropic taxonomy
+    # has no 503, and the generic 5xx collapse below would render it as a
+    # 500 api_error indistinguishable from a fault in THIS server — so it
+    # takes the taxonomy's own "busy, come back" status, which SDKs retry.
+    # `upstream_error` deliberately stays generic (500 api_error): it is the
+    # bucket for failures we could not classify at all.
+    "upstream_timeout": 529,
 }
 
 

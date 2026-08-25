@@ -62,3 +62,8 @@ class ProviderDeployment:
     tpm: int | None = None
     custom_llm_provider: str | None = None
     extra_headers: dict | None = None
+    # LiteLLM Router keys cooldown/health state by deployment id, which it
+    # derives from the entry (model_name included). Two entries that are
+    # really the SAME upstream under two names (the hosted wire-id aliases)
+    # must share one id, or each name probes a dead upstream separately.
+    deployment_id: str | None = None

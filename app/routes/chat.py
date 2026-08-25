@@ -520,6 +520,32 @@ async def execute_chat(
         existing_so = completion_kwargs.get("stream_options") or {}
         if "include_usage" not in existing_so:
             completion_kwargs["stream_options"] = {**existing_so, "include_usage": True}
+
+        async def _log_pre_stream_failure(status: int, err_type: str | None) -> None:
+            """Persist a row for a stream that failed BEFORE its first chunk.
+
+            The mid-stream path logs from `_finalize` and the blocking path
+            from its `finally`, but this failure happens between them: the
+            client is rendered a real 404/429/403/503 and nothing recorded
+            it, so the same upstream failure was accounted for when
+            stream=false and vanished when stream=true.
+            """
+            if log_status is not None and err_type is not None:
+                status = log_status(status, err_type)
+            log = await _build_log_row(
+                body=body, kc=kc, response={},
+                status_code=status, error_type=err_type,
+                started_perf=started_perf,
+                strategy=strategy,
+                requested_model=requested_model,
+                actual_resolved=resolved_model,
+            )
+            db.add(log)
+            try:
+                await db.commit()
+            except Exception as commit_err:
+                logger.warning("request_log_commit_failed", error=str(commit_err))
+
         try:
             stream_obj = await client.acompletion(
                 **completion_kwargs,
@@ -530,6 +556,7 @@ async def execute_chat(
             raise
         except UpstreamProviderError as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
+            await _log_pre_stream_failure(exc.http_status, exc.error_type)
             raise HTTPException(
                 status_code=exc.http_status,
                 detail=f"Upstream provider error: {exc}",
@@ -540,6 +567,7 @@ async def execute_chat(
             ) from exc
         except Exception as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
+            await _log_pre_stream_failure(503, type(exc).__name__)
             raise HTTPException(status_code=503, detail=f"Upstream provider error: {exc}") from exc
 
         async def sse() -> AsyncGenerator[str, None]:

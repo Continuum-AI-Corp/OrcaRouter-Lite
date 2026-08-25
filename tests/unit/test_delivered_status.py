@@ -20,9 +20,11 @@ from app.protocols import gemini as gemini_proto
     (422, "no_capable_provider", 403),
     (429, "rate_limit_error", 429),
     (422, "context_length_exceeded", 400),
+    # transient upstream failure → the taxonomy's "busy" status (kept by
+    # the envelope, which only collapses the OTHER 5xx)
+    (503, "upstream_timeout", 529),
     # unmapped generic failures: the envelope collapses them to 500
     (503, "upstream_error", 500),
-    (503, "upstream_timeout", 500),
     (503, "something_unknown", 500),
     (422, None, 400),
     # not an error the envelope rewrites

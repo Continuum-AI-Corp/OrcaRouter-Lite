@@ -272,7 +272,9 @@ async def test_engine_error_frame_becomes_error_event():
     # OUR provider credential — permanent, must not present as retryable
     # (SDKs back off and retry api_error/500, but never a 4xx type).
     ("upstream_auth_error", "permission_error"),
-    ("upstream_timeout", "api_error"),
+    # transient by definition — the taxonomy's "busy" status, not a generic
+    # api_error the caller cannot tell apart from a fault in this server
+    ("upstream_timeout", "overloaded_error"),
     ("something_unknown", "api_error"),
     (None, "api_error"),
 ])

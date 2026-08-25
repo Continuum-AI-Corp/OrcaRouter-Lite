@@ -93,6 +93,12 @@ def build_deployments(
                         provider=HOSTED_PROVIDER_NAME,
                         custom_llm_provider="openai",
                         extra_headers={"X-OrcaRouter-beta-usd": "response"},
+                        # Both spellings are ONE upstream. LiteLLM derives a
+                        # deployment id per entry, so without pinning it the
+                        # two names carry independent cooldown/allowed-fails
+                        # state: a dead upstream would be probed (and paid
+                        # for) once per alias before each cooled down.
+                        deployment_id=f"hosted::{wire_id}",
                     )
                 )
 

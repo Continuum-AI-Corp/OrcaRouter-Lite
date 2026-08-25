@@ -124,6 +124,11 @@ class OrcaLiteLLMClient:
             if d.tpm:
                 params["tpm"] = d.tpm
             entry: dict = {"model_name": d.model_name, "litellm_params": params}
+            if d.deployment_id:
+                # Pins the Router's deployment id so aliases of one upstream
+                # share cooldown / allowed-fails state instead of each
+                # spelling failing its own way into a cooldown.
+                entry["model_info"] = {"id": d.deployment_id}
             model_list.append(entry)
 
         if not model_list:
