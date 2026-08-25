@@ -236,6 +236,14 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
             out.append({"role": "user", "content": parts[0]["text"]})
         else:
             out.append({"role": "user", "content": parts})
+    if not out:
+        # `content: []`, or a turn whose every block was dropped metadata.
+        # Returning [] would delete the turn from the conversation sent
+        # upstream — the model would answer a history the caller never
+        # sent, with no signal. The real API rejects empty content, so
+        # this is a 400 rather than a synthesized empty turn (which
+        # Anthropic upstreams reject in turn, as a retryable 5xx).
+        raise _invalid("user message content produced no content; 'content' must be non-empty")
     return out
 
 
@@ -707,13 +715,31 @@ def native_status(status: int, error_type: str | None) -> int:
     return _ENGINE_ERROR_STATUS.get(error_type or "", status)
 
 
+def _envelope_status(status: int) -> int:
+    """The status the Anthropic envelope can actually carry: the API has no
+    422 (bad requests are 400) and generic 5xx upstream failures collapse
+    to 500."""
+    if status == 422:
+        return 400
+    if status >= 500 and status != 529:
+        return 500
+    return status
+
+
+def delivered_status(status: int, error_type: str | None) -> int:
+    """The status this surface really puts on the wire for an engine
+    failure: native_status's remapping followed by the envelope's own
+    collapsing. Handed to `execute_chat(log_status=...)` so the RequestLog
+    row records what the client received — for the mapped types (404/403/
+    429/400) native_status alone suffices, but an unmapped generic 5xx is
+    delivered as 500 while the engine calls it 503."""
+    return _envelope_status(native_status(status, error_type))
+
+
 def error_response(status: int, message: str) -> JSONResponse:
     """Render an error in the Anthropic envelope. The API has no 422 (bad
     requests are 400) and we collapse 5xx upstream failures to 500."""
-    if status == 422:
-        status = 400
-    if status >= 500 and status != 529:
-        status = 500
+    status = _envelope_status(status)
     return JSONResponse(
         status_code=status,
         content={

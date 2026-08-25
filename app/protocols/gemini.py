@@ -321,6 +321,12 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
             out_messages.append({"role": "user", "content": parts_out[0]["text"]})
         else:
             out_messages.append({"role": "user", "content": parts_out})
+    if not out_messages:
+        # Same rule as the Anthropic sibling: an empty `parts` (or a turn
+        # of nothing but dropped thought metadata) would vanish from the
+        # conversation sent upstream, changing the model's input with no
+        # signal to the caller. Reject it instead.
+        raise _invalid("user content produced no parts; 'parts' must be non-empty")
     return out_messages
 
 
@@ -691,6 +697,17 @@ def native_status(status: int, error_type: str | None) -> int:
     NOT_FOUND. Derived from _STREAM_ERROR_TYPE_TO_CODE (rather than a
     hand-kept mirror) so the stream and blocking paths cannot drift."""
     return _STREAM_ERROR_TYPE_TO_CODE.get(error_type, status)
+
+
+def delivered_status(status: int, error_type: str | None) -> int:
+    """The status this surface really puts on the wire for an engine
+    failure: native_status's remapping plus the envelope's 422→400
+    collapse. Handed to `execute_chat(log_status=...)` so the RequestLog
+    row records what the client received — the aggregate (non-alt=sse)
+    streaming path renders a genuine 404/429/403 from the error chunk,
+    while the engine's own status for that failure is a generic 503."""
+    status = native_status(status, error_type)
+    return 400 if status == 422 else status
 
 
 def error_response(status: int, message: str) -> JSONResponse:

@@ -109,8 +109,10 @@ async def gemini_generate(
             proto.to_openai_request(greq, model=model, stream=stream)
         )
         # log_status: RequestLog records the status this surface delivers
-        # (404 NOT_FOUND / 403 PERMISSION_DENIED), not the engine's 422.
-        inner = await execute_chat(openai_body, kc, db, log_status=proto.native_status)
+        # (404 NOT_FOUND / 403 PERMISSION_DENIED), not the engine's 422 —
+        # on the aggregate streaming path that mapping is what the client
+        # actually receives, since nothing has been sent when it fails.
+        inner = await execute_chat(openai_body, kc, db, log_status=proto.delivered_status)
     except HTTPException as exc:
         # native_status: the engine relays its translated error type in a
         # header (e.g. model_not_found is 422 there, 404 NOT_FOUND here).

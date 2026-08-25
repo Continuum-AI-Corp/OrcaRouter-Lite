@@ -279,9 +279,10 @@ async def execute_chat(
     `data: [DONE]` for streaming. Raises HTTPException on pre-stream errors.
 
     `log_status(engine_status, error_type)` lets a native-protocol caller
-    record in the RequestLog the status IT will deliver for a blocking
-    upstream failure (e.g. 404 for model_not_found where this engine says
-    422), so the persisted outcome matches what went over the wire.
+    record in the RequestLog the status IT will deliver for an upstream
+    failure (e.g. 404 for model_not_found where this engine says 422), on
+    both the blocking and the streaming path, so the persisted outcome
+    matches what went over the wire.
     """
     # Capture client intent before any mutation so the request log and the
     # `x-orca-requested-model` header always reflect what the user asked for,
@@ -600,9 +601,18 @@ async def execute_chat(
                 # because an object left over from a failed flush carries
                 # session state that makes a second session treat it as
                 # an UPDATE, not an INSERT.)
+                # Same correction the blocking path applies: on a native
+                # surface the delivered status differs from the engine's
+                # generic one (the Gemini aggregate stream renders a real
+                # 404/429/403 from the error chunk; the SSE surfaces report
+                # the same class in their in-band error frame), so the row
+                # must not say 503 for a response the client saw as 404.
+                row_status = status_code
+                if log_status is not None and error_type is not None:
+                    row_status = log_status(status_code, error_type)
                 template = await _build_log_row(
                     body=body, kc=kc, response=synthetic,
-                    status_code=status_code, error_type=error_type,
+                    status_code=row_status, error_type=error_type,
                     started_perf=started_perf,
                     strategy=strategy,
                     requested_model=requested_model,

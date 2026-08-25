@@ -113,8 +113,9 @@ async def anthropic_messages(
         openai_body = ChatCompletionRequest.model_validate(translated)
         # log_status: the RequestLog row must record the status this
         # surface actually delivers (404 for model_not_found, 403 for the
-        # operator-side conditions), not the engine's generic 422.
-        inner = await execute_chat(openai_body, kc, db, log_status=proto.native_status)
+        # operator-side conditions, 500 for a generic upstream failure),
+        # not the engine's generic 422/503.
+        inner = await execute_chat(openai_body, kc, db, log_status=proto.delivered_status)
     except HTTPException as exc:
         # native_status: the engine relays its translated error type in a
         # header (e.g. model_not_found is 422 there, 404 not_found_error
