@@ -439,3 +439,135 @@ async def test_close_during_post_done_drain_still_forwards_close_to_source():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert closed["value"] is True
+
+
+# ── block ordering: text ↔ tool calls ──
+
+
+def _block_sequence(events) -> list[tuple[str, int, str | None]]:
+    """(event, index, block type for starts) for every content_block_* event."""
+    out = []
+    for name, data in events:
+        if name.startswith("content_block_"):
+            btype = data["content_block"]["type"] if name == "content_block_start" else None
+            out.append((name, data["index"], btype))
+    return out
+
+
+async def test_text_after_a_tool_call_is_delivered_after_the_tool_use_block():
+    """Regression: tool fragments were held to end-of-stream while text
+    streamed through immediately, so text the model wrote AFTER a tool
+    call reached the client BEFORE it. SDKs process blocks strictly in
+    order, so an agent misread which text preceded the call."""
+    frames = [
+        _tool_fragment(0, '{"city": "SF"}', call_id="call_1", name="get_weather"),
+        _text_chunk("Checking the weather."),
+        _FINISH_CHUNK,
+        _USAGE_CHUNK,
+    ]
+    events = await _collect(frames)
+    assert _block_sequence(events) == [
+        ("content_block_start", 0, "tool_use"),
+        ("content_block_delta", 0, None),
+        ("content_block_stop", 0, None),
+        ("content_block_start", 1, "text"),
+        ("content_block_delta", 1, None),
+        ("content_block_stop", 1, None),
+    ]
+    tool_start = events[1][1]["content_block"]
+    assert (tool_start["id"], tool_start["name"]) == ("call_1", "get_weather")
+    assert events[-2][1]["delta"]["stop_reason"] == "end_turn"
+
+
+async def test_tool_call_between_two_text_runs_keeps_the_model_order():
+    """text → tool call → text must come out as three blocks in that
+    order, never as one merged text block followed by the tool block —
+    and the split call's fragments must still reassemble into one block."""
+    frames = [
+        _text_chunk("A"),
+        _tool_fragment(0, '{"ci', call_id="call_1", name="f"),
+        _tool_fragment(0, 'ty": "SF"}'),
+        _text_chunk("B"),
+        _FINISH_CHUNK,
+        _USAGE_CHUNK,
+    ]
+    events = await _collect(frames)
+    starts = [(d["index"], d["content_block"]["type"])
+              for n, d in events if n == "content_block_start"]
+    assert starts == [(0, "text"), (1, "tool_use"), (2, "text")]
+    texts = {d["index"]: d["delta"]["text"] for n, d in events
+             if n == "content_block_delta" and d["delta"]["type"] == "text_delta"}
+    assert texts == {0: "A", 2: "B"}
+    partial = [d["delta"]["partial_json"] for n, d in events
+               if n == "content_block_delta" and d["delta"]["type"] == "input_json_delta"]
+    assert partial == ['{"city": "SF"}']
+    # each block is start → delta → stop before the next one opens
+    assert [e for e, _, _ in _block_sequence(events)] == [
+        "content_block_start", "content_block_delta", "content_block_stop",
+    ] * 3
+
+
+async def test_text_between_argument_fragments_of_one_call_does_not_split_it():
+    """A text delta landing BETWEEN two argument fragments of the SAME call
+    must not flush the half-built call: it stays buffered (to
+    end-of-stream) and comes out as one block with whole JSON — never as a
+    tool_use with unparseable partial_json plus a nameless second block."""
+    frames = [
+        _tool_fragment(0, '{"ci', call_id="call_1", name="get_weather"),
+        _text_chunk("thinking..."),
+        _tool_fragment(0, 'ty": "SF"}'),
+        _FINISH_CHUNK,
+        _USAGE_CHUNK,
+    ]
+    events = await _collect(frames)
+    starts = [(d["content_block"]["type"], d["content_block"].get("name"))
+              for n, d in events if n == "content_block_start"]
+    assert starts == [("text", None), ("tool_use", "get_weather")]
+    partial = [d["delta"]["partial_json"] for n, d in events
+               if n == "content_block_delta" and d["delta"]["type"] == "input_json_delta"]
+    assert partial == ['{"city": "SF"}']
+
+
+async def test_delta_carrying_both_text_and_a_tool_fragment_emits_text_first():
+    """OpenAI semantics put a message's content before its tool_calls, so a
+    single delta with both closes the text block, then buffers the call."""
+    frame = {
+        "id": "chatcmpl-1", "model": "gpt-4o-mini",
+        "choices": [{"index": 0, "delta": {
+            "content": "Let me check.",
+            "tool_calls": [{"index": 0, "id": "call_1",
+                            "function": {"name": "f", "arguments": "{}"}}],
+        }, "finish_reason": None}],
+    }
+    events = await _collect([frame, _FINISH_CHUNK, _USAGE_CHUNK])
+    starts = [(d["index"], d["content_block"]["type"])
+              for n, d in events if n == "content_block_start"]
+    assert starts == [(0, "text"), (1, "tool_use")]
+    assert [e for e, _, _ in _block_sequence(events)] == [
+        "content_block_start", "content_block_delta", "content_block_stop",
+        "content_block_start", "content_block_delta", "content_block_stop",
+    ]
+
+
+async def test_close_at_the_error_event_still_drains_the_engine_source():
+    """The client may disconnect while the error event is in flight, i.e.
+    with the transformer suspended at that yield. Its finally must still
+    DRAIN the engine (natural completion → 503 + real error type logged),
+    not forward a close into it — so the [DONE] has to be consumed before
+    the event is yielded, not after."""
+    state = {"exit": None}
+
+    async def engine_sse():
+        try:
+            yield 'data: {"error": {"message": "boom", "type": "rate_limit_error"}}\n\n'
+            yield "data: [DONE]\n\n"
+            state["exit"] = "completed"
+        except GeneratorExit:
+            state["exit"] = "generator_exit"
+            raise
+
+    gen = stream_events(OpenAIFrameStream(engine_sse()))
+    first = await gen.__anext__()
+    assert first.startswith("event: error\n")
+    await gen.aclose()  # client gone while the error event was in flight
+    assert state["exit"] == "completed"

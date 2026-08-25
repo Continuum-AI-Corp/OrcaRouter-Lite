@@ -14,8 +14,10 @@ mapping decisions are:
   unmatched call with the same name (the positional semantics Gemini
   itself uses).
 - Streaming never emits a partial functionCall: tool-call argument
-  fragments are buffered and flushed as one complete part before the
-  final finishReason/usageMetadata chunk.
+  fragments are buffered and flushed as complete parts — as soon as the
+  model moves on to text again, or before the final
+  finishReason/usageMetadata chunk — so the client still sees text and
+  calls in the order the model produced them.
 """
 
 from __future__ import annotations
@@ -29,8 +31,8 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.protocols import clamp_stop_sequences
-from app.protocols.anthropic import _parse_json_object, flatten_openai_content
+from app.protocols import clamp_stop_sequences, require_text
+from app.protocols.anthropic import _args_complete, _parse_json_object, flatten_openai_content
 from app.protocols.sse import finish_quietly
 
 logger = structlog.get_logger()
@@ -124,13 +126,18 @@ def _translate_tools(tools: list[dict]) -> list[dict]:
                 raise _invalid(
                     f"functionDeclaration '{decl['name']}' has non-object parameters"
                 )
+            description = decl.get("description")
+            if description is not None and not isinstance(description, str):
+                raise _invalid(
+                    f"functionDeclaration '{decl['name']}' has a non-string description"
+                )
             fn: dict = {
                 "name": decl["name"],
                 "parameters": normalize_gemini_schema(params)
                 if params else {"type": "object", "properties": {}},
             }
-            if decl.get("description"):
-                fn["description"] = decl["description"]
+            if description:
+                fn["description"] = description
             out.append({"type": "function", "function": fn})
     return out
 
@@ -175,9 +182,17 @@ def _system_text(si: str | dict) -> str:
     parts = si.get("parts") or []
     if isinstance(parts, dict):
         parts = [parts]
-    texts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
-    dropped = len(parts) - len(texts)
-    if dropped > 0:
+    texts: list[str] = []
+    dropped = 0
+    for p in parts:
+        if isinstance(p, dict) and "text" in p:
+            # A text part, empty text included — nothing is dropped here.
+            text = require_text(p["text"], field="systemInstruction.parts[].text")
+            if text:
+                texts.append(text)
+        else:
+            dropped += 1
+    if dropped:
         # systemInstruction is text in every documented use; anything else
         # has no system-message equivalent to translate to. Log it rather
         # than dropping caller-supplied context in silence, matching the
@@ -244,8 +259,9 @@ def _translate_content(content: dict, ids: _CallIdAllocator) -> list[dict]:
             logger.debug("gemini_thought_part_dropped")
             continue
         if "text" in part:
-            texts.append(part.get("text") or "")
-            parts_out.append({"type": "text", "text": part.get("text") or ""})
+            text = require_text(part["text"], field="parts[].text")
+            texts.append(text)
+            parts_out.append({"type": "text", "text": text})
         elif "inlineData" in part or "inline_data" in part:
             blob = _alias(part, "inlineData", "inline_data") or {}
             mime = _alias(blob, "mimeType", "mime_type") or "application/octet-stream"
@@ -488,11 +504,13 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     "rate_limit_error": 429,
     "model_not_found": 404,
     "context_length_exceeded": 400,
-    # Operator-side and permanent until they act (credential rejected, or
-    # no provider key configured at all) — must not surface as a retryable
+    # Operator-side and permanent until they act (credential rejected, no
+    # provider key configured at all, or no configured model with the
+    # capability the request needs) — must not surface as a retryable
     # 503/UNAVAILABLE that SDKs keep backing off against.
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
+    "no_capable_provider": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
 }
@@ -502,8 +520,10 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
     """Transform the engine's OpenAI chunk-dict stream into
     GenerateContentResponse-shaped chunk dicts. Text deltas stream through
     one-to-one; tool-call argument fragments are buffered (Gemini never
-    emits a partial functionCall) and flushed complete before the final
-    finishReason + usageMetadata chunk."""
+    emits a partial functionCall) and flushed complete the moment a text
+    delta follows them — the model finished its calls and moved on, and
+    text it wrote after a call must not reach the client before it — or
+    before the final finishReason + usageMetadata chunk."""
     model = ""
     resp_id = ""
     finish: str | None = None
@@ -513,11 +533,54 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
     def _base(extra: dict) -> dict:
         return {"modelVersion": model, "responseId": resp_id, **extra}
 
+    def _function_call_chunk(*, only_complete: bool = False) -> dict | None:
+        """Buffered calls as complete functionCall parts, in index order,
+        removed from the buffer. `only_complete` (the mid-stream flush)
+        keeps back a call whose arguments are not yet whole JSON: a text
+        delta landing between two argument fragments of one call must not
+        split it into two parts — it waits for end-of-stream. Returns None
+        when nothing is ready."""
+        ready = [
+            (idx, slot) for idx, slot in sorted(tool_buf.items())
+            if not only_complete or _args_complete(slot["args"])
+        ]
+        if not ready:
+            return None
+        for idx, _ in ready:
+            del tool_buf[idx]
+        return _base({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"functionCall": {
+                            "name": slot["name"],
+                            "args": _parse_json_object(slot["args"]),
+                        }}
+                        for _, slot in ready
+                    ],
+                },
+                "index": 0,
+            }],
+        })
+
     try:
         async for frame in frames:
             if "error" in frame and "choices" not in frame:
                 err = frame.get("error") or {}
                 code = _STREAM_ERROR_TYPE_TO_CODE.get(err.get("type"), 500)
+                # Read on to the [DONE] the engine sends right after its
+                # error frame BEFORE handing the error chunk to the client.
+                # With the sentinel consumed, `finish()` in the finally
+                # below DRAINS the engine to a normal completion whether we
+                # are resumed after the yield or closed at it (client gone
+                # while the chunk was in flight), and the engine logs
+                # 503 + the real error type either way. Yielding first
+                # would leave that classification hanging on our being
+                # resumed before the client disconnects: a close at the
+                # yield would forward as aclose() into the engine instead.
+                async for _ in frames:
+                    pass
                 yield {
                     "error": {
                         "code": code,
@@ -525,13 +588,6 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
                         "status": _STATUS_TO_GOOGLE_STATUS.get(code, "INTERNAL"),
                     }
                 }
-                # Read on to the [DONE] the engine sends after its error
-                # frame, so `finish()` below drains it to a normal
-                # completion and it logs 503 + the real error type.
-                # Returning here without that would leave it suspended and
-                # `finish()` would close it, mislogging a 499 disconnect.
-                async for _ in frames:
-                    pass
                 return
 
             model = frame.get("model") or model
@@ -542,6 +598,18 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
 
             text = delta.get("content")
             if text:
+                # Text first, then this delta's own tool_calls: OpenAI's
+                # delta has no ordering between the two, and LiteLLM folds
+                # a Gemini chunk of [functionCall, text] and one of
+                # [text, functionCall] into the same delta — so a call the
+                # model emitted BEFORE text in the same chunk comes out
+                # after it. Not recoverable at this layer (documented in
+                # integrations/gemini-sdk.md); across chunks the order is
+                # preserved by the flush below.
+                if tool_buf:
+                    ready = _function_call_chunk(only_complete=True)
+                    if ready is not None:
+                        yield ready
                 yield _base({
                     "candidates": [{
                         "content": {"role": "model", "parts": [{"text": text}]},
@@ -564,21 +632,7 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
 
         # Normal end of stream.
         if tool_buf:
-            yield _base({
-                "candidates": [{
-                    "content": {
-                        "role": "model",
-                        "parts": [
-                            {"functionCall": {
-                                "name": slot["name"],
-                                "args": _parse_json_object(slot["args"]),
-                            }}
-                            for _, slot in sorted(tool_buf.items())
-                        ],
-                    },
-                    "index": 0,
-                }],
-            })
+            yield _function_call_chunk()
         yield _base({
             "candidates": [{
                 "content": {"role": "model", "parts": []},

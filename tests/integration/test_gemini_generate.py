@@ -502,3 +502,31 @@ async def test_model_auto_resolves_through_gemini_ingress(native_client):
     assert r.status_code == 200
     assert r.headers["x-orca-requested-model"] == "auto"
     assert r.headers["x-orca-resolved-model"] != "auto"
+
+
+async def test_auto_capability_mismatch_matches_the_pinned_403(native_client):
+    """Same class as no_providers_configured (operator-side, permanent):
+    providers exist but none of their deployable models supports what the
+    request needs. Must render 403 PERMISSION_DENIED, not a client-blaming
+    400 INVALID_ARGUMENT."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.catalog import CATALOG
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    text_only = next(m for m in CATALOG if not m.supports_vision)
+    fake._deployments = [ProviderDeployment(
+        model_name=text_only.id,
+        litellm_model=f"{text_only.litellm_prefix}{text_only.id}",
+        api_key="sk-test", provider=text_only.provider,
+    )]
+    r = await client.post(
+        "/v1beta/models/auto:generateContent",
+        json={"contents": [{"role": "user", "parts": [
+            {"text": "describe"},
+            {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+        ]}]},
+        headers={"x-goog-api-key": key},
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["status"] == "PERMISSION_DENIED"
+    fake.acompletion.assert_not_awaited()

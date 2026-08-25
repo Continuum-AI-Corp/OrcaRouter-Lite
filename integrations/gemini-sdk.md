@@ -57,6 +57,11 @@ logs; the header form doesn't.
   `thoughtSignature` parts in history are dropped the same way.
 - `stopSequences` beyond the OpenAI wire cap of 4 are truncated to the
   first 4 (a `structlog` warning is emitted).
+- Streaming keeps text and `functionCall` parts in the model's order
+  across chunks, but within ONE upstream chunk that carries both, the
+  text part is always emitted first: the internal OpenAI delta has no
+  ordering between `content` and `tool_calls`, so a call that preceded
+  text in the same chunk cannot be told apart from one that followed it.
 - `temperature` (0–2), `topP` (0–1) and `maxOutputTokens` (>= 1) are
   range-checked and rejected with a 400 INVALID_ARGUMENT rather than
   forwarded — an upstream rejection would reach you as a retryable 500.

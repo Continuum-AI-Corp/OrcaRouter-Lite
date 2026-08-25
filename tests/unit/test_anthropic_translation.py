@@ -397,3 +397,70 @@ def test_empty_content_and_no_tools_yields_empty_blocks():
     resp = _openai_response()
     resp["choices"][0]["message"]["content"] = None
     assert to_anthropic_response(resp)["content"] == []
+
+
+# ── wire-type validation: tools, tool_choice, text values ──
+
+
+@pytest.mark.parametrize("tool", [
+    {"name": 123, "input_schema": {"type": "object"}},
+    {"name": "", "input_schema": {"type": "object"}},
+    {"name": "f", "input_schema": "oops"},
+    {"name": "f", "input_schema": ["not", "a", "schema"]},
+    {"name": "f", "input_schema": {"type": "object"}, "description": 42},
+])
+def test_malformed_tool_definitions_render_native_400(tool):
+    """`tools` is list[dict] with no inner validation. A numeric name or a
+    string input_schema used to pass every layer and reach the upstream,
+    whose BadRequest came back as a retryable 503 the SDK keeps retrying
+    for a request that can never succeed."""
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(tools=[tool]))
+    assert exc.value.status_code == 400
+
+
+def test_tool_choice_with_non_string_name_rejected():
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(tool_choice={"type": "tool", "name": 7}))
+    assert exc.value.status_code == 400
+
+
+def test_tool_without_input_schema_gets_an_empty_object_schema():
+    out = to_openai_request(_req(tools=[{"name": "f"}]))
+    assert out["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert "description" not in out["tools"][0]["function"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"system": [{"type": "text", "text": 123}]},
+    {"messages": [{"role": "user", "content": [{"type": "text", "text": ["x"]}]}]},
+    {"messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": 1.5}]},
+    ]},
+    {"messages": [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1",
+         "content": [{"type": "text", "text": 0}]},
+    ]}]},
+])
+def test_non_string_text_values_render_native_400(payload):
+    """A non-string `text` used to crash the message join with a TypeError
+    (a 500 the SDK retries) or ride through to the upstream as a malformed
+    part; either way a 400 is the honest answer."""
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(**payload))
+    assert exc.value.status_code == 400
+
+
+def test_null_text_values_are_treated_as_empty():
+    out = to_openai_request(_req(
+        system=[{"type": "text", "text": None}],
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": None}, {"type": "text", "text": "hi"},
+        ]}],
+    ))
+    # an all-empty system yields no system message at all
+    assert out["messages"][0]["role"] == "user"
+    assert out["messages"][0]["content"] == [
+        {"type": "text", "text": ""}, {"type": "text", "text": "hi"},
+    ]

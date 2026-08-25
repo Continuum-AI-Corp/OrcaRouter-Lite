@@ -16,9 +16,11 @@ mapping decisions are:
   the finish_reason frame, so `message_delta` (stop_reason + usage) is
   emitted at end-of-stream from recorded state.
 - Streamed tool-call fragments are buffered per tool-call index and
-  flushed as complete `tool_use` blocks at end-of-stream: OpenAI-format
-  streams may interleave fragments of concurrent tool calls, while
-  Anthropic content blocks are strictly sequential.
+  flushed as complete `tool_use` blocks — as soon as the model moves on
+  to text again, or at end-of-stream: OpenAI-format streams may
+  interleave fragments of concurrent tool calls, while Anthropic content
+  blocks are strictly sequential, and the client must still see text and
+  tool calls in the order the model produced them.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.protocols import clamp_stop_sequences
+from app.protocols import clamp_stop_sequences, require_text
 from app.protocols.sse import finish_quietly
 
 logger = structlog.get_logger()
@@ -94,8 +96,9 @@ def _system_text(system: str | list[dict]) -> str:
     dropped = 0
     for b in system:
         if isinstance(b, dict) and b.get("type") == "text":
-            if b.get("text"):
-                parts.append(b["text"])
+            text = require_text(b.get("text"), field="system[].text")
+            if text:
+                parts.append(text)
         else:
             dropped += 1
     if dropped:
@@ -139,8 +142,9 @@ def _split_tool_result_content(content) -> tuple[str, list[dict]]:
         if not isinstance(b, dict):
             continue
         if b.get("type") == "text":
-            if b.get("text"):
-                texts.append(b["text"])
+            text = require_text(b.get("text"), field="tool_result.content[].text")
+            if text:
+                texts.append(text)
         elif b.get("type") == "image":
             images.append(_image_part(b))
     return "\n\n".join(texts), images
@@ -155,7 +159,7 @@ def _translate_assistant_message(blocks: list[dict]) -> dict:
     for block in blocks:
         btype = block.get("type")
         if btype == "text":
-            texts.append(block.get("text", ""))
+            texts.append(require_text(block.get("text"), field="messages[].content[].text"))
         elif btype == "tool_use":
             tool_calls.append({
                 "id": block.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
@@ -201,7 +205,10 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
             })
             parts.extend(images)
         elif btype == "text":
-            parts.append({"type": "text", "text": block.get("text", "")})
+            parts.append({
+                "type": "text",
+                "text": require_text(block.get("text"), field="messages[].content[].text"),
+            })
         elif btype == "image":
             parts.append(_image_part(block))
         elif btype in _DROPPED_BLOCK_TYPES:
@@ -244,17 +251,29 @@ _SERVER_TOOL_HINT = (
 
 
 def _translate_tool(tool: dict) -> dict:
+    """The wire schema types `tools` as list[dict] with no inner validation,
+    so the field types are checked here: a numeric name or a string
+    input_schema would pass every layer, reach the upstream verbatim and
+    come back as a BadRequest the engine reports as a retryable 503 — which
+    SDKs back off and retry for a request that can never succeed."""
     ttype = tool.get("type")
     if ttype not in (None, "custom"):
         raise _invalid(f"Unsupported tool type {ttype!r}: {_SERVER_TOOL_HINT}")
-    if not tool.get("name"):
-        raise _invalid("Tool definition is missing 'name'")
+    name = tool.get("name")
+    if not isinstance(name, str) or not name:
+        raise _invalid("Tool definition requires a non-empty string 'name'")
+    schema = tool.get("input_schema")
+    if schema is not None and not isinstance(schema, dict):
+        raise _invalid(f"Tool '{name}' has a non-object input_schema")
+    description = tool.get("description")
+    if description is not None and not isinstance(description, str):
+        raise _invalid(f"Tool '{name}' has a non-string description")
     fn: dict = {
-        "name": tool["name"],
-        "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+        "name": name,
+        "parameters": schema or {"type": "object", "properties": {}},
     }
-    if tool.get("description"):
-        fn["description"] = tool["description"]
+    if description:
+        fn["description"] = description
     return {"type": "function", "function": fn}
 
 
@@ -267,9 +286,10 @@ def _translate_tool_choice(tc: dict) -> str | dict:
     if tctype == "none":
         return "none"
     if tctype == "tool":
-        if not tc.get("name"):
-            raise _invalid("tool_choice of type 'tool' requires 'name'")
-        return {"type": "function", "function": {"name": tc["name"]}}
+        name = tc.get("name")
+        if not isinstance(name, str) or not name:
+            raise _invalid("tool_choice of type 'tool' requires a non-empty string 'name'")
+        return {"type": "function", "function": {"name": name}}
     raise _invalid(f"Unsupported tool_choice type: {tctype!r}")
 
 
@@ -399,6 +419,18 @@ def _ev(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
+def _args_complete(args: str) -> bool:
+    """True when a buffered tool call's argument fragments form whole JSON
+    (or nothing has arrived yet) — i.e. the call is safe to flush."""
+    if not args:
+        return True
+    try:
+        json.loads(args)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
 # Engine error types (packages/litellm_adapter/client.py _translate_error,
 # reported on SSE error frames and via the x-orca-error-type header) → the
 # HTTP status this surface reports them as. The Anthropic error *type* is
@@ -408,12 +440,13 @@ def _ev(name: str, data: dict) -> str:
 # Retryability is the load-bearing part. Anthropic SDKs back off and retry
 # 429/500/529 but not 4xx, so a failure that can never succeed on retry
 # has to land on a 4xx: a context overflow or a missing model must not
-# read as a transient api_error. The two operator-side conditions —
-# upstream_auth_error (OUR provider credential rejected) and
-# no_providers_configured (no key set at all) — are permanent until the
-# operator acts, so they map to 403 permission_error, matching the Gemini
-# surface. Deliberately NOT 401 authentication_error: the caller's own key
-# is fine.
+# read as a transient api_error. The operator-side conditions —
+# upstream_auth_error (OUR provider credential rejected),
+# no_providers_configured (no key set at all) and no_capable_provider
+# (keys set, but no deployable model has the capability the request
+# needs) — are permanent until the operator acts, so they map to 403
+# permission_error, matching the Gemini surface. Deliberately NOT 401
+# authentication_error: the caller's own key is fine.
 _ENGINE_ERROR_STATUS = {
     "rate_limit_error": 429,
     "overloaded_error": 529,
@@ -421,6 +454,7 @@ _ENGINE_ERROR_STATUS = {
     "model_not_found": 404,
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
+    "no_capable_provider": 403,
 }
 
 
@@ -436,10 +470,14 @@ async def stream_events(
     events. Stateful: tracks the open text block, the mapped stop_reason
     (arrives before usage), and the usage frame (arrives last). Tool-call
     fragments are buffered per index and flushed as complete tool_use
-    blocks at end-of-stream — OpenAI-format streams may interleave
-    fragments of concurrent calls, Anthropic blocks are strictly
-    sequential, so per-fragment emission would scatter one call's JSON
-    across several nameless blocks.
+    blocks — OpenAI-format streams may interleave fragments of concurrent
+    calls, Anthropic blocks are strictly sequential, so per-fragment
+    emission would scatter one call's JSON across several nameless
+    blocks. The flush happens the moment a text delta follows the
+    fragments (the model finished its calls and moved on) or at
+    end-of-stream, so blocks reach the client in the order the model
+    produced them: text the model wrote AFTER a tool call must not be
+    delivered before it.
 
     `input_tokens` is the caller's prompt-size estimate, reported in
     message_start where the protocol puts it (SDKs read the input count
@@ -472,11 +510,57 @@ async def stream_events(
     def _block_stop() -> str:
         return _ev("content_block_stop", {"type": "content_block_stop", "index": block_index})
 
+    def _tool_block_events(*, only_complete: bool = False) -> list[str]:
+        """Buffered tool calls as complete tool_use blocks (start → one
+        input_json_delta → stop), in index order, removed from the buffer.
+
+        `only_complete` (the mid-stream flush) keeps back any call whose
+        arguments are not yet whole JSON: a text delta landing BETWEEN two
+        argument fragments of one call must not split that call across two
+        blocks — it stays buffered to end-of-stream instead."""
+        nonlocal block_index
+        out: list[str] = []
+        for idx, slot in sorted(tool_buf.items()):
+            if only_complete and not _args_complete(slot["args"]):
+                continue
+            del tool_buf[idx]
+            block_index += 1
+            out.append(_ev("content_block_start", {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": slot["id"] or f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": slot["name"],
+                    "input": {},
+                },
+            }))
+            if slot["args"]:
+                out.append(_ev("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {"type": "input_json_delta", "partial_json": slot["args"]},
+                }))
+            out.append(_block_stop())
+        return out
+
     try:
         async for frame in frames:
             if "error" in frame and "choices" not in frame:
                 err = frame.get("error") or {}
                 etype = err.get("type")
+                # Read on to the [DONE] the engine sends right after its
+                # error frame BEFORE handing the error event to the client.
+                # With the sentinel consumed, `finish()` in the finally
+                # below DRAINS the engine to a normal completion whether we
+                # are resumed after the yield or closed at it (client gone
+                # while the event was in flight), and the engine logs
+                # 503 + the real error type either way. Yielding first
+                # would leave that classification hanging on our being
+                # resumed before the client disconnects: a close at the
+                # yield would forward as aclose() into the engine instead.
+                async for _ in frames:
+                    pass
                 yield _ev("error", {
                     "type": "error",
                     "error": {
@@ -484,13 +568,6 @@ async def stream_events(
                         "message": err.get("message", "Upstream provider error"),
                     },
                 })
-                # Read on to the [DONE] the engine sends after its error
-                # frame, so `finish()` below drains it to a normal
-                # completion and it logs 503 + the real error type.
-                # Returning here without that would leave it suspended and
-                # `finish()` would close it, mislogging a 499 disconnect.
-                async for _ in frames:
-                    pass
                 return
 
             if not started:
@@ -503,6 +580,13 @@ async def stream_events(
 
             text = delta.get("content")
             if text:
+                # Text after tool-call fragments: the model finished those
+                # calls and moved on, so flush them now. Holding them to
+                # end-of-stream would hand the client this text BEFORE the
+                # tool call it followed, and SDKs process blocks in order.
+                if tool_buf:
+                    for ev in _tool_block_events(only_complete=True):
+                        yield ev
                 if not text_open:
                     text_open = True
                     block_index += 1
@@ -517,7 +601,13 @@ async def stream_events(
                     "delta": {"type": "text_delta", "text": text},
                 })
 
-            for tcd in delta.get("tool_calls") or []:
+            tool_deltas = delta.get("tool_calls") or []
+            if tool_deltas and text_open:
+                # The text that preceded this call is complete: close its
+                # block so the tool_use block keeps the model's order.
+                yield _block_stop()
+                text_open = False
+            for tcd in tool_deltas:
                 slot = tool_buf.setdefault(
                     tcd.get("index", 0), {"id": "", "name": "", "args": ""}
                 )
@@ -543,25 +633,8 @@ async def stream_events(
             yield _start_event({})
         if text_open:
             yield _block_stop()
-        for _, slot in sorted(tool_buf.items()):
-            block_index += 1
-            yield _ev("content_block_start", {
-                "type": "content_block_start",
-                "index": block_index,
-                "content_block": {
-                    "type": "tool_use",
-                    "id": slot["id"] or f"toolu_{uuid.uuid4().hex[:24]}",
-                    "name": slot["name"],
-                    "input": {},
-                },
-            })
-            if slot["args"]:
-                yield _ev("content_block_delta", {
-                    "type": "content_block_delta",
-                    "index": block_index,
-                    "delta": {"type": "input_json_delta", "partial_json": slot["args"]},
-                })
-            yield _block_stop()
+        for ev in _tool_block_events():
+            yield ev
         delta_usage: dict = {"output_tokens": usage.get("completion_tokens", 0) or 0}
         if usage.get("prompt_tokens"):
             delta_usage["input_tokens"] = usage["prompt_tokens"]

@@ -44,6 +44,13 @@ router = APIRouter(prefix="/v1", tags=["Chat Completions"])
 # status/error taxonomy.
 ERROR_TYPE_HEADER = "x-orca-error-type"
 
+# Delays (seconds) between successive attempts to commit a streaming
+# RequestLog row; attempts = len + 1. That row is the only record of a
+# stream's tokens and cost, so a commit that fails outright is retried on
+# a fresh session before the row is given up on — bounded, because the
+# retries hold the (already [DONE]) stream open. Tests shrink this.
+_LOG_COMMIT_BACKOFF_S: tuple[float, ...] = (0.1, 0.4)
+
 
 def _chunk_to_dict(chunk) -> dict:
     """Normalize a litellm chunk (Pydantic model or dict) into a plain dict."""
@@ -391,6 +398,14 @@ async def execute_chat(
                     f"({sorted(needs) or 'none'}). Configure a provider that "
                     "supports them or pin a specific model."
                 ),
+                # Operator-side and permanent like its sibling above:
+                # providers ARE configured, but none of their deployable
+                # models has a capability the request needs (vision, tools,
+                # json_mode). The type lets the native surfaces render it
+                # as 403 permission_error / PERMISSION_DENIED — the same
+                # class as no_providers_configured — instead of collapsing
+                # the bare 422 to a client-blaming 400.
+                headers={ERROR_TYPE_HEADER: "no_capable_provider"},
             )
 
         resolved_model = candidates[0]
@@ -559,9 +574,26 @@ async def execute_chat(
                 synthetic = {
                     "model": agg_model or resolved_model,
                     "usage": agg_usage,
-                    "_orca_meta": {"provider": agg_provider, "latency_ms": agg_latency},
+                    "_orca_meta": {"provider": agg_provider},
                 }
-                log = await _build_log_row(
+                if agg_latency:
+                    # Real LiteLLM chunks carry no _orca_meta, so this is
+                    # normally absent — leaving the key out lets
+                    # _build_log_row fall back to the measured wall-clock
+                    # latency instead of persisting a constant 0.
+                    synthetic["_orca_meta"]["latency_ms"] = agg_latency
+                from sqlalchemy import select
+
+                from packages.db import session as session_mod
+
+                # The row's VALUES are computed exactly once — latency is
+                # measured here, before any commit attempt, so retry
+                # backoff never inflates it — and every attempt inserts a
+                # fresh ORM object carrying the same id/trace_id. (Fresh,
+                # because an object left over from a failed flush carries
+                # session state that makes a second session treat it as
+                # an UPDATE, not an INSERT.)
+                template = await _build_log_row(
                     body=body, kc=kc, response=synthetic,
                     status_code=status_code, error_type=error_type,
                     started_perf=started_perf,
@@ -569,42 +601,117 @@ async def execute_chat(
                     requested_model=requested_model,
                     actual_resolved=agg_model,
                 )
-                from packages.db import session as session_mod
+                row_values = {
+                    c.key: getattr(template, c.key)
+                    for c in RequestLog.__table__.columns
+                    if getattr(template, c.key) is not None
+                }
+                row_values.setdefault("id", str(uuid.uuid4()))
 
-                async def _commit_row() -> None:
-                    if session_mod._session_factory is not None:
-                        async with session_mod._session_factory() as s:
-                            s.add(log)
-                            await s.commit()
-                    else:
+                async def _already_persisted(s) -> bool:
+                    return (await s.scalar(
+                        select(RequestLog.id).where(RequestLog.trace_id == row_values["trace_id"])
+                    )) is not None
+
+                async def _commit_row(*, retry: bool) -> None:
+                    """INSERT + COMMIT the row on a session of its own.
+
+                    Only a failing `commit()` propagates; a failure while
+                    closing the session AFTER the commit returned is
+                    swallowed — the row is already in. A retry is
+                    idempotent: it first looks the trace_id up, so a COMMIT
+                    that landed but whose ack was lost on the wire
+                    (PostgreSQL, connection dropped mid-ack) is not
+                    inserted a second time — and the shared primary key
+                    would reject a duplicate anyway.
+                    """
+                    log = RequestLog(**row_values)
+                    if session_mod._session_factory is None:
+                        # Test-only fallback (the app always installs a
+                        # factory): the request-scoped session has to be
+                        # rolled back before a retry can reuse it.
+                        if retry and await _already_persisted(db):
+                            return
                         db.add(log)
-                        await db.commit()
-
-                # At-most-once: mark the attempt BEFORE it starts so the
-                # other _finalize call site never retries — a retry after an
-                # ambiguous failure (commit acked, teardown raised) would
-                # double-insert the row. Durability against a close/cancel
-                # landing mid-commit (e.g. a disconnect delivered during the
-                # protocol adapters' post-[DONE] drain) comes from running
-                # the commit in its own task: cancellation aimed at THIS
-                # task can't abort the INSERT.
-                log_written = True
-                commit_task = asyncio.ensure_future(_commit_row())
-                try:
-                    await asyncio.shield(commit_task)
-                except Exception as commit_err:
-                    logger.warning("request_log_commit_failed", error=str(commit_err))
-                except BaseException:
-                    # CancelledError/GeneratorExit aimed at us, not at the
-                    # commit — wait the commit out so the row isn't dropped,
-                    # then let the cancellation propagate.
+                        try:
+                            await db.commit()
+                        except Exception:
+                            try:
+                                await db.rollback()
+                            except Exception:
+                                pass
+                            raise
+                        return
+                    s = session_mod._session_factory()
                     try:
-                        await commit_task
+                        if retry and await _already_persisted(s):
+                            return
+                        s.add(log)
+                        await s.commit()
+                    finally:
+                        try:
+                            await s.close()
+                        except Exception as close_err:
+                            logger.debug(
+                                "request_log_session_close_failed", error=str(close_err),
+                            )
+
+                # At-most-once across the two call sites: mark BEFORE the
+                # first attempt so the other _finalize never re-runs this
+                # sequence. Retries live HERE, bounded by
+                # _LOG_COMMIT_BACKOFF_S and only for a commit that failed
+                # outright — this row is the only record of a stream's
+                # tokens and cost, so a transient DB hiccup at request end
+                # must not silently zero that spend. Durability against a
+                # close/cancel landing mid-commit (e.g. a disconnect
+                # delivered during the protocol adapters' post-[DONE]
+                # drain) comes from running each attempt in its own task:
+                # cancellation aimed at THIS task can't abort the INSERT.
+                log_written = True
+                attempts = len(_LOG_COMMIT_BACKOFF_S) + 1
+                for attempt in range(1, attempts + 1):
+                    commit_task = asyncio.ensure_future(_commit_row(retry=attempt > 1))
+                    try:
+                        await asyncio.shield(commit_task)
+                        return
                     except Exception as commit_err:
-                        logger.warning("request_log_commit_failed", error=str(commit_err))
+                        if attempt < attempts:
+                            logger.info(
+                                "request_log_commit_retry",
+                                error=str(commit_err), attempt=attempt,
+                            )
+                            try:
+                                await asyncio.sleep(_LOG_COMMIT_BACKOFF_S[attempt - 1])
+                            except BaseException:
+                                # Cancelled during the backoff: nothing is
+                                # in flight, the row is given up on — say
+                                # so, then propagate like the arm below.
+                                logger.warning(
+                                    "request_log_commit_failed",
+                                    error=str(commit_err), attempts=attempt,
+                                )
+                                raise
+                            continue
+                        logger.warning(
+                            "request_log_commit_failed",
+                            error=str(commit_err), attempts=attempt,
+                        )
                     except BaseException:
-                        pass
-                    raise
+                        # CancelledError aimed at us, not at the commit —
+                        # wait the in-flight attempt out so a row about to
+                        # land isn't dropped, then let the cancellation
+                        # propagate (no further attempts: we are being torn
+                        # down).
+                        try:
+                            await commit_task
+                        except Exception as commit_err:
+                            logger.warning(
+                                "request_log_commit_failed",
+                                error=str(commit_err), attempts=attempt,
+                            )
+                        except BaseException:
+                            pass
+                        raise
 
             try:
                 async for chunk in _aiter(stream_obj):

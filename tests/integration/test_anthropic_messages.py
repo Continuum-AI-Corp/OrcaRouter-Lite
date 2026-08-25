@@ -661,3 +661,47 @@ async def test_count_tokens_unexpected_error_stays_in_anthropic_envelope(native_
     body = r.json()
     assert body["type"] == "error"
     assert body["error"]["type"] == "api_error"
+
+
+async def test_auto_capability_mismatch_matches_the_pinned_403(native_client):
+    """Providers ARE configured, but no deployable model supports what the
+    request needs (an image with only a text-only model deployed). Same
+    operator-side, permanent class as no_providers_configured: the native
+    surface must render 403 permission_error, not collapse the engine's
+    bare 422 into a client-blaming 400 — while the OpenAI surface keeps
+    its 422 (x-orca-error-type is an in-process relay to the native
+    routes; the app-wide handler does not put it on the wire)."""
+    client, fake, key = native_client
+    from packages.litellm_adapter.catalog import CATALOG
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    text_only = next(m for m in CATALOG if not m.supports_vision)
+    fake._deployments = [ProviderDeployment(
+        model_name=text_only.id,
+        litellm_model=f"{text_only.litellm_prefix}{text_only.id}",
+        api_key="sk-test", provider=text_only.provider,
+    )]
+    image_message = {"role": "user", "content": [
+        {"type": "text", "text": "describe"},
+        {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": "AAAA",
+        }},
+    ]}
+
+    r = await client.post("/v1/messages", json=_messages_payload(
+        model="auto", messages=[image_message],
+    ), headers={"x-api-key": key})
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["type"] == "permission_error"
+    assert "vision" in r.json()["error"]["message"]
+
+    r = await client.post("/v1/chat/completions", json={
+        "model": "auto",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "describe"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]}],
+    }, headers={"Authorization": f"Bearer {key}"})
+    assert r.status_code == 422, r.text
+    assert "vision" in r.text
+    fake.acompletion.assert_not_awaited()

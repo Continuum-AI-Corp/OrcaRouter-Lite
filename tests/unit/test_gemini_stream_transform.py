@@ -172,3 +172,94 @@ async def test_final_chunk_reaches_the_client_before_the_engine_writeback():
         )
 
     assert order == ["content", "final", "engine_writeback"]
+
+
+# ── part ordering: text ↔ function calls ──
+
+
+def _tool_fragment(index: int, args: str, name: str | None = None) -> dict:
+    tcd: dict = {"index": index, "function": {"arguments": args}}
+    if name:
+        tcd["function"]["name"] = name
+    return {
+        "id": "chatcmpl-1", "model": "gemini-1.5-flash",
+        "choices": [{"index": 0, "delta": {"tool_calls": [tcd]}, "finish_reason": None}],
+    }
+
+
+def _part_kinds(chunks: list[dict]) -> list[str]:
+    kinds = []
+    for c in chunks:
+        for cand in c.get("candidates") or []:
+            for p in cand["content"]["parts"]:
+                kinds.append("functionCall" if "functionCall" in p else "text")
+    return kinds
+
+
+async def test_text_after_a_function_call_is_delivered_after_the_call_part():
+    """Regression: buffered functionCall parts were flushed only at
+    end-of-stream while text passed through immediately, so text the model
+    produced AFTER the call reached the client BEFORE it."""
+    chunks = await _collect([
+        _tool_fragment(0, '{"ci', name="get_weather"),
+        _tool_fragment(0, 'ty": "SF"}'),
+        _text_chunk("Checking."),
+        _FINISH_CHUNK,
+        _USAGE_CHUNK,
+    ])
+    assert _part_kinds(chunks) == ["functionCall", "text"]
+    fc = chunks[0]["candidates"][0]["content"]["parts"][0]["functionCall"]
+    assert fc == {"name": "get_weather", "args": {"city": "SF"}}
+    assert chunks[-1]["candidates"][0]["finishReason"] == "STOP"
+
+
+async def test_function_call_between_two_text_runs_keeps_the_model_order():
+    chunks = await _collect([
+        _text_chunk("A"),
+        _tool_fragment(0, '{"x": 1}', name="f"),
+        _text_chunk("B"),
+        _FINISH_CHUNK,
+    ])
+    assert _part_kinds(chunks) == ["text", "functionCall", "text"]
+    texts = [p["text"] for c in chunks for cand in c.get("candidates") or []
+             for p in cand["content"]["parts"] if "text" in p]
+    assert texts == ["A", "B"]
+
+
+async def test_text_between_argument_fragments_of_one_call_does_not_split_it():
+    """A text delta between two argument fragments of the same call must not
+    flush the half-built call — that would emit functionCall{args: {}} (the
+    parse failure is swallowed) plus a nameless second call. It waits for
+    end-of-stream and comes out whole."""
+    chunks = await _collect([
+        _tool_fragment(0, '{"ci', name="get_weather"),
+        _text_chunk("thinking..."),
+        _tool_fragment(0, 'ty": "SF"}'),
+        _FINISH_CHUNK,
+    ])
+    assert _part_kinds(chunks) == ["text", "functionCall"]
+    calls = [p["functionCall"] for c in chunks for cand in c.get("candidates") or []
+             for p in cand["content"]["parts"] if "functionCall" in p]
+    assert calls == [{"name": "get_weather", "args": {"city": "SF"}}]
+
+
+async def test_close_at_the_error_chunk_still_drains_the_engine_source():
+    """Mirror of the Anthropic test: a client gone while the error chunk is
+    in flight must not turn into a close forwarded into the engine — the
+    [DONE] is consumed before the chunk is yielded, so the finally drains."""
+    state = {"exit": None}
+
+    async def engine_sse():
+        try:
+            yield 'data: {"error": {"message": "boom", "type": "rate_limit_error"}}\n\n'
+            yield "data: [DONE]\n\n"
+            state["exit"] = "completed"
+        except GeneratorExit:
+            state["exit"] = "generator_exit"
+            raise
+
+    gen = stream_chunks(OpenAIFrameStream(engine_sse()))
+    first = await gen.__anext__()
+    assert first["error"]["status"] == "RESOURCE_EXHAUSTED"
+    await gen.aclose()  # client gone while the error chunk was in flight
+    assert state["exit"] == "completed"

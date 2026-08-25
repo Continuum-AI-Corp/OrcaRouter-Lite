@@ -482,3 +482,55 @@ def test_finish_reason_mapping(finish, expected):
     resp = _openai_response()
     resp["choices"][0]["finish_reason"] = finish
     assert to_gemini_response(resp)["candidates"][0]["finishReason"] == expected
+
+
+def test_empty_text_system_part_is_not_counted_as_dropped():
+    """The dropped-part diagnostic must count only genuinely non-text
+    parts: `{"text": ""}` IS a text part (nothing dropped), so it must
+    neither fire the warning nor inflate the count — the Anthropic
+    sibling already counts this way."""
+    from structlog.testing import capture_logs
+
+    with capture_logs() as logs:
+        out = _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "systemInstruction": {"parts": [{"text": "be terse"}, {"text": ""}]},
+        })
+    assert out["messages"][0] == {"role": "system", "content": "be terse"}
+    assert not any(e["event"] == "gemini_non_text_system_part_dropped" for e in logs)
+
+    with capture_logs() as logs:
+        _translate({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "systemInstruction": {"parts": [
+                {"text": ""},
+                {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+                "not-even-an-object",
+            ]},
+        })
+    dropped = [e for e in logs if e["event"] == "gemini_non_text_system_part_dropped"]
+    assert [e["count"] for e in dropped] == [2]
+
+
+@pytest.mark.parametrize("payload", [
+    {"contents": [{"role": "user", "parts": [{"text": 123}]}]},
+    {"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+     "systemInstruction": {"parts": [{"text": ["x"]}]}},
+])
+def test_non_string_text_parts_render_native_400(payload):
+    """A non-string text used to crash the message join (a 500 the SDK
+    retries) instead of the honest native 400."""
+    with pytest.raises(HTTPException) as exc:
+        _translate(payload)
+    assert exc.value.status_code == 400
+
+
+def test_function_declaration_with_non_string_description_rejected():
+    with pytest.raises(HTTPException) as exc:
+        _translate({
+            "contents": "hi",
+            "tools": [{"functionDeclarations": [
+                {"name": "f", "description": 42, "parameters": {"type": "OBJECT"}},
+            ]}],
+        })
+    assert exc.value.status_code == 400
