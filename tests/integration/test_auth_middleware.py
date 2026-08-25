@@ -255,3 +255,28 @@ async def test_v1_messages_401_uses_anthropic_envelope(app_with_auth):
     body = r.json()
     assert body["type"] == "error"
     assert body["error"]["type"] == "authentication_error"
+
+
+async def test_anthropic_client_gets_anthropic_envelope_on_any_v1_path(app_with_auth):
+    """GET /v1/models serves the Anthropic listing to callers sending
+    `anthropic-version`, so their auth failures on that path must speak the
+    Anthropic envelope too — `auth_error` is not a type the SDK knows."""
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get("/v1/protected", headers={"anthropic-version": "2023-06-01"})
+        assert r.status_code == 401
+        assert r.json() == {
+            "type": "error",
+            "error": {"type": "authentication_error", "message": r.json()["error"]["message"]},
+        }
+
+        r = await c.get("/v1/protected", headers={
+            "anthropic-version": "2023-06-01", "x-api-key": "sk-orca-bogus",
+        })
+        assert r.status_code == 401
+        assert r.json()["error"]["type"] == "authentication_error"
+
+        # no header → the OpenAI envelope, unchanged
+        r = await c.get("/v1/protected")
+        assert r.json()["error"]["type"] == "auth_error"

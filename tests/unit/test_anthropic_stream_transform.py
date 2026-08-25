@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import anyio
 import pytest
 
 from app.protocols.anthropic import stream_events
@@ -526,6 +527,55 @@ async def test_text_between_argument_fragments_of_one_call_does_not_split_it():
     partial = [d["delta"]["partial_json"] for n, d in events
                if n == "content_block_delta" and d["delta"]["type"] == "input_json_delta"]
     assert partial == ['{"city": "SF"}']
+
+
+async def test_first_fragment_with_empty_arguments_is_not_flushed_by_following_text():
+    """The standard first fragment carries only id + name with
+    arguments "" — it must not count as a complete call when text follows,
+    or the client gets an empty tool_use plus a nameless second block."""
+    frames = [
+        _tool_fragment(0, "", call_id="call_1", name="get_weather"),
+        _text_chunk("thinking..."),
+        _tool_fragment(0, '{"city": "SF"}'),
+        _FINISH_CHUNK,
+        _USAGE_CHUNK,
+    ]
+    events = await _collect(frames)
+    starts = [(d["content_block"]["type"], d["content_block"].get("name"))
+              for n, d in events if n == "content_block_start"]
+    assert starts == [("text", None), ("tool_use", "get_weather")]
+    partial = [d["delta"]["partial_json"] for n, d in events
+               if n == "content_block_delta" and d["delta"]["type"] == "input_json_delta"]
+    assert partial == ['{"city": "SF"}']
+
+
+async def test_client_cancel_during_the_final_drain_still_lets_the_engine_finish():
+    """This generator is the response body: a client disconnect lands as
+    task cancellation. The forwarding in `finally` must be shielded so the
+    engine is still driven to completion (its RequestLog writeback runs)
+    instead of being abandoned to GC finalization."""
+    drain_started = asyncio.Event()
+    order: list[str] = []
+
+    async def engine_sse():
+        yield 'data: {"id":"c1","model":"m","choices":[{"index":0,' \
+              '"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+        drain_started.set()
+        await asyncio.sleep(0.05)  # the engine's writeback, in progress
+        order.append("engine_writeback")
+
+    async def consume():
+        async for _ in stream_events(OpenAIFrameStream(engine_sse())):
+            pass
+
+    # Starlette cancels the response task through an anyio task group —
+    # the cancellation shape the shield is there to absorb.
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await drain_started.wait()
+        tg.cancel_scope.cancel()
+    assert order == ["engine_writeback"]
 
 
 async def test_delta_carrying_both_text_and_a_tool_fragment_emits_text_first():

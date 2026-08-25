@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 
+import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -26,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_db, get_key_context
 from app.protocols import anthropic as proto
-from app.protocols.sse import OpenAIFrameStream
+from app.protocols.sse import OpenAIFrameStream, aclose_quietly
 from app.routes.chat import ERROR_TYPE_HEADER, execute_chat
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
@@ -50,6 +51,25 @@ def _validation_message(exc: ValidationError) -> str:
     return "; ".join(
         f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
     )
+
+
+async def guard_native_stream(gen, render_error, *, event: str):
+    """Wrap a native streaming body so a fault inside the adapter itself
+    still speaks the native protocol: the app-wide handlers render the
+    OpenAI envelope (or just reset the connection mid-stream), which the
+    Anthropic / google-genai SDKs cannot parse. An adapter exception is
+    logged and rendered as one in-stream native error frame; the response
+    is already 200 by the time the body runs, so that is the only channel.
+    Cancellation (client gone) passes straight through."""
+    try:
+        async for item in gen:
+            yield item
+    except Exception as exc:
+        logger.warning(event, error=str(exc))
+        yield render_error("Internal server error")
+    finally:
+        with anyio.CancelScope(shield=True):
+            await aclose_quietly(gen)
 
 
 async def parse_native_body(request: Request, model_cls: type[BaseModel]) -> BaseModel:
@@ -95,15 +115,18 @@ async def anthropic_messages(
         return proto.error_response(500, "Internal server error")
 
     if isinstance(inner, StreamingResponse):
+        events = proto.stream_events(
+            OpenAIFrameStream(inner.body_iterator),
+            # The protocol reports the input count in message_start,
+            # which is emitted before the engine knows it (its usage
+            # frame lands at end-of-stream), so send the same estimate
+            # /v1/messages/count_tokens would return. The exact count
+            # follows in message_delta.usage.
+            input_tokens=_count_input_tokens(translated),
+        )
         return StreamingResponse(
-            proto.stream_events(
-                OpenAIFrameStream(inner.body_iterator),
-                # The protocol reports the input count in message_start,
-                # which is emitted before the engine knows it (its usage
-                # frame lands at end-of-stream), so send the same estimate
-                # /v1/messages/count_tokens would return. The exact count
-                # follows in message_delta.usage.
-                input_tokens=_count_input_tokens(translated),
+            guard_native_stream(
+                events, proto.stream_error_event, event="anthropic_compat_stream_error",
             ),
             media_type="text/event-stream",
             headers={

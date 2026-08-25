@@ -26,6 +26,7 @@ import json
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterable
 
+import anyio
 import structlog
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -644,8 +645,18 @@ async def stream_chunks(frames: AsyncIterable[dict]) -> AsyncGenerator[dict, Non
     finally:
         # Last, deliberately: this drains the engine (running its
         # RequestLog commit), so the final chunk above always reaches the
-        # client ahead of that DB write. See OpenAIFrameStream.
-        await finish_quietly(frames)
+        # client ahead of that DB write. See OpenAIFrameStream. Shielded
+        # for the same reason as the Anthropic twin: a client disconnect
+        # lands here as task-group cancellation, and an unshielded await
+        # would abort the forwarding before it reaches the engine.
+        with anyio.CancelScope(shield=True):
+            await finish_quietly(frames)
+
+
+def stream_error_chunk(message: str) -> dict:
+    """The in-stream error chunk for a failure inside the adapter itself
+    (headers already sent, so a non-200 is impossible)."""
+    return {"error": {"code": 500, "message": message, "status": "INTERNAL"}}
 
 
 # ── Error envelope ──────────────────────────────────────────────────────

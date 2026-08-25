@@ -114,14 +114,20 @@ def test_cache_key_distinguishes_absent_temperature_from_explicit_zero():
 def test_cache_key_ignores_user_identifier():
     """`user` is an abuse-monitoring hint that does not change the
     completion; keying on it would fragment the cache per caller."""
+    import inspect
+
     from app.prompt_cache import cache_key
 
+    # `user` is not even an input to the key — the caller (chat.py) cannot
+    # feed it in by accident, so two callers' identical requests share.
+    assert "user" not in inspect.signature(cache_key).parameters
     base = dict(
         model="m", messages=[{"role": "user", "content": "hi"}],
         temperature=0.0, tools=None, response_format=None, seed=None,
         max_tokens=64,
     )
-    assert cache_key(**base) == cache_key(**base)
+    with pytest.raises(TypeError):
+        cache_key(**base, user="alice")
 
 
 def test_should_cache_skips_streaming_and_high_temperature():

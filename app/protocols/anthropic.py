@@ -29,6 +29,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable
 
+import anyio
 import structlog
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -420,10 +421,13 @@ def _ev(name: str, data: dict) -> str:
 
 
 def _args_complete(args: str) -> bool:
-    """True when a buffered tool call's argument fragments form whole JSON
-    (or nothing has arrived yet) — i.e. the call is safe to flush."""
+    """True when a buffered tool call's argument fragments form whole,
+    non-empty JSON — i.e. the call is safe to flush mid-stream. Empty is
+    NOT complete: the standard first fragment carries only id + name with
+    `arguments: ""`, and flushing on it would emit an empty tool_use block
+    and then a second, nameless one for the arguments that follow."""
     if not args:
-        return True
+        return False
     try:
         json.loads(args)
     except json.JSONDecodeError:
@@ -650,7 +654,22 @@ async def stream_events(
         # here rather than mid-transform keeps that DB write behind the
         # terminal events above, so the client always has message_stop
         # before the writeback happens. See OpenAIFrameStream.
-        await finish_quietly(frames)
+        #
+        # Shielded: this generator IS the response body, so a client
+        # disconnect lands here as Starlette's task-group cancellation.
+        # Unshielded, the first await would re-raise it and the forwarding
+        # would never reach the engine — its upstream aclose() and 499
+        # writeback would wait for GC finalization (or never run). Same
+        # reason the engine shields its own cleanup.
+        with anyio.CancelScope(shield=True):
+            await finish_quietly(frames)
+
+
+def stream_error_event(message: str) -> str:
+    """The in-stream error event for a failure inside the adapter itself
+    (after headers went out a non-200 is impossible); api_error, since the
+    fault is ours, not the caller's."""
+    return _ev("error", {"type": "error", "error": {"type": "api_error", "message": message}})
 
 
 # ── Error envelope ──────────────────────────────────────────────────────

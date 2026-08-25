@@ -243,6 +243,48 @@ async def test_text_between_argument_fragments_of_one_call_does_not_split_it():
     assert calls == [{"name": "get_weather", "args": {"city": "SF"}}]
 
 
+async def test_first_fragment_with_empty_arguments_is_not_flushed_by_following_text():
+    chunks = await _collect([
+        _tool_fragment(0, "", name="get_weather"),
+        _text_chunk("thinking..."),
+        _tool_fragment(0, '{"city": "SF"}'),
+        _FINISH_CHUNK,
+    ])
+    assert _part_kinds(chunks) == ["text", "functionCall"]
+    calls = [p["functionCall"] for c in chunks for cand in c.get("candidates") or []
+             for p in cand["content"]["parts"] if "functionCall" in p]
+    assert calls == [{"name": "get_weather", "args": {"city": "SF"}}]
+
+
+async def test_client_cancel_during_the_final_drain_still_lets_the_engine_finish():
+    """Mirror of the Anthropic test: the shielded `finally` must still drive
+    the engine to completion when the body task is cancelled mid-drain."""
+    import asyncio
+
+    import anyio
+
+    drain_started = asyncio.Event()
+    order: list[str] = []
+
+    async def engine_sse():
+        yield 'data: {"id":"c1","model":"m","choices":[{"index":0,' \
+              '"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+        drain_started.set()
+        await asyncio.sleep(0.05)
+        order.append("engine_writeback")
+
+    async def consume():
+        async for _ in stream_chunks(OpenAIFrameStream(engine_sse())):
+            pass
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(consume)
+        await drain_started.wait()
+        tg.cancel_scope.cancel()
+    assert order == ["engine_writeback"]
+
+
 async def test_close_at_the_error_chunk_still_drains_the_engine_source():
     """Mirror of the Anthropic test: a client gone while the error chunk is
     in flight must not turn into a close forwarded into the engine — the

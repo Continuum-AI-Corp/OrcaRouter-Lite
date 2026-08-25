@@ -705,3 +705,40 @@ async def test_auto_capability_mismatch_matches_the_pinned_403(native_client):
     assert r.status_code == 422, r.text
     assert "vision" in r.text
     fake.acompletion.assert_not_awaited()
+
+
+async def test_adapter_failure_mid_stream_renders_a_native_error_event(native_client, monkeypatch):
+    """A fault inside the streaming adapter itself must not fall through to
+    the app-wide OpenAI-envelope handler (or a bare connection reset): the
+    client gets one Anthropic `error` event it can parse."""
+    client, fake, key = native_client
+    from app.protocols import anthropic as proto
+    from app.routes import anthropic_compat
+
+    real = proto.stream_events
+
+    async def exploding(frames, **kw):
+        gen = real(frames, **kw)
+        async for ev in gen:
+            yield ev
+            raise RuntimeError("adapter bug")
+
+    monkeypatch.setattr(anthropic_compat.proto, "stream_events", exploding)
+    r = await client.post("/v1/messages", json=_messages_payload(stream=True),
+                          headers={"x-api-key": key})
+    assert r.status_code == 200
+    events = _parse_anthropic_sse(r.text)
+    assert events[0][0] == "message_start"
+    assert events[-1][0] == "error"
+    assert events[-1][1] == {
+        "type": "error",
+        "error": {"type": "api_error", "message": "Internal server error"},
+    }
+
+
+async def test_models_list_auth_failure_speaks_anthropic_envelope(native_client):
+    client, _fake, _key = native_client
+    r = await client.get("/v1/models", headers={"anthropic-version": "2023-06-01"})
+    assert r.status_code == 401
+    assert r.json()["type"] == "error"
+    assert r.json()["error"]["type"] == "authentication_error"

@@ -4,6 +4,7 @@ Endpoints:
   POST /v1beta/models/{model}:generateContent
   POST /v1beta/models/{model}:streamGenerateContent   (?alt=sse → SSE,
         otherwise the chunks are aggregated into one JSON array)
+  POST /v1beta/models/{model}:countTokens             (estimate)
   GET  /v1beta/models            (catalog, Gemini list shape)
   GET  /v1beta/models/{model}
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import json
 
+import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -29,8 +31,10 @@ from app.deps import get_db, get_key_context
 from app.protocols import gemini as proto
 from app.protocols.sse import OpenAIFrameStream, aclose_quietly
 from app.routes.anthropic_compat import (
+    _count_input_tokens,
     _validation_message,
     forwarded_headers,
+    guard_native_stream,
     parse_native_body,
 )
 from app.routes.chat import ERROR_TYPE_HEADER, execute_chat
@@ -41,7 +45,7 @@ from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 logger = structlog.get_logger()
 router = APIRouter(tags=["Gemini"])
 
-_ACTIONS = ("generateContent", "streamGenerateContent")
+_ACTIONS = ("generateContent", "streamGenerateContent", "countTokens")
 
 
 def _model_entry(m) -> dict:
@@ -95,6 +99,9 @@ async def gemini_generate(
     stream = action == "streamGenerateContent"
     alt_sse = request.query_params.get("alt", "").lower() == "sse"
 
+    if action == "countTokens":
+        return await _count_tokens(model, request)
+
     try:
         greq = await parse_native_body(request, proto.GeminiGenerateRequest)
         openai_body = ChatCompletionRequest.model_validate(
@@ -126,14 +133,18 @@ async def gemini_generate(
             logger.warning("gemini_compat_error", error=str(exc))
             return proto.error_response(500, "Internal server error")
 
-    chunks = proto.stream_chunks(OpenAIFrameStream(inner.body_iterator))
+    chunks = guard_native_stream(
+        proto.stream_chunks(OpenAIFrameStream(inner.body_iterator)),
+        proto.stream_error_chunk, event="gemini_compat_stream_error",
+    )
     if alt_sse:
         async def sse():
             try:
                 async for chunk in chunks:
                     yield f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n"
             finally:
-                await aclose_quietly(chunks)
+                with anyio.CancelScope(shield=True):
+                    await aclose_quietly(chunks)
 
         return StreamingResponse(
             sse(),
@@ -165,3 +176,35 @@ async def gemini_generate(
                 err.get("message") or "Upstream provider error",
             )
     return JSONResponse(collected, headers=forwarded_headers(inner))
+
+
+async def _count_tokens(model: str, request: Request) -> JSONResponse:
+    """POST /v1beta/models/{model}:countTokens — the google-genai SDK calls
+    this for context tracking in agentic loops (client.models.count_tokens),
+    exactly as Claude Code calls /v1/messages/count_tokens. The body is
+    either {"contents": ...} or the wrapped {"generateContentRequest":
+    {...}} form; an estimate is enough (same counter as the Anthropic
+    sibling)."""
+    try:
+        try:
+            raw = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Request body is not valid JSON") from None
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+        wrapped = raw.get("generateContentRequest") or raw.get("generate_content_request")
+        if isinstance(wrapped, dict):
+            raw = {**wrapped, **{k: v for k, v in raw.items()
+                                 if k not in ("generateContentRequest", "generate_content_request")}}
+        if "contents" not in raw:
+            raise HTTPException(status_code=400, detail="countTokens requires 'contents'")
+        greq = proto.GeminiGenerateRequest.model_validate(raw)
+        openai_body = proto.to_openai_request(greq, model=model, stream=False)
+        return JSONResponse({"totalTokens": _count_input_tokens(openai_body)})
+    except HTTPException as exc:
+        return proto.error_response(exc.status_code, str(exc.detail))
+    except ValidationError as exc:
+        return proto.error_response(400, _validation_message(exc))
+    except Exception as exc:  # defense-in-depth: never leak the OpenAI envelope
+        logger.warning("gemini_count_tokens_error", error=str(exc))
+        return proto.error_response(500, "Internal server error")

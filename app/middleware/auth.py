@@ -97,9 +97,23 @@ _ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error"}
 _GOOGLE_STATUSES = {401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 503: "UNAVAILABLE"}
 
 
-def _error_payload(path: str, status: int, message: str, error_type: str) -> bytes:
+def _protocol_for(scope) -> str:
+    """Which error envelope the caller's SDK parses: "anthropic" for the
+    /v1/messages surface AND for any request carrying `anthropic-version`
+    (the Anthropic SDK / Claude Code always send it — that is how
+    GET /v1/models serves them the Anthropic listing, so its auth failures
+    must speak the same envelope), "gemini" for /v1beta/, else "openai"."""
+    path = scope.get("path", "")
+    if path.startswith("/v1/messages") or _get_header(scope.get("headers", []), b"anthropic-version"):
+        return "anthropic"
+    if path.startswith("/v1beta/"):
+        return "gemini"
+    return "openai"
+
+
+def _error_payload(protocol: str, status: int, message: str, error_type: str) -> bytes:
     """Render the auth error in the envelope the caller's SDK expects."""
-    if path.startswith("/v1/messages"):
+    if protocol == "anthropic":
         body: dict = {
             "type": "error",
             "error": {
@@ -107,7 +121,7 @@ def _error_payload(path: str, status: int, message: str, error_type: str) -> byt
                 "message": message,
             },
         }
-    elif path.startswith("/v1beta/"):
+    elif protocol == "gemini":
         body = {
             "error": {
                 "code": status,
@@ -120,8 +134,8 @@ def _error_payload(path: str, status: int, message: str, error_type: str) -> byt
     return json.dumps(body).encode()
 
 
-async def _send_error(send, path: str, status: int, message: str, error_type: str) -> None:
-    body = _error_payload(path, status, message, error_type)
+async def _send_error(send, scope, status: int, message: str, error_type: str) -> None:
+    body = _error_payload(_protocol_for(scope), status, message, error_type)
     await send({
         "type": "http.response.start",
         "status": status,
@@ -150,7 +164,7 @@ class AuthMiddleware:
         candidates = _extract_credentials(scope)
         if not candidates:
             await _send_error(
-                send, path, 401,
+                send, scope, 401,
                 "Missing or invalid API key. Send it as 'Authorization: Bearer', "
                 "'x-api-key', or 'x-goog-api-key'.",
                 "auth_error",
@@ -184,13 +198,13 @@ class AuthMiddleware:
                     except AuthError as e:
                         auth_error = e
         except Exception:
-            await _send_error(send, path, 503, "Service temporarily unavailable", "server_error")
+            await _send_error(send, scope, 503, "Service temporarily unavailable", "server_error")
             return
 
         if key_context is None:
             status = auth_error.status_code if auth_error else 401
             message = auth_error.message if auth_error else "Invalid API key"
-            await _send_error(send, path, status, message, "auth_error")
+            await _send_error(send, scope, status, message, "auth_error")
             return
         scope.setdefault("state", {})["key_context"] = key_context
         scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id

@@ -530,3 +530,64 @@ async def test_auto_capability_mismatch_matches_the_pinned_403(native_client):
     assert r.status_code == 403, r.text
     assert r.json()["error"]["status"] == "PERMISSION_DENIED"
     fake.acompletion.assert_not_awaited()
+
+
+async def test_count_tokens_endpoint(native_client):
+    """client.models.count_tokens → POST :countTokens, routinely called in
+    agentic loops; both the bare and the generateContentRequest-wrapped
+    body shapes are accepted."""
+    client, fake, key = native_client
+    r = await client.post("/v1beta/models/gemini-1.5-flash:countTokens",
+                          json={"contents": [{"role": "user", "parts": [{"text": "hello there"}]}]},
+                          headers={"x-goog-api-key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["totalTokens"] > 0
+
+    r = await client.post("/v1beta/models/gemini-1.5-flash:countTokens",
+                          json={"generateContentRequest": {
+                              "model": "models/gemini-1.5-flash",
+                              "contents": [{"role": "user", "parts": [{"text": "hello there"}]}],
+                          }},
+                          headers={"x-goog-api-key": key})
+    assert r.status_code == 200, r.text
+    assert r.json()["totalTokens"] > 0
+
+    r = await client.post("/v1beta/models/gemini-1.5-flash:countTokens",
+                          json={}, headers={"x-goog-api-key": key})
+    assert r.status_code == 400
+    assert r.json()["error"]["status"] == "INVALID_ARGUMENT"
+    fake.acompletion.assert_not_awaited()
+
+    r = await client.get("/v1beta/models", headers={"x-goog-api-key": key})
+    assert "countTokens" in r.json()["models"][0]["supportedGenerationMethods"]
+
+
+async def test_adapter_failure_mid_stream_renders_a_native_error(native_client, monkeypatch):
+    """A fault inside the streaming adapter must render the Google envelope
+    on both stream shapes: an in-stream error chunk for alt=sse, a non-200
+    error response for the aggregated JSON array."""
+    client, fake, key = native_client
+    from app.protocols import gemini as proto
+    from app.routes import gemini_compat
+
+    real = proto.stream_chunks
+
+    async def exploding(frames):
+        gen = real(frames)
+        async for chunk in gen:
+            yield chunk
+            raise RuntimeError("adapter bug")
+
+    monkeypatch.setattr(gemini_compat.proto, "stream_chunks", exploding)
+
+    r = await client.post("/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse",
+                          json=_PAYLOAD, headers={"x-goog-api-key": key})
+    assert r.status_code == 200
+    frames = [json.loads(line[len("data: "):]) for line in r.text.splitlines()
+              if line.startswith("data: ")]
+    assert frames[-1] == {"error": {"code": 500, "message": "Internal server error", "status": "INTERNAL"}}
+
+    r = await client.post("/v1beta/models/gemini-1.5-flash:streamGenerateContent",
+                          json=_PAYLOAD, headers={"x-goog-api-key": key})
+    assert r.status_code == 500
+    assert r.json()["error"]["status"] == "INTERNAL"
