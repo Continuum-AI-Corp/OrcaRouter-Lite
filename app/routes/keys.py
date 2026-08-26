@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,16 +20,46 @@ router = APIRouter(prefix="/v1/keys", tags=["keys"])
 
 class CreateKey(BaseModel):
     name: str
+    # Optional restrictions for child keys. Only reachable by unrestricted
+    # callers (require_unrestricted above), so a restricted key can never
+    # mint a sibling with looser limits than its own — it can't mint at all.
+    model_allowlist: list[str] | None = None
+    budget_limit_cents: int | None = Field(default=None, gt=0)
+
+
+def require_unrestricted(kc: KeyContext) -> None:
+    """Key management is reserved for unrestricted keys.
+
+    A key that carries any restriction (`model_allowlist` or
+    `budget_limit_cents`) must not be able to mint, list, or revoke other
+    keys — otherwise it could create a sibling with no restrictions and
+    trivially bypass its own allowlist/budget. Unrestricted keys already
+    hold the maximum privilege this single-workspace edition exposes
+    (same trust level as PUT /v1/providers/*), so denying restricted keys
+    here grants nothing to anyone; it only closes the escalation path.
+    """
+    if kc.model_allowlist is not None or kc.budget_limit_cents is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Restricted API keys cannot manage keys. "
+                "Use an unrestricted key."
+            ),
+        )
 
 
 @router.get("")
 async def list_keys(
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(kc)
     rows = (
         await db.execute(
-            select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
+            select(ApiKey).where(
+                ApiKey.workspace_id == kc.workspace_id,
+                ApiKey.is_deleted == 0,
+            ).order_by(ApiKey.created_at)
         )
     ).scalars().all()
     return {
@@ -54,12 +84,15 @@ async def create_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    require_unrestricted(kc)
     full_key, key_hash, key_prefix = generate_api_key()
     row = ApiKey(
         workspace_id=kc.workspace_id,
         name=body.name,
         key_hash=key_hash,
         key_prefix=key_prefix,
+        model_allowlist=body.model_allowlist,
+        budget_limit_cents=body.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -70,18 +103,28 @@ async def create_key(
         "name": row.name,
         "key_prefix": row.key_prefix,
         "api_key": full_key,  # plaintext shown ONCE
+        "model_allowlist": row.model_allowlist,
+        "budget_limit_cents": row.budget_limit_cents,
     }
 
 
 @router.delete("/{key_id}", status_code=204)
 async def revoke_key(
     key_id: str,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    require_unrestricted(kc)
     row = (
         await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+            select(ApiKey).where(
+                ApiKey.id == key_id,
+                # Workspace scoping: without this, any key could revoke any
+                # other workspace's keys (the write path has always been
+                # scoped; the read/delete paths were not).
+                ApiKey.workspace_id == kc.workspace_id,
+                ApiKey.is_deleted == 0,
+            )
         )
     ).scalar_one_or_none()
     if row is None:
