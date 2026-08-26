@@ -31,6 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
+from packages.auth.spend import budget_exceeded, get_lifetime_spend_microcents
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -305,6 +306,34 @@ async def execute_chat(
             status_code=403,
             detail=f"Model '{body.model}' is not allowed for this API key",
         )
+
+    # Budget enforcement: `budget_limit_cents` is a lifetime cap on this
+    # key's total spend (sum of `cost_microcents` for all non-deleted
+    # request-log rows, including streaming 499/503 rows that already
+    # incurred provider billing). Checked before any routing, resolution,
+    # or cache work so an exhausted key costs the operator nothing — no
+    # upstream attempt, no cache fill.
+    #
+    # NOTE: This is a best-effort soft limit, not a hard atomic cap.
+    # Spend is read before the request and the current request's cost is
+    # only written after the response/stream completes. N concurrent
+    # requests from the same budgeted key all observe the same
+    # pre-request total and may all pass the check, exceeding the cap by
+    # up to N× per-request cost in a burst. A hard cap would require a
+    # reservation/claim or row-level lock before dispatch; the current
+    # design trades strictness for simplicity and avoids holding a DB
+    # transaction across the upstream call. See spend.py for aggregation
+    # semantics.
+    if kc.budget_limit_cents is not None:
+        spend = await get_lifetime_spend_microcents(db, str(kc.key_id))
+        if budget_exceeded(spend, kc.budget_limit_cents):
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "API key budget exhausted "
+                    f"({spend} of {kc.budget_limit_cents * 10_000} microcents spent)."
+                ),
+            )
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
