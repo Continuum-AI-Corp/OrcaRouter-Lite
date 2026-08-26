@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.config import get_settings
     from packages.db import session as session_mod
-    from packages.db.engine import dispose_engine, get_engine
+    from packages.db.engine import dispose_engine, get_engine, redacted_url
     from packages.db.models.base import Base
 
     settings = get_settings()
@@ -40,7 +40,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         ),
     )
     log = structlog.get_logger()
-    log.info("lite_starting", database_url=settings.database_url)
+    # Redact: on the documented Postgres path the raw URL carries the DB
+    # password, and structured logs are retained by hosted aggregators.
+    log.info("lite_starting", database_url=redacted_url(settings.database_url))
 
     engine = get_engine(settings.database_url)
 
@@ -54,7 +56,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with session_mod._session_factory() as s:
         seed = await seed_initial_state(s)
         if seed.created and seed.api_key:
-            log.info("seed_complete", api_key=seed.api_key)
+            # No key material in the structured event: logs are retained by
+            # aggregators. The print() below is the one-time delivery channel.
+            log.info("seed_complete", workspace_id=seed.workspace_id)
             try:
                 print(f"\n  ✓ orcarouter-lite ready. API key: {seed.api_key}\n")
             except UnicodeEncodeError:

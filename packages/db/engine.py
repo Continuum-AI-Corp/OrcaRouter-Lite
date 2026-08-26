@@ -5,7 +5,22 @@ SQLite is the default, Postgres opt-in via DATABASE_URL=postgresql+asyncpg://...
 
 from __future__ import annotations
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+
+def redacted_url(database_url: str) -> str:
+    """URL safe for logging: password replaced, garbage input never echoed.
+
+    Uses SQLAlchemy's own renderer so every driver scheme is handled the
+    same way (`postgresql+asyncpg://user:***@host/db`). Unparseable input
+    degrades to a fixed placeholder instead of being reflected back into
+    logs.
+    """
+    try:
+        return make_url(database_url).render_as_string(hide_password=True)
+    except Exception:
+        return "<unparseable-database-url>"
 
 
 def build_engine(database_url: str) -> AsyncEngine:
