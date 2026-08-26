@@ -130,7 +130,18 @@ def decrypt_credential(blob: bytes) -> str:
             # 0x01 (~0.4%). Fall through and try the unversioned layout
             # before giving up.
             pass
+        except ValueError as e:
+            # Malformed v1 blob (should be rare due to length check) — treat
+            # as authentication failure rather than leaking ValueError.
+            raise InvalidTag(str(e)) from e
 
     # Legacy unversioned blob: nonce(12) || ciphertext+tag.
     nonce, ciphertext = blob[:_NONCE_LEN], blob[_NONCE_LEN:]
-    return aes.decrypt(nonce, ciphertext, None).decode("utf-8")
+    try:
+        return aes.decrypt(nonce, ciphertext, None).decode("utf-8")
+    except ValueError as e:
+        # cryptography raises ValueError for malformed inputs (nonce must be
+        # 12 bytes / data must be at least 16 bytes) rather than InvalidTag,
+        # which is only for GCM tag mismatch. Normalize so callers and the
+        # truncated-blob test have a single exception type to handle.
+        raise InvalidTag(str(e)) from e

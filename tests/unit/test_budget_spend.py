@@ -11,7 +11,7 @@ from packages.auth.spend import (
 
 @pytest.fixture
 async def seeded_log(db_session):
-    """Two keys with a mix of billable / failed / soft-deleted rows."""
+    """Two keys with a mix of billable / streaming-failure / soft-deleted rows."""
     from packages.db.models.api_key import ApiKey
     from packages.db.models.request_log import RequestLog
 
@@ -31,11 +31,22 @@ async def seeded_log(db_session):
             model_resolved="m", provider="openai", input_tokens=1, output_tokens=1,
             cost_microcents=500, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-1",
         ),
-        # failed requests are not billable
+        # Streaming failures ARE billable when they carry cost — the
+        # provider billed tokens even though the final status is 503
+        # (mid-stream upstream failure) or 499 (client disconnect).
+        # Filtering on status_code < 400 would exclude these and make the
+        # budget bypassable, so they must be counted.
         RequestLog(
             workspace_id="default", api_key_id=k1.id, model_requested="m",
             model_resolved="m", provider="openai", input_tokens=9, output_tokens=9,
             cost_microcents=999_999, status_code=503, routing_strategy="balanced", latency_ms=10, trace_id="t-3",
+        ),
+        # soft-deleted rows must never count, even with non-zero cost
+        RequestLog(
+            workspace_id="default", api_key_id=k1.id, model_requested="m",
+            model_resolved="m", provider="openai", input_tokens=1, output_tokens=1,
+            cost_microcents=12345, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-5",
+            is_deleted=1,
         ),
         # another key's spend must not leak in
         RequestLog(
@@ -52,7 +63,27 @@ async def seeded_log(db_session):
 async def test_spend_sums_only_billable_rows_for_the_key(db_session, seeded_log):
     k1, _k2 = seeded_log
     spend = await get_lifetime_spend_microcents(db_session, k1.id)
-    assert spend == 1500
+    # 1000 + 500 + 999_999 (503 failure with cost is now counted) = 1,001,499;
+    # soft-deleted 12345 is excluded.
+    assert spend == 1_001_499
+
+
+async def test_spend_counts_stream_disconnect_and_mid_stream_failure(db_session, seeded_log):
+    """Regression for P1: 499/503 streaming costs must count toward budget."""
+    from packages.db.models.request_log import RequestLog
+
+    k1, _k2 = seeded_log
+    # Add explicit 499 disconnect row with cost
+    db_session.add(
+        RequestLog(
+            workspace_id="default", api_key_id=k1.id, model_requested="m",
+            model_resolved="m", provider="openai", input_tokens=2, output_tokens=2,
+            cost_microcents=42_000, status_code=499, routing_strategy="balanced", latency_ms=10, trace_id="t-6",
+        )
+    )
+    await db_session.commit()
+    spend = await get_lifetime_spend_microcents(db_session, k1.id)
+    assert spend == 1_001_499 + 42_000
 
 
 async def test_empty_history_is_zero(db_session, seeded_log):

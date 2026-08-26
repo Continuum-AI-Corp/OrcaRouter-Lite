@@ -55,9 +55,21 @@ async def assert_credential_encryption_ready(
     try:
         async with make_session() as session:
             key_rows = await _count_provider_keys(session)
-    except Exception:
-        # Table missing (pre-migration fresh DB) counts as zero rows.
-        key_rows = 0
+    except Exception as exc:
+        # Only a genuinely missing table counts as zero rows (fresh DB
+        # pre-migration). Any other failure — connection loss, "database
+        # is locked", I/O error — must fail closed, not silently boot
+        # with the dev key and expose stored credentials.
+        #
+        # `create_all` ran moments earlier on the same engine on the
+        # main.py path, so a missing table is already unexpected there;
+        # we still handle it for out-of-band callers that invoke the
+        # guard without prior migration.
+        msg = str(exc).lower()
+        if "no such table" in msg or "no such relation" in msg or "does not exist" in msg:
+            key_rows = 0
+        else:
+            raise
 
     if is_sqlite and key_rows == 0:
         return

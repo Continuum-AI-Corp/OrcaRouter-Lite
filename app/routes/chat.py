@@ -308,9 +308,22 @@ async def execute_chat(
         )
 
     # Budget enforcement: `budget_limit_cents` is a lifetime cap on this
-    # key's billable (status < 400) spend. Checked before any routing,
-    # resolution, or cache work so an exhausted key costs the operator
-    # nothing — no upstream attempt, no cache fill.
+    # key's total spend (sum of `cost_microcents` for all non-deleted
+    # request-log rows, including streaming 499/503 rows that already
+    # incurred provider billing). Checked before any routing, resolution,
+    # or cache work so an exhausted key costs the operator nothing — no
+    # upstream attempt, no cache fill.
+    #
+    # NOTE: This is a best-effort soft limit, not a hard atomic cap.
+    # Spend is read before the request and the current request's cost is
+    # only written after the response/stream completes. N concurrent
+    # requests from the same budgeted key all observe the same
+    # pre-request total and may all pass the check, exceeding the cap by
+    # up to N× per-request cost in a burst. A hard cap would require a
+    # reservation/claim or row-level lock before dispatch; the current
+    # design trades strictness for simplicity and avoids holding a DB
+    # transaction across the upstream call. See spend.py for aggregation
+    # semantics.
     if kc.budget_limit_cents is not None:
         spend = await get_lifetime_spend_microcents(db, str(kc.key_id))
         if budget_exceeded(spend, kc.budget_limit_cents):
