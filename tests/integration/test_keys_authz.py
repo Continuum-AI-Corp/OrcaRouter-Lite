@@ -137,6 +137,31 @@ async def test_unrestricted_key_retains_full_management(keys_app, seeded_keys):
         assert revoked.status_code == 204
 
 
+async def test_create_key_accepts_restrictions(keys_app, seeded_keys, db_session):
+    root, *_ = seeded_keys
+    h = {"Authorization": f"Bearer {root}"}
+    async with await _client(keys_app) as c:
+        r = await c.post(
+            "/v1/keys",
+            json={"name": "team-a", "model_allowlist": ["gpt-4o-mini"], "budget_limit_cents": 500},
+            headers=h,
+        )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["model_allowlist"] == ["gpt-4o-mini"]
+    assert body["budget_limit_cents"] == 500
+
+    from sqlalchemy import select
+
+    from packages.db.models.api_key import ApiKey
+
+    row = (
+        await db_session.execute(select(ApiKey).where(ApiKey.id == body["id"]))
+    ).scalar_one()
+    assert row.budget_limit_cents == 500
+    assert row.model_allowlist == ["gpt-4o-mini"]
+
+
 # ── Workspace scoping (IDOR regression tests) ────────────────────────────
 
 
