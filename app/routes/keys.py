@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,9 @@ class CreateKey(BaseModel):
     name: str
     # None (omitted) = unrestricted. [] = deny everything. See UpdateKey.
     model_allowlist: list[str] | None = None
+    # A restricted caller may not mint this at all (see
+    # _require_create_within_allowlist), so it can never widen its own cap.
+    budget_limit_cents: int | None = Field(default=None, gt=0)
 
 
 class UpdateKey(BaseModel):
@@ -79,7 +82,11 @@ async def _begin_sqlite_immediate(db: AsyncSession) -> None:
     await db.execute(text("BEGIN IMMEDIATE"))
 
 
-async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
+async def _lock_key(
+    db: AsyncSession,
+    key_id: str,
+    workspace_id: str | None = None,
+) -> ApiKey | None:
     """Re-read a key and take a write lock (SELECT FOR UPDATE).
 
     Auth-time ``kc.model_allowlist`` is a snapshot from ``validate_api_key``.
@@ -88,14 +95,15 @@ async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
     ``FOR UPDATE`` and re-runs the restriction check against that fresh
     value. On SQLite the caller lock is paired with ``BEGIN IMMEDIATE``
     (see ``_lock_caller``) because ``FOR UPDATE`` is a no-op there.
+
+    ``workspace_id`` scopes the lookup to the caller's workspace. Pass it for
+    target rows (update/revoke) so a key id from another workspace resolves to
+    ``None`` — a 404 rather than a cross-workspace write.
     """
-    return (
-        await db.execute(
-            select(ApiKey)
-            .where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+    stmt = select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+    if workspace_id is not None:
+        stmt = stmt.where(ApiKey.workspace_id == workspace_id)
+    return (await db.execute(stmt.with_for_update())).scalar_one_or_none()
 
 
 async def _lock_caller(db: AsyncSession, key_id: str) -> ApiKey:
@@ -173,12 +181,17 @@ def _require_revoke_allowed(
 
 @router.get("")
 async def list_keys(
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    # Workspace scoping on the read path: without it, a key sees every
+    # workspace's keys (the write path has always been scoped).
     rows = (
         await db.execute(
-            select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
+            select(ApiKey).where(
+                ApiKey.workspace_id == kc.workspace_id,
+                ApiKey.is_deleted == 0,
+            ).order_by(ApiKey.created_at)
         )
     ).scalars().all()
     return {"keys": [_key_public(r) for r in rows]}
@@ -201,6 +214,7 @@ async def create_key(
         key_hash=key_hash,
         key_prefix=key_prefix,
         model_allowlist=allowlist,
+        budget_limit_cents=body.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -209,6 +223,8 @@ async def create_key(
     return {
         **_key_public(row),
         "api_key": full_key,  # plaintext shown ONCE
+        "model_allowlist": row.model_allowlist,
+        "budget_limit_cents": row.budget_limit_cents,
     }
 
 
@@ -225,7 +241,7 @@ async def update_key(
     if key_id == caller.id:
         row = caller
     else:
-        row = await _lock_key(db, key_id)
+        row = await _lock_key(db, key_id, caller.workspace_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Key not found")
 
@@ -249,7 +265,7 @@ async def revoke_key(
     if key_id == caller.id:
         row = caller
     else:
-        row = await _lock_key(db, key_id)
+        row = await _lock_key(db, key_id, caller.workspace_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Key not found")
 
