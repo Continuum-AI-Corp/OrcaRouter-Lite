@@ -9,6 +9,10 @@ name: release
 # Push a v* tag -> `:latest` + `:X.Y.Z` + `:X.Y` image (amd64 + arm64),
 #                  PyPI release, and the dists attached to the GitHub release.
 #
+# Nothing consumable is published before it has been executed: the build pushes
+# an immutable `sha-<short>` tag, every platform in the image is booted against
+# `/health`, and only then are the release tags moved onto that digest.
+#
 # One-time setup before the first tag: see RELEASING.md.
 
 on:
@@ -18,7 +22,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  # All tag releases share one group. Per-ref groups let a v0.1.1 and a v0.1.2
+  # push run concurrently, and both write the shared `latest` tag — last writer
+  # wins, so a slower older release can leave `latest` pointing backwards.
+  # Branch and dispatch runs keep their own group.
+  group: release-${{ github.ref_type == 'tag' && 'tag' || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -41,7 +49,14 @@ jobs:
         id: cfg
         run: |
           # GHCR rejects uppercase; Continuum-AI-Corp/OrcaRouter-Lite -> lowercase.
-          echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          image="${REGISTRY}/${GITHUB_REPOSITORY,,}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          # The build pushes this tag and nothing else. It is immutable and
+          # nothing consumes it, so a failed smoke test leaves no broken
+          # `latest`/`X.Y.Z` behind — `promote` applies those afterwards.
+          # Same shape as metadata-action's `type=sha,format=short`, so promote
+          # re-applies it with the rest and every tag lands on one digest.
+          echo "staging=${image}:sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
           # arm64 is emulated (slow), so only pay for it on an actual release.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
@@ -65,6 +80,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.cfg.outputs.image }}
+          # This is the *promote* list, not what the build pushes: these tags
+          # are attached to the digest only after the smoke test passes.
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -79,7 +96,7 @@ jobs:
           context: .
           platforms: ${{ steps.cfg.outputs.platforms }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.cfg.outputs.staging }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: type=gha
@@ -89,30 +106,82 @@ jobs:
           provenance: false
           sbom: false
 
+      - name: smoke the pushed image
+        run: |
+          img="${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}"
+          host="linux/$(docker version --format '{{.Server.Arch}}')"
+          IFS=',' read -ra platforms <<< "${{ steps.cfg.outputs.platforms }}"
+          rc=0
+          for p in "${platforms[@]}"; do
+            # Every platform that gets published is booted once. An arm64 image
+            # that is never executed is an arm64 image nobody proved works.
+            name="rel-${p##*/}"
+            # Emulated platforms boot several times slower than the host one.
+            if [ "$p" = "$host" ]; then tries=20; else tries=60; fi
+            echo "::group::smoke $p"
+            docker rm -f "$name" >/dev/null 2>&1 || true
+            docker run -d --name "$name" --platform "$p" -p 8000:8000 \
+              -e DATABASE_URL=sqlite+aiosqlite:///./orca.db "$img" >/dev/null
+            ok=0
+            for _ in $(seq 1 "$tries"); do
+              if curl -sf http://localhost:8000/health; then
+                echo; echo "✓ $p is healthy"
+                ok=1
+                break
+              fi
+              sleep 3
+            done
+            if [ "$ok" != 1 ]; then
+              echo "✗ $p never became healthy"
+              docker logs "$name" || true
+              rc=1
+            fi
+            docker rm -f "$name" >/dev/null
+            echo "::endgroup::"
+            [ "$rc" = 0 ] || break
+          done
+          exit $rc
+
+      - name: promote the digest to the release tags
+        id: promote
+        run: |
+          src="${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}"
+          released="${{ steps.build.outputs.digest }}"
+          tags=()
+          while IFS= read -r t; do
+            [ -n "$t" ] || continue
+            tags+=("$t")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          if [ ${#tags[@]} -eq 0 ]; then
+            echo "no tags for this ref — $src stays as it is"
+          else
+            args=()
+            for t in "${tags[@]}"; do args+=(--tag "$t"); done
+            docker buildx imagetools create "${args[@]}" "$src"
+            # imagetools copies a multi-platform index as-is but wraps a
+            # single-platform manifest in a fresh one, so read back what the
+            # tags actually resolve to instead of assuming the build digest —
+            # that is the digest consumers get, and the digest to attest.
+            released=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${tags[0]}")
+            for t in "${tags[@]}"; do
+              got=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$t")
+              if [ "$got" != "$released" ]; then
+                echo "::error::$t resolved to $got, expected $released — tags disagree"
+                exit 1
+              fi
+              echo "✓ $t -> $got"
+            done
+          fi
+          echo "digest=$released" >> "$GITHUB_OUTPUT"
+
+      # Attests what the release tags resolve to, so
+      # `gh attestation verify oci://…:latest` verifies the image people pull.
       - name: attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ steps.cfg.outputs.image }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.promote.outputs.digest }}
           push-to-registry: true
-
-      - name: smoke the pushed image
-        run: |
-          img="${{ steps.cfg.outputs.image }}@${{ steps.build.outputs.digest }}"
-          docker run -d --name rel -p 8000:8000 \
-            -e DATABASE_URL=sqlite+aiosqlite:///./orca.db "$img"
-          for _ in $(seq 1 20); do
-            if curl -sf http://localhost:8000/health; then
-              echo; echo "✓ pushed image is healthy"
-              docker rm -f rel >/dev/null
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "✗ pushed image never became healthy"
-          docker logs rel
-          docker rm -f rel >/dev/null
-          exit 1
 
       - name: summary
         run: |
@@ -123,12 +192,16 @@ jobs:
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
             echo
-            echo "digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "platforms: \`${{ steps.cfg.outputs.platforms }}\`"
+            echo "digest: \`${{ steps.promote.outputs.digest }}\`"
+            echo "platforms: \`${{ steps.cfg.outputs.platforms }}\` (each one booted)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   pypi:
     name: pypi
+    # The image job is the gate: a tag whose container never booted is not worth
+    # putting on PyPI, and publishing one of the two advertised artifacts for a
+    # version while the other failed leaves them inconsistent.
+    needs: image
     # Forks can rehearse the whole release (the image job pushes to their own
     # ghcr namespace), but only the canonical repo owns the PyPI project — a
     # fork has no trusted publisher and would just fail at the OIDC exchange.
@@ -184,9 +257,10 @@ jobs:
             || { echo "::error::dashboard is missing from the wheel"; exit 1; }
           echo "✓ wheel boots and serves the dashboard"
 
-      - name: publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
+      # The GitHub release goes first because it is the retryable half: a
+      # published PyPI version can never be replaced, so writing it first would
+      # leave a failure here half-done — and the re-run would abort at the
+      # upload step before ever reaching the attach.
       - name: attach dists to the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -194,3 +268,11 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+      - name: publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Makes a re-run of a partially failed release a no-op here instead of
+          # a hard "File already exists" abort. The tag/version gate above is
+          # what keeps this from masking a genuine version mix-up.
+          skip-existing: true

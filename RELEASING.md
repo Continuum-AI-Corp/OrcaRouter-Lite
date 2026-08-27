@@ -114,6 +114,29 @@ Before publishing, the `pypi` job installs the wheel into a clean venv, boots
 it, and fails the release if `/health` or the dashboard at `/` does not answer.
 The `image` job runs the same smoke test against the pushed image.
 
+### What gates what
+
+Nothing a consumer can pull is published before it has been executed, and the
+whole run is safe to re-run:
+
+- The build pushes **only** `:sha-<short>` — immutable and unadvertised. Every
+  platform in that digest is then booted against `/health` (arm64 under qemu,
+  with a longer timeout), and only after that does a `promote` step move
+  `latest`/`X.Y.Z`/`X.Y`/`edge` onto the same digest with
+  `docker buildx imagetools create`. A failed smoke leaves the old `latest`
+  untouched. The provenance attestation is then made against the digest those
+  tags actually resolve to — read back, not assumed — so
+  `gh attestation verify oci://…:latest` verifies the image people pull.
+- All tag releases share one concurrency group, so two versions tagged close
+  together cannot both write `latest` and leave it pointing at the older one.
+- `pypi` `needs: image`, so a container that never booted stops the PyPI
+  release too — the two artifacts for a version ship together or not at all.
+- Inside `pypi`, the GitHub release is created and the dists attached **before**
+  the PyPI upload. That is the retryable order: a published PyPI version can
+  never be replaced, so if the upload came first, a failure afterwards would be
+  unrecoverable by re-run. `skip-existing: true` lets a re-run pass through a
+  version that already landed.
+
 ### The already-tagged v0.1.0
 
 `v0.1.0` was tagged before this workflow existed, and it cannot be released
