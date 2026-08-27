@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     orcarouter_api_key: str | None = None
     orcarouter_base_url: str = "https://api.orcarouter.ai/v1"
     orcarouter_signup_url: str = "https://www.orcarouter.ai/register"
+    # Where an account holder actually copies their sk-orca-* key — the
+    # target of the dashboard's "Get your key" button. /register above is
+    # only for users without an account yet (the token console bounces
+    # them through sign-up/login on its own).
+    orcarouter_token_url: str = "https://www.orcarouter.ai/console/token"
     # Source of truth for the "Models you can't reach" tile's curated
     # top list. Fetched lazily, cached in-process for ~1h, with a static
     # fallback if the remote is unreachable.

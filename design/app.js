@@ -58,7 +58,7 @@ const state = {
   latency: { by_provider: [] },
   savings: { saved_microcents: 0, savings_percent: 0, hosted_auto: null },
   models: [],
-  hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", provider_name: "orcarouter" },
+  hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", token_url: "https://www.orcarouter.ai/console/token", provider_name: "orcarouter" },
   unreachable: { hosted_configured: false, unreachable: [] },
   // Quality scoring (Artificial Analysis Intelligence Index + manual overrides)
   quality: { aa_index: { configured: false, source: "missing-key", matched_count: 0 }, models: [], override_count: 0 },
@@ -544,9 +544,29 @@ function renderHostedCard() {
   const providersSignup = $("#providers-hosted-signup");
   const providersCard = $("#providers-hosted-card");
 
-  const url = state.hosted.signup_url || "https://www.orcarouter.ai/register";
-  if (signupBtn) signupBtn.href = url;
-  if (providersSignup) providersSignup.href = url;
+  // Primary CTA goes to the token console — that's the page with the
+  // copyable sk-orca-* key. The secondary link is for users who don't
+  // have an account yet.
+  const tokenUrl = state.hosted.token_url || "https://www.orcarouter.ai/console/token";
+  const signupUrl = state.hosted.signup_url || "https://www.orcarouter.ai/register";
+  if (signupBtn) signupBtn.href = tokenUrl;
+  if (providersSignup) providersSignup.href = tokenUrl;
+  const registerLink = $("#hosted-register-link");
+  if (registerLink) registerLink.href = signupUrl;
+
+  // First run == no hosted key yet: the two-step "get your key" flow is
+  // the most useful thing on the page, so it goes above the (empty) KPI
+  // grid. Once configured it drops back to its normal slot.
+  const panel = document.getElementById("panel-overview");
+  if (panel && card.parentElement === panel) {
+    if (!state.hosted.configured && panel.firstElementChild !== card) {
+      panel.prepend(card);
+    } else if (state.hosted.configured && panel.firstElementChild === card) {
+      const help = document.getElementById("getting-started");
+      if (help) panel.insertBefore(card, help);
+      else panel.appendChild(card);
+    }
+  }
 
   if (state.hosted.configured) {
     pill.textContent = "Active";
@@ -620,12 +640,50 @@ function renderUnreachable() {
 }
 
 function bindHostedForm() {
+  // Step 1 is a link the user clicks, not a redirect we perform: the
+  // token console opens in a new tab and the dashboard stays put, so
+  // coming back to paste is one tab-switch away.
+  const getKeyBtn = $("#hosted-signup-btn");
+  if (getKeyBtn) {
+    getKeyBtn.addEventListener("click", () => {
+      const step1 = $("#hosted-step-1");
+      if (step1) step1.classList.add("done");
+      // They left for the key; when the tab regains focus, put the
+      // cursor where the key goes. Once only, and never if they already
+      // typed something.
+      window.addEventListener("focus", function focusPaste() {
+        window.removeEventListener("focus", focusPaste);
+        const input = $("#hosted-key-input");
+        if (input && !input.value && !state.hosted.configured) input.focus();
+      });
+    });
+  }
+
+  const pasteBtn = $("#hosted-paste-btn");
+  if (pasteBtn) {
+    pasteBtn.addEventListener("click", async () => {
+      const input = $("#hosted-key-input");
+      if (!input) return;
+      try {
+        const text = (await navigator.clipboard.readText()).trim();
+        if (!text) { toast("Clipboard is empty — copy your sk-orca-* key first", "err"); return; }
+        input.value = text;
+        input.focus();
+      } catch {
+        // Firefox has no readText for pages, and any browser can deny
+        // the permission prompt. Ctrl+V still works — say so.
+        input.focus();
+        toast("Your browser blocked clipboard access — paste with Ctrl+V", "err");
+      }
+    });
+  }
+
   const form = $("#hosted-key-form");
   if (form) {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const v = $("#hosted-key-input").value.trim();
-      if (!v) { toast("Paste your sk-orca-* key from orcarouter.ai", "err"); return; }
+      if (!v) { toast("Paste your sk-orca-* key from orcarouter.ai/console/token", "err"); return; }
       try {
         await api(`/v1/providers/orcarouter`, {
           method: "PUT",
@@ -1278,6 +1336,7 @@ function paletteCommands() {
     { id: "open-help",    title: "Open help & docs",     meta: "Help", hint: "?",  do: () => openHelp() },
     { id: "open-docs",    title: "Open docs.orcarouter.ai", meta: "Link", hint: "↗", do: () => window.open("https://docs.orcarouter.ai/introduction", "_blank") },
     { id: "open-site",    title: "Open orcarouter.ai",   meta: "Link", hint: "↗",  do: () => window.open("https://www.orcarouter.ai", "_blank") },
+    { id: "get-hosted-key", title: "Get hosted API key (orcarouter.ai/console/token)", meta: "Link", hint: "↗", do: () => window.open(state.hosted.token_url || "https://www.orcarouter.ai/console/token", "_blank") },
     { id: "logout",       title: "Sign out (forget API key)", meta: "Action", hint: "", do: () => logout() },
   ];
 }

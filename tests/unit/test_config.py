@@ -13,6 +13,7 @@ def test_settings_load_with_defaults(isolated_env):
     assert s.host == "0.0.0.0"
     assert s.port == 8000
     assert s.orcarouter_base_url == "https://api.orcarouter.ai/v1"
+    assert s.orcarouter_token_url == "https://www.orcarouter.ai/console/token"
     assert s.orcarouter_api_key is None
     assert s.openai_api_key is None
 

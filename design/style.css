@@ -556,22 +556,64 @@ code {
   gap: var(--s-4);
   margin-top: var(--s-4);
 }
-.hosted-cta-actions {
+.hosted-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: var(--s-4);
 }
-.hosted-step {
+.hosted-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+.hosted-step-num {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
+}
+.hosted-step-row.done .hosted-step-num {
+  background: var(--ok-soft);
+  color: #066943;
+  border-color: var(--ok-soft);
+}
+.hosted-step-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  min-width: 0;
+  flex: 1;
+}
+.hosted-step-body .hosted-paste { width: 100%; }
+.hosted-step-hint {
   font-size: 12.5px;
   color: var(--ink-3);
 }
-.hosted-step code {
+.hosted-step-hint code {
   font-size: 11.5px;
   background: var(--surface-2);
   padding: 1px 5px;
   border-radius: 4px;
 }
+.hosted-step-link {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hosted-step-link:hover { color: var(--ink); }
 .hosted-paste { margin: 0; }
 .hosted-active {
   margin-top: var(--s-3);

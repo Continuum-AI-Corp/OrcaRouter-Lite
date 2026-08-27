@@ -2,8 +2,8 @@
 
 Powers the dashboard's "Hosted fallback" card: tells the SPA whether
 hosted upstream is configured (env or DB), where the configuration came
-from, and the signup URL to send unconfigured users to for their free
-$5 trial credit.
+from, the token-console URL where users copy their sk-orca-* key, and
+the signup URL for users without an account yet (free $5 trial credit).
 """
 
 from __future__ import annotations
@@ -46,5 +46,6 @@ async def hosted_status(
         "source": source,
         "base_url": settings.orcarouter_base_url,
         "signup_url": settings.orcarouter_signup_url,
+        "token_url": settings.orcarouter_token_url,
         "provider_name": HOSTED_PROVIDER_NAME,
     }

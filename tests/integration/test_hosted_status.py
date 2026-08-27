@@ -79,7 +79,25 @@ async def test_hosted_status_unconfigured_shows_signup_url(unconfigured_client):
     # credit" button opens this URL — getting it wrong sends users to a
     # 404 or worse.
     assert body["signup_url"] == "https://www.orcarouter.ai/register"
+    # The primary CTA sends users straight to the token console — the page
+    # with the copyable sk-orca-* key. Sign-up is only the secondary link.
+    assert body["token_url"] == "https://www.orcarouter.ai/console/token"
     assert body["provider_name"] == "orcarouter"
+
+
+async def test_hosted_status_token_url_overridable_by_env(tmp_sqlite_url, monkeypatch):
+    """Self-hosters pointing Lite at a private OrcaRouter deployment can
+    redirect the "get your key" CTA via ORCAROUTER_TOKEN_URL."""
+    engine, factory, client = await _make_client(
+        tmp_sqlite_url, monkeypatch,
+        {"ORCAROUTER_TOKEN_URL": "https://orca.internal/console/token"},
+    )
+    async with client as c:
+        r = await c.get("/v1/hosted")
+        assert r.json()["token_url"] == "https://orca.internal/console/token"
+    await engine.dispose()
+    from packages.db import session as session_mod
+    session_mod._session_factory = None
 
 
 async def test_hosted_status_env_configured_reports_env_source(env_configured_client):

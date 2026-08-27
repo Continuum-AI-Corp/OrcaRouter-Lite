@@ -239,23 +239,39 @@
 
             <!-- Unconfigured state -->
             <div class="hosted-cta" id="hosted-cta" hidden>
-              <div class="hosted-cta-actions">
-                <a class="btn btn-primary" id="hosted-signup-btn" href="#" target="_blank" rel="noreferrer">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/></svg>
-                  Get free $5 credit on orcarouter.ai
-                </a>
-                <span class="hosted-step">Then paste the <code>sk-orca-*</code> key →</span>
-              </div>
-              <form id="hosted-key-form" class="inline-form hosted-paste">
-                <label class="field flex-grow">
-                  <span class="field-label">Hosted API key</span>
-                  <input id="hosted-key-input" type="password" placeholder="sk-orca-..." autocomplete="off" spellcheck="false">
-                </label>
-                <button type="submit" class="btn btn-primary">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  Activate fallback
-                </button>
-              </form>
+              <ol class="hosted-steps">
+                <li class="hosted-step-row" id="hosted-step-1">
+                  <span class="hosted-step-num">1</span>
+                  <div class="hosted-step-body">
+                    <a class="btn btn-primary" id="hosted-signup-btn" href="#" target="_blank" rel="noreferrer">
+                      Get your key on orcarouter.ai
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </a>
+                    <span class="hosted-step-hint">Opens the token console in a new tab &mdash; copy your <code>sk-orca-*</code> key there.</span>
+                    <a class="hosted-step-link" id="hosted-register-link" href="#" target="_blank" rel="noreferrer">No account yet? Sign up for free $5 credit</a>
+                  </div>
+                </li>
+                <li class="hosted-step-row" id="hosted-step-2">
+                  <span class="hosted-step-num">2</span>
+                  <div class="hosted-step-body">
+                    <span class="hosted-step-hint">Come back here, paste the key and activate.</span>
+                    <form id="hosted-key-form" class="inline-form hosted-paste">
+                      <label class="field flex-grow">
+                        <span class="field-label">Hosted API key</span>
+                        <input id="hosted-key-input" type="password" placeholder="sk-orca-..." autocomplete="off" spellcheck="false">
+                      </label>
+                      <button type="button" class="btn btn-ghost" id="hosted-paste-btn" data-tooltip="Paste from clipboard">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+                        Paste
+                      </button>
+                      <button type="submit" class="btn btn-primary">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        Activate fallback
+                      </button>
+                    </form>
+                  </div>
+                </li>
+              </ol>
               <div id="unreachable-list" class="unreachable-list" hidden>
                 <p class="hosted-meta">Models you can't reach today — hosted unlocks all of them:</p>
                 <div class="unreachable-grid" id="unreachable-grid"></div>
@@ -297,7 +313,7 @@
                 </p>
               </div>
               <a class="btn btn-primary" id="providers-hosted-signup" href="#" target="_blank" rel="noreferrer">
-                Get free credit
+                Get your key
               </a>
             </div>
           </article>
