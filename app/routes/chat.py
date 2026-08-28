@@ -307,20 +307,21 @@ async def execute_chat(
             detail=f"Model '{body.model}' is not allowed for this API key",
         )
 
-    async def _settle_budget(session, actual_microcents: int) -> None:
+    async def _settle_budget(session, actual_microcents: int, *, commit: bool = True) -> None:
         """Atomically record `actual_microcents` of spend against the cap.
 
-        Idempotent: only the first call for a request does work. `session` is
-        the DB session to run the charge on (the request session, or the
-        dedicated log session for the streaming path). `charge_budget` makes the
-        UPDATE refuse to let the counter exceed the cap, so a request can never
-        over-spend even under concurrency.
+        Idempotent in-process: only the first successful charge sets the flag.
+        `session` is the DB session to run the charge on (the request session, or
+        the dedicated log session for the streaming path). When `commit` is False
+        the UPDATE is executed but not committed, so the caller can commit it in
+        the same transaction as the request-log write — closing the fail-open
+        window where the log landed but the charge was lost.
         """
         cap = getattr(kc, "_budget_cap", None)
         if cap is None or getattr(kc, "_budget_settled", False):
             return
+        await charge_budget(session, str(kc.key_id), cap, actual_microcents, commit=commit)
         kc._budget_settled = True
-        await charge_budget(session, str(kc.key_id), cap, actual_microcents)
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
@@ -523,10 +524,10 @@ async def execute_chat(
         log.cost_microcents = 0
         db.add(log)
         try:
+            await _settle_budget(db, 0, commit=False)
             await db.commit()
         except Exception as commit_err:
             logger.warning("request_log_commit_failed", error=str(commit_err))
-        await _settle_budget(db, 0)
         return JSONResponse(
             content=cache_hit_response,
             headers={
@@ -577,10 +578,10 @@ async def execute_chat(
             )
             db.add(log)
             try:
+                await _settle_budget(db, 0, commit=False)
                 await db.commit()
             except Exception as commit_err:
                 logger.warning("request_log_commit_failed", error=str(commit_err))
-            await _settle_budget(db, 0)
 
         try:
             stream_obj = await client.acompletion(
@@ -702,40 +703,50 @@ async def execute_chat(
                         select(RequestLog.id).where(RequestLog.trace_id == row_values["trace_id"])
                     )) is not None
 
-                async def _commit_row(*, retry: bool) -> None:
-                    """INSERT + COMMIT the row on a session of its own.
+                def _settlement_amount() -> int:
+                    """Budget charge for this request, in microcents.
 
-                    Only a failing `commit()` propagates; a failure while
-                    closing the session AFTER the commit returned is
-                    swallowed — the row is already in. A retry is
-                    idempotent: it first looks the trace_id up, so a COMMIT
-                    that landed but whose ack was lost on the wire
-                    (PostgreSQL, connection dropped mid-ack) is not
-                    inserted a second time — and the shared primary key
-                    would reject a duplicate anyway.
+                    On a stream that ended without a terminal [DONE] the real cost
+                    is unknown, so charge the full remaining allowance (fail-closed)
+                    instead of releasing the budget and letting a client bypass the
+                    cap by hanging up before the usage frame. For a completed stream
+                    the actual recorded cost is charged.
+                    """
+                    actual = row_values.get("cost_microcents") or 0
+                    if not stream_completed:
+                        actual = max(
+                            actual,
+                            (getattr(kc, "_budget_cap", 0) or 0)
+                            - (getattr(kc, "_budget_spent", 0) or 0),
+                        )
+                    return actual
+
+                async def _commit_row(*, retry: bool) -> None:
+                    """Persist the request-log row, then charge the budget.
+
+                    The log row is committed first so it is durable even if the
+                    subsequent budget charge hits a transient error. If the charge
+                    fails, the retry path (reached with the log already persisted)
+                    re-attempts ONLY the charge — it never re-inserts the row and
+                    never skips a still-outstanding charge, so spend is never
+                    silently dropped (fail-open). `_settle_budget` sets its settled
+                    flag only after a successful charge, so a failed charge stays
+                    retryable.
                     """
                     log = RequestLog(**row_values)
                     if session_mod._session_factory is None:
                         # Test-only fallback (the app always installs a
                         # factory): the request-scoped session has to be
                         # rolled back before a retry can reuse it.
-                        if retry and await _already_persisted(db):
+                        if retry and (await _already_persisted(db)):
+                            if getattr(kc, "_budget_settled", False):
+                                return
+                            await _settle_budget(db, _settlement_amount())
                             return
                         db.add(log)
                         try:
                             await db.commit()
-                            actual_cost = row_values.get("cost_microcents") or 0
-                            if not stream_completed:
-                                # Stream ended without [DONE]: real cost unknown,
-                                # so charge the full remaining allowance to keep
-                                # the budget consumed (fail-closed) rather than
-                                # releasing it and letting a client bypass the cap
-                                # by hanging up before the usage frame.
-                                actual_cost = max(
-                                    actual_cost,
-                                    (kc._budget_cap or 0) - (kc._budget_spent or 0),
-                                )
-                            await _settle_budget(db, actual_cost)
+                            await _settle_budget(db, _settlement_amount())
                         except Exception:
                             try:
                                 await db.rollback()
@@ -745,20 +756,15 @@ async def execute_chat(
                         return
                     s = session_mod._session_factory()
                     try:
-                        if retry and await _already_persisted(s):
+                        if retry and (await _already_persisted(s)):
+                            if getattr(kc, "_budget_settled", False):
+                                return
+                            # Log already durable; re-run only the charge.
+                            await _settle_budget(s, _settlement_amount())
                             return
                         s.add(log)
                         await s.commit()
-                        actual_cost = row_values.get("cost_microcents") or 0
-                        if not stream_completed:
-                            # Stream ended without [DONE]: real cost unknown,
-                            # so charge the full remaining allowance to keep the
-                            # budget consumed (fail-closed).
-                            actual_cost = max(
-                                actual_cost,
-                                (kc._budget_cap or 0) - (kc._budget_spent or 0),
-                            )
-                        await _settle_budget(s, actual_cost)
+                        await _settle_budget(s, _settlement_amount())
                     finally:
                         try:
                             await s.close()
@@ -940,6 +946,12 @@ async def execute_chat(
                 # is legal; clients reading until [DONE] still get it after
                 # an upstream error.
                 yield "data: [DONE]\n\n"
+                # The error response was delivered in full (terminal [DONE] sent),
+                # so settle against the actual cost only — not the full remaining
+                # allowance. Without this, every mid-stream provider failure would
+                # charge (and exhaust) the key's entire remaining budget even
+                # though the delivered response cost ~0.
+                stream_completed = True
             finally:
                 # Same shielding reason as the cancel branch: ensure the
                 # log write actually completes before we unwind, even if
@@ -1018,10 +1030,10 @@ async def execute_chat(
         )
         db.add(log)
         try:
+            await _settle_budget(db, log.cost_microcents, commit=False)
             await db.commit()
         except Exception as commit_err:
             logger.warning("request_log_commit_failed", error=str(commit_err))
-        await _settle_budget(db, log.cost_microcents)
 
     if isinstance(response, dict) and "_orca_meta" in response:
         response = {k: v for k, v in response.items() if k != "_orca_meta"}
