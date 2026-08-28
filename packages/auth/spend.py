@@ -1,16 +1,23 @@
-"""Per-key spend lookup used to enforce `ApiKey.budget_limit_cents`.
+"""Per-key spend tracking used to enforce ``ApiKey.budget_limit_cents``.
 
-Semantics: `budget_limit_cents` is a lifetime cap on the key's total
-spend — sum of `cost_microcents` for all non-deleted request-log rows.
-1 cent = 10,000 microcents (1 USD = 1,000,000 microcents, matching
+The budget is a *lifetime* cap on the key's total spend in microcents
+(1 cent = 10_000 microcents; 1 USD = 1_000_000 microcents, matching
 chat.py's cost math).
 
-Rows are counted regardless of HTTP status because the streaming path
-records billable token usage even when the final status is 499 (client
-disconnect, chat.py:596) or 503 (mid-stream upstream failure,
-chat.py:646); filtering on `status_code < 400` would exclude those and
-make the cap bypassable by closing the stream early after reading the
-usage chunk.
+Enforcement is atomic and database-level, so the cap holds even when many
+requests for the same key arrive concurrently **and** across processes (not
+just within one event loop):
+
+* ``claim_budget`` reserves the *remaining* budget at request start via a single
+  conditional ``UPDATE`` that moves the key's counter up to the cap. Any other
+  request for the same key then observes a full counter and is rejected.
+* The exact cost of a request is only known after the upstream response/stream
+  completes, so ``settle_budget`` reconciles the provisional claim with the
+  actual cost.
+* If a request errors before it can be charged, the claim is left in place
+  (fail-closed: the key simply can't be used again until the operator
+  intervenes). It can never *under*-charge the operator, which is the property
+  that matters for a money limiter.
 
 Kept free of FastAPI imports so it stays unit-testable and reusable from
 non-HTTP contexts (background jobs, CLI minting tools).
@@ -18,31 +25,64 @@ non-HTTP contexts (background jobs, CLI minting tools).
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.db.models.request_log import RequestLog
+from packages.db.models.api_key import ApiKey
 
 MICROCENTS_PER_CENT = 10_000
 
 
-async def get_lifetime_spend_microcents(
-    session: AsyncSession, api_key_id: str
-) -> int:
-    """Sum of all non-deleted spend ever recorded for this key.
+async def read_spent(db: AsyncSession, api_key_id: str) -> int:
+    """Return the key's currently-recorded lifetime spend in microcents."""
+    spent = (
+        await db.execute(select(ApiKey.spent_microcents).where(ApiKey.id == api_key_id))
+    ).scalar_one_or_none()
+    return int(spent or 0)
 
-    Counts every row with `cost_microcents` regardless of `status_code`
-    so that streaming disconnect (499) and mid-stream upstream failure
-    (503) costs — which already incurred provider billing — are not
-    excluded from the budget. Failed requests with zero cost contribute
-    nothing to the sum regardless.
+
+async def claim_budget(db: AsyncSession, api_key_id: str, cap_microcents: int) -> int | None:
+    """Reserve the remaining budget for ``api_key_id``.
+
+    Returns the amount claimed (== remaining budget) if the request may proceed,
+    or ``None`` if the cap is already reached. The claim moves the key's spend
+    counter up to the cap *and commits*, so any concurrent request for the same
+    key observes a full counter and is rejected. The optimistic
+    ``WHERE spent_microcents == spent`` guard means that if two requests race,
+    exactly one wins the claim; the loser sees 0 affected rows and is rejected
+    (never over-charged).
     """
-    stmt = select(func.coalesce(func.sum(RequestLog.cost_microcents), 0)).where(
-        RequestLog.api_key_id == api_key_id,
-        RequestLog.is_deleted == 0,
+    spent = await read_spent(db, api_key_id)
+    if spent >= cap_microcents:
+        return None
+    remaining = cap_microcents - spent
+    result = await db.execute(
+        update(ApiKey)
+        .where(ApiKey.id == api_key_id, ApiKey.spent_microcents == spent)
+        .values(spent_microcents=cap_microcents)
     )
-    return int((await session.execute(stmt)).scalar_one())
+    if result.rowcount == 0:
+        return None
+    await db.commit()
+    return remaining
 
 
-def budget_exceeded(spend_microcents: int, budget_limit_cents: int) -> bool:
-    return spend_microcents >= budget_limit_cents * MICROCENTS_PER_CENT
+async def settle_budget(
+    db: AsyncSession, api_key_id: str, claimed_microcents: int, actual_microcents: int
+) -> None:
+    """Reconcile a prior claim with the actual cost.
+
+    After a successful request the key's spend becomes ``old + actual``
+    regardless of how much was provisionally claimed, so the counter stays
+    accurate for the next request.
+    """
+    await db.execute(
+        update(ApiKey)
+        .where(ApiKey.id == api_key_id)
+        .values(
+            spent_microcents=ApiKey.spent_microcents
+            - claimed_microcents
+            + (actual_microcents or 0)
+        )
+    )
+    await db.commit()

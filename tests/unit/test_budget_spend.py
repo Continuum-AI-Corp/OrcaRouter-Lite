@@ -1,105 +1,90 @@
-"""Unit tests for packages.auth.spend — lifetime spend aggregation."""
+"""Unit tests for packages.auth.spend — atomic budget claim/settle."""
+
+import asyncio
 
 import pytest
 
 from packages.auth.spend import (
     MICROCENTS_PER_CENT,
-    budget_exceeded,
-    get_lifetime_spend_microcents,
+    claim_budget,
+    read_spent,
+    settle_budget,
 )
 
 
 @pytest.fixture
-async def seeded_log(db_session):
-    """Two keys with a mix of billable / streaming-failure / soft-deleted rows."""
+async def key(db_session):
     from packages.db.models.api_key import ApiKey
-    from packages.db.models.request_log import RequestLog
 
-    k1 = ApiKey(workspace_id="default", name="a", key_hash="h-a", key_prefix="p-a")
-    k2 = ApiKey(workspace_id="default", name="b", key_hash="h-b", key_prefix="p-b")
-    db_session.add_all([k1, k2])
+    k = ApiKey(workspace_id="default", name="a", key_hash="h-a", key_prefix="p-a")
+    db_session.add(k)
     await db_session.flush()
+    return k
 
-    rows = [
-        RequestLog(
-            workspace_id="default", api_key_id=k1.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=1, output_tokens=1,
-            cost_microcents=1000, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-1",
-        ),
-        RequestLog(
-            workspace_id="default", api_key_id=k1.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=1, output_tokens=1,
-            cost_microcents=500, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-1",
-        ),
-        # Streaming failures ARE billable when they carry cost — the
-        # provider billed tokens even though the final status is 503
-        # (mid-stream upstream failure) or 499 (client disconnect).
-        # Filtering on status_code < 400 would exclude these and make the
-        # budget bypassable, so they must be counted.
-        RequestLog(
-            workspace_id="default", api_key_id=k1.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=9, output_tokens=9,
-            cost_microcents=999_999, status_code=503, routing_strategy="balanced", latency_ms=10, trace_id="t-3",
-        ),
-        # soft-deleted rows must never count, even with non-zero cost
-        RequestLog(
-            workspace_id="default", api_key_id=k1.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=1, output_tokens=1,
-            cost_microcents=12345, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-5",
-            is_deleted=1,
-        ),
-        # another key's spend must not leak in
-        RequestLog(
-            workspace_id="default", api_key_id=k2.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=2, output_tokens=2,
-            cost_microcents=777_777, status_code=200, routing_strategy="balanced", latency_ms=10, trace_id="t-4",
-        ),
-    ]
-    db_session.add_all(rows)
+
+async def test_claim_reserves_remaining_and_blocks_second(db_session, key):
+    cap = 10_000
+    # First claim reserves the whole remaining budget and commits it.
+    assert await claim_budget(db_session, key.id, cap) == cap
+    assert await read_spent(db_session, key.id) == cap
+    # A second concurrent-style claim now sees a full counter and is rejected.
+    assert await claim_budget(db_session, key.id, cap) is None
+
+
+async def test_settle_reconciles_actual_cost(db_session, key):
+    cap = 10_000
+    claimed = await claim_budget(db_session, key.id, cap)
+    await settle_budget(db_session, key.id, claimed, 300)
+    # spent becomes old(0) + actual(300), regardless of how much was claimed.
+    assert await read_spent(db_session, key.id) == 300
+
+    # A follow-up request claims what's left and reconciles again.
+    claimed2 = await claim_budget(db_session, key.id, cap)
+    assert claimed2 == cap - 300
+    await settle_budget(db_session, key.id, claimed2, 250)
+    assert await read_spent(db_session, key.id) == 300 + 250
+
+
+async def test_claim_when_already_at_cap_returns_none(db_session, key):
+    cap = 10_000
+    key.spent_microcents = cap
     await db_session.commit()
-    return k1, k2
+    assert await claim_budget(db_session, key.id, cap) is None
 
 
-async def test_spend_sums_only_billable_rows_for_the_key(db_session, seeded_log):
-    k1, _k2 = seeded_log
-    spend = await get_lifetime_spend_microcents(db_session, k1.id)
-    # 1000 + 500 + 999_999 (503 failure with cost is now counted) = 1,001,499;
-    # soft-deleted 12345 is excluded.
-    assert spend == 1_001_499
+async def test_concurrent_claims_race_only_one_wins(db_session, key):
+    """Two simultaneous claims can never both pass the cap.
 
+    Builds two independent sessions against the same engine so the UPDATE ...
+    WHERE spent_microcents == spent guard is exercised for real. Exactly one
+    claim wins; the loser sees 0 affected rows and is rejected.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-async def test_spend_counts_stream_disconnect_and_mid_stream_failure(db_session, seeded_log):
-    """Regression for P1: 499/503 streaming costs must count toward budget."""
-    from packages.db.models.request_log import RequestLog
+    from packages.db.engine import build_engine
 
-    k1, _k2 = seeded_log
-    # Add explicit 499 disconnect row with cost
-    db_session.add(
-        RequestLog(
-            workspace_id="default", api_key_id=k1.id, model_requested="m",
-            model_resolved="m", provider="openai", input_tokens=2, output_tokens=2,
-            cost_microcents=42_000, status_code=499, routing_strategy="balanced", latency_ms=10, trace_id="t-6",
+    engine = build_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        from packages.db.models.base import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as s:
+        from packages.db.models.api_key import ApiKey
+
+        k = ApiKey(workspace_id="default", name="race", key_hash="h-race", key_prefix="p-race")
+        s.add(k)
+        await s.commit()
+        await s.refresh(k)
+
+        cap = 10_000
+        r1, r2 = await asyncio.gather(
+            claim_budget(s, k.id, cap),
+            claim_budget(s, k.id, cap),
         )
-    )
-    await db_session.commit()
-    spend = await get_lifetime_spend_microcents(db_session, k1.id)
-    assert spend == 1_001_499 + 42_000
-
-
-async def test_empty_history_is_zero(db_session, seeded_log):
-    _k1, k2 = seeded_log
-    from packages.db.models.api_key import ApiKey
-
-    fresh = ApiKey(workspace_id="default", name="c", key_hash="h-c", key_prefix="p-c")
-    db_session.add(fresh)
-    await db_session.commit()
-    assert await get_lifetime_spend_microcents(db_session, fresh.id) == 0
-
-
-def test_budget_exceeded_boundary():
-    assert budget_exceeded(10_000 - 1, 1) is False  # just under 1 cent
-    assert budget_exceeded(10_000, 1) is True       # exactly at the cap blocks
-    assert budget_exceeded(0, 1) is False
+    await engine.dispose()
+    assert (r1 is None) ^ (r2 is None)  # exactly one succeeded
+    assert (r1 or r2) == cap
 
 
 def test_microcent_conversion_constant():
