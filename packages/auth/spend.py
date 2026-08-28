@@ -48,7 +48,12 @@ async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -
 
 
 async def charge_budget(
-    db: AsyncSession, api_key_id: str, cap_microcents: int, actual_microcents: int
+    db: AsyncSession,
+    api_key_id: str,
+    cap_microcents: int,
+    actual_microcents: int,
+    *,
+    commit: bool = True,
 ) -> bool:
     """Atomically record ``actual_microcents`` of spend, never exceeding ``cap``.
 
@@ -58,6 +63,10 @@ async def charge_budget(
     blocked going forward. The boundary request may already have been served
     upstream; it cannot be un-spent, but we never record more than the cap and we
     stop the next one. Fail-closed.
+
+    When ``commit`` is False the UPDATEs are executed but not committed, so the
+    caller can commit them in the same transaction as the request-log write
+    (atomic log + charge — no window where the log lands but the charge is lost).
     """
     actual = actual_microcents or 0
     result = await db.execute(
@@ -66,7 +75,8 @@ async def charge_budget(
         .values(spent_microcents=ApiKey.spent_microcents + actual)
     )
     if result.rowcount:
-        await db.commit()
+        if commit:
+            await db.commit()
         return True
     # Would have exceeded the cap: clamp so the counter never overshoots and the
     # key is correctly reported as exhausted thereafter.
@@ -75,5 +85,6 @@ async def charge_budget(
         .where(ApiKey.id == api_key_id, ApiKey.spent_microcents < cap_microcents)
         .values(spent_microcents=cap_microcents)
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     return False
