@@ -22,8 +22,9 @@ class ApiKey(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # can exceed a 32-bit int4 on Postgres, which would otherwise 500 on insert.
     budget_limit_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Running lifetime spend in microcents. Maintained transactionally by
-    # spend.claim_budget / spend.settle_budget so the budget cap holds even
-    # under concurrent requests for the same key.
+    # spend.charge_budget: a single atomic UPDATE adds the actual cost and
+    # refuses to let the counter exceed budget_limit_cents, so the cap holds
+    # even under concurrent requests for the same key.
     spent_microcents: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default="0", default=0
     )
