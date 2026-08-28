@@ -31,7 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import MICROCENTS_PER_CENT, claim_budget, settle_budget
+from packages.auth.spend import MICROCENTS_PER_CENT, charge_budget, is_exhausted, read_spent
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -308,17 +308,19 @@ async def execute_chat(
         )
 
     async def _settle_budget(session, actual_microcents: int) -> None:
-        """Reconcile the provisional budget claim with the actual cost.
+        """Atomically record `actual_microcents` of spend against the cap.
 
         Idempotent: only the first call for a request does work. `session` is
-        the DB session to run the reconcile on (the request session, or the
-        dedicated log session for the streaming path).
+        the DB session to run the charge on (the request session, or the
+        dedicated log session for the streaming path). `charge_budget` makes the
+        UPDATE refuse to let the counter exceed the cap, so a request can never
+        over-spend even under concurrency.
         """
-        claim = getattr(kc, "_budget_claim", None)
-        if claim is None or getattr(kc, "_budget_settled", False):
+        cap = getattr(kc, "_budget_cap", None)
+        if cap is None or getattr(kc, "_budget_settled", False):
             return
         kc._budget_settled = True
-        await settle_budget(session, str(kc.key_id), claim, actual_microcents)
+        await charge_budget(session, str(kc.key_id), cap, actual_microcents)
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
@@ -434,24 +436,23 @@ async def execute_chat(
         resolved_model = candidates[0]
         body.model = candidates[0]  # mutate for downstream completion call
 
-    # Budget enforcement: `budget_limit_cents` is a hard lifetime cap. Claim the
-    # remaining budget atomically only after the request has passed every
-    # pre-dispatch check (model allowlist, provider deployability), so a request
-    # we reject before touching an upstream never consumes budget. The exact cost
-    # is only known once the upstream response/stream completes, so we
-    # provisionally claim the whole remainder and reconcile it in `_settle_budget`
-    # at the end of the request. A request that ends without a terminal [DONE]
-    # (client disconnect, mid-stream error) keeps the claim in place — fail-closed,
-    # never under-charged.
+    # Budget enforcement: `budget_limit_cents` is a hard lifetime cap. The check
+    # runs only after the request has passed every pre-dispatch validation (model
+    # allowlist, provider deployability), so a request we reject before touching
+    # an upstream never consumes budget. The real cost is only known once the
+    # upstream response/stream completes, so we record it atomically in
+    # `_settle_budget` — the `UPDATE spent = spent + actual WHERE spent + actual
+    # <= cap` guard makes this safe under concurrency and never lets the counter
+    # exceed the cap (fail-closed, never over-recorded).
     if kc.budget_limit_cents is not None:
         cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
-        claimed = await claim_budget(db, str(kc.key_id), cap)
-        if claimed is None:
+        if await is_exhausted(db, str(kc.key_id), cap):
             raise HTTPException(
                 status_code=429,
                 detail=f"API key budget exhausted ({cap} microcents lifetime cap reached).",
             )
-        kc._budget_claim = claimed
+        kc._budget_cap = cap
+        kc._budget_spent = await read_spent(db, str(kc.key_id))
 
     started_perf = time.perf_counter()
     completion_kwargs = body.model_dump(exclude_none=True)
@@ -726,8 +727,14 @@ async def execute_chat(
                             actual_cost = row_values.get("cost_microcents") or 0
                             if not stream_completed:
                                 # Stream ended without [DONE]: real cost unknown,
-                                # keep the provisional claim (fail-closed).
-                                actual_cost = kc._budget_claim or actual_cost
+                                # so charge the full remaining allowance to keep
+                                # the budget consumed (fail-closed) rather than
+                                # releasing it and letting a client bypass the cap
+                                # by hanging up before the usage frame.
+                                actual_cost = max(
+                                    actual_cost,
+                                    (kc._budget_cap or 0) - (kc._budget_spent or 0),
+                                )
                             await _settle_budget(db, actual_cost)
                         except Exception:
                             try:
@@ -745,8 +752,12 @@ async def execute_chat(
                         actual_cost = row_values.get("cost_microcents") or 0
                         if not stream_completed:
                             # Stream ended without [DONE]: real cost unknown,
-                            # keep the provisional claim (fail-closed).
-                            actual_cost = kc._budget_claim or actual_cost
+                            # so charge the full remaining allowance to keep the
+                            # budget consumed (fail-closed).
+                            actual_cost = max(
+                                actual_cost,
+                                (kc._budget_cap or 0) - (kc._budget_spent or 0),
+                            )
                         await _settle_budget(s, actual_cost)
                     finally:
                         try:
