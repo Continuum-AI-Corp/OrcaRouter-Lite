@@ -214,3 +214,92 @@ async def test_unbudgeted_root_key_unaffected(budget_env):
 
     assert r.status_code == 200, r.text
     fake.acompletion.assert_awaited_once()
+
+
+async def _budgeted_stream(budget_env, *, chunks, budget_limit_cents=10):
+    """Drive a streaming request for a budgeted key and return its final spend."""
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=budget_limit_cents)
+
+    async def _stream():
+        for ch in chunks:
+            yield ch
+
+    fake.acompletion = AsyncMock(return_value=_stream())
+
+    async with await make_client(key) as c:
+        async with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream_options": {"include_usage": False},
+            },
+        ) as r:
+            async for _ in r.aiter_lines():
+                pass
+
+    from sqlalchemy import select
+
+    from packages.db.models.api_key import ApiKey
+
+    async with factory() as s:
+        return (
+            await s.execute(select(ApiKey.spent_microcents).where(ApiKey.id == key_id))
+        ).scalar_one(), fake.acompletion.call_args
+
+
+async def test_budgeted_stream_without_usage_charges_remaining(budget_env):
+    # A completed stream that never delivers a usage frame (client forced
+    # include_usage=False, provider ignored it) must NOT bill zero — that would
+    # let a capped key stream for free. Fail-closed: charge the full remaining cap.
+    spent, call_args = await _budgeted_stream(
+        budget_env,
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ],
+    )
+    # Even though the client demanded include_usage=False, the budgeted key forces it.
+    assert call_args.kwargs["stream_options"]["include_usage"] is True
+    # No usage frame observed -> full cap charged.
+    assert spent == 100_000
+
+
+async def test_budgeted_stream_with_usage_frame_charges_actual(budget_env):
+    # A usage frame was observed, so only the real (tiny) cost is charged, not the
+    # full remaining allowance.
+    spent, _call_args = await _budgeted_stream(
+        budget_env,
+        budget_limit_cents=100,
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {
+                "usage": {"prompt_tokens": 5000, "completion_tokens": 2000, "total_tokens": 7000},
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ],
+    )
+    assert 0 <= spent < 100_000
+
+
+async def test_budgeted_blocking_forces_include_usage(budget_env):
+    # Non-streaming budgeted request also forces include_usage on, even when the
+    # client omits it.
+    make_client, fake, factory, _root = budget_env
+    key, _key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream_options": {"include_usage": False},
+            },
+        )
+
+    assert r.status_code == 200, r.text
+    assert fake.acompletion.call_args.kwargs["stream_options"]["include_usage"] is True
