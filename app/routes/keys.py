@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time_util import iso_utc
 from app.deps import get_db, get_key_context
+from packages.auth.guards import require_unrestricted
 from packages.auth.hashing import generate_api_key
 from packages.auth.types import KeyContext
 from packages.db.models.api_key import ApiKey
@@ -21,31 +22,10 @@ router = APIRouter(prefix="/v1/keys", tags=["keys"])
 class CreateKey(BaseModel):
     name: str
     # Optional restrictions for child keys. Only reachable by unrestricted
-    # callers (require_unrestricted above), so a restricted key can never
+    # callers (require_unrestricted below), so a restricted key can never
     # mint a sibling with looser limits than its own — it can't mint at all.
     model_allowlist: list[str] | None = None
     budget_limit_cents: int | None = Field(default=None, gt=0)
-
-
-def require_unrestricted(kc: KeyContext) -> None:
-    """Key management is reserved for unrestricted keys.
-
-    A key that carries any restriction (`model_allowlist` or
-    `budget_limit_cents`) must not be able to mint, list, or revoke other
-    keys — otherwise it could create a sibling with no restrictions and
-    trivially bypass its own allowlist/budget. Unrestricted keys already
-    hold the maximum privilege this single-workspace edition exposes
-    (same trust level as PUT /v1/providers/*), so denying restricted keys
-    here grants nothing to anyone; it only closes the escalation path.
-    """
-    if kc.model_allowlist is not None or kc.budget_limit_cents is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Restricted API keys cannot manage keys. "
-                "Use an unrestricted key."
-            ),
-        )
 
 
 @router.get("")
@@ -69,6 +49,8 @@ async def list_keys(
                 "name": r.name,
                 "key_prefix": r.key_prefix,
                 "is_active": r.is_active,
+                "model_allowlist": r.model_allowlist,
+                "budget_limit_cents": r.budget_limit_cents,
                 "last_used_at": iso_utc(r.last_used_at),
                 "revoked_at": iso_utc(r.revoked_at),
                 "created_at": iso_utc(r.created_at),

@@ -38,6 +38,7 @@ from app.quality_scores import (
     load_overrides,
     resolve_model_metrics,
 )
+from packages.auth.guards import require_unrestricted
 from packages.auth.types import KeyContext
 from packages.db.models.quality_score_override import QualityScoreOverride
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -157,6 +158,7 @@ async def quality_status(
 @router.post("/refresh")
 async def quality_refresh(
     kc: KeyContext = Depends(get_key_context),
+    _restricted: None = Depends(require_unrestricted),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Force a fresh fetch of the AA Intelligence Index.
@@ -389,6 +391,7 @@ async def upsert_override(
     model_id: str,
     body: OverrideBody = Body(...),
     kc: KeyContext = Depends(get_key_context),
+    _restricted: None = Depends(require_unrestricted),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create or update an override. Idempotent on (workspace, model_id).
