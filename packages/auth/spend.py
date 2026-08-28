@@ -1,26 +1,27 @@
-"""Per-key spend tracking used to enforce ``ApiKey.budget_limit_cents``.
+"""Per-key lifetime spend tracking that enforces ``ApiKey.budget_limit_cents``.
 
-The budget is a *lifetime* cap on the key's total spend in microcents
-(1 cent = 10_000 microcents; 1 USD = 1_000_000 microcents, matching
-chat.py's cost math).
+The cap is a hard lifetime limit on the key's total spend, in microcents
+(1 cent = 10_000 microcents; 1 USD = 1_000_000 microcents, matching chat.py's
+cost math).
 
-Enforcement is atomic and database-level, so the cap holds even when many
-requests for the same key arrive concurrently **and** across processes (not
-just within one event loop):
+Actual cost is only known after the upstream call returns, so enforcement is a
+single atomic ``UPDATE`` that adds the real cost and refuses to let the counter
+exceed the cap::
 
-* ``claim_budget`` reserves the *remaining* budget at request start via a single
-  conditional ``UPDATE`` that moves the key's counter up to the cap. Any other
-  request for the same key then observes a full counter and is rejected.
-* The exact cost of a request is only known after the upstream response/stream
-  completes, so ``settle_budget`` reconciles the provisional claim with the
-  actual cost.
-* If a request errors before it can be charged, the claim is left in place
-  (fail-closed: the key simply can't be used again until the operator
-  intervenes). It can never *under*-charge the operator, which is the property
-  that matters for a money limiter.
+    UPDATE api_keys SET spent_microcents = spent_microcents + :actual
+    WHERE id = :id AND spent_microcents + :actual <= :cap
+
+Concurrent requests for the same key each add their own cost atomically; only a
+request whose *own* cost alone would breach the remaining budget matches zero
+rows. In that case the counter is clamped to ``cap`` so the key is correctly
+maxed out and the next request is rejected — fail-closed, never over-recorded.
+
+This avoids both failure modes of a pre-claim design: it never records spend
+past the cap (no over-spend), and it does not reserve the whole remaining budget
+up front (so a key's requests are not serialized behind a single in-flight one).
 
 Kept free of FastAPI imports so it stays unit-testable and reusable from
-non-HTTP contexts (background jobs, CLI minting tools).
+non-HTTP paths (background jobs, CLI minting tools).
 """
 
 from __future__ import annotations
@@ -41,48 +42,38 @@ async def read_spent(db: AsyncSession, api_key_id: str) -> int:
     return int(spent or 0)
 
 
-async def claim_budget(db: AsyncSession, api_key_id: str, cap_microcents: int) -> int | None:
-    """Reserve the remaining budget for ``api_key_id``.
+async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -> bool:
+    """Fast pre-check: has the key already reached its lifetime cap?"""
+    return (await read_spent(db, api_key_id)) >= cap_microcents
 
-    Returns the amount claimed (== remaining budget) if the request may proceed,
-    or ``None`` if the cap is already reached. The claim moves the key's spend
-    counter up to the cap *and commits*, so any concurrent request for the same
-    key observes a full counter and is rejected. The optimistic
-    ``WHERE spent_microcents == spent`` guard means that if two requests race,
-    exactly one wins the claim; the loser sees 0 affected rows and is rejected
-    (never over-charged).
+
+async def charge_budget(
+    db: AsyncSession, api_key_id: str, cap_microcents: int, actual_microcents: int
+) -> bool:
+    """Atomically record ``actual_microcents`` of spend, never exceeding ``cap``.
+
+    Returns ``True`` if the cost fit under the cap (the counter advanced by
+    ``actual``), or ``False`` if the request alone would have breached the cap —
+    in which case the counter is clamped to ``cap`` so the key is maxed out and
+    blocked going forward. The boundary request may already have been served
+    upstream; it cannot be un-spent, but we never record more than the cap and we
+    stop the next one. Fail-closed.
     """
-    spent = await read_spent(db, api_key_id)
-    if spent >= cap_microcents:
-        return None
-    remaining = cap_microcents - spent
+    actual = actual_microcents or 0
     result = await db.execute(
         update(ApiKey)
-        .where(ApiKey.id == api_key_id, ApiKey.spent_microcents == spent)
-        .values(spent_microcents=cap_microcents)
+        .where(ApiKey.id == api_key_id, ApiKey.spent_microcents + actual <= cap_microcents)
+        .values(spent_microcents=ApiKey.spent_microcents + actual)
     )
-    if result.rowcount == 0:
-        return None
-    await db.commit()
-    return remaining
-
-
-async def settle_budget(
-    db: AsyncSession, api_key_id: str, claimed_microcents: int, actual_microcents: int
-) -> None:
-    """Reconcile a prior claim with the actual cost.
-
-    After a successful request the key's spend becomes ``old + actual``
-    regardless of how much was provisionally claimed, so the counter stays
-    accurate for the next request.
-    """
+    if result.rowcount:
+        await db.commit()
+        return True
+    # Would have exceeded the cap: clamp so the counter never overshoots and the
+    # key is correctly reported as exhausted thereafter.
     await db.execute(
         update(ApiKey)
-        .where(ApiKey.id == api_key_id)
-        .values(
-            spent_microcents=ApiKey.spent_microcents
-            - claimed_microcents
-            + (actual_microcents or 0)
-        )
+        .where(ApiKey.id == api_key_id, ApiKey.spent_microcents < cap_microcents)
+        .values(spent_microcents=cap_microcents)
     )
     await db.commit()
+    return False
