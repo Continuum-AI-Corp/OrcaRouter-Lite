@@ -128,9 +128,10 @@ async def test_guard_fails_closed_on_transient_db_error(guarded_db, monkeypatch)
 async def test_guard_allows_missing_table_on_fresh_sqlite(tmp_sqlite_url):
     """A fresh DB pre-migration where provider_keys doesn't exist counts
     as zero rows for sqlite (inspected via engine, not string matching)."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
     from packages.db.engine import build_engine
     from packages.db.guards import assert_credential_encryption_ready
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     engine = build_engine(tmp_sqlite_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
