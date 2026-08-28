@@ -47,6 +47,7 @@ from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.router_cache import usable_providers_from_db
 from packages.auth.encryption import credential_is_decryptable, encrypt_credential
+from packages.auth.guards import require_unrestricted
 from packages.auth.types import KeyContext
 from packages.db.models.provider_key import ProviderKey
 
@@ -233,6 +234,7 @@ async def set_provider_key(
     provider: str,
     body: SetProviderKey,
     _kc: KeyContext = Depends(get_key_context),
+    _restricted: None = Depends(require_unrestricted),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     api_key = body.api_key.strip()
@@ -317,6 +319,7 @@ async def set_provider_key(
 async def delete_provider_key(
     provider: str,
     _kc: KeyContext = Depends(get_key_context),
+    _restricted: None = Depends(require_unrestricted),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Hard-delete the DB row for this provider. After this, runtime

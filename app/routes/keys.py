@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time_util import iso_utc
 from app.deps import get_db, get_key_context
+from packages.auth.guards import require_unrestricted
 from packages.auth.hashing import generate_api_key
 from packages.auth.types import KeyContext
 from packages.db.models.api_key import ApiKey
