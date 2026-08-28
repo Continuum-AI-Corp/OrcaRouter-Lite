@@ -464,6 +464,7 @@ async def upsert_override(
 async def delete_override(
     model_id: str,
     kc: KeyContext = Depends(get_key_context),
+    _restricted: None = Depends(require_unrestricted),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Remove an override. Returns 204 even if the override didn't exist —
