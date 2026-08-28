@@ -9,6 +9,10 @@ Tương thích OpenAI. BYOK. Workspace đơn. Streaming. `model="auto"`.
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![Demo failover của OrcaRouter Lite](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` hấp thụ sự cố nhà cung cấp theo thời gian thực — không đổi một dòng code. Cách ghi lại: [DEMO.md](./DEMO.md).*
+
 ## Ngôn ngữ
 
 - [English](./README.md)

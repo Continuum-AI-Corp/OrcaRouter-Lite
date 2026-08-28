@@ -9,6 +9,10 @@ OpenAI 호환. BYOK. 단일 작업 공간. 스트리밍. `모델="자동"`.
 [![모델](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![라이센스](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![OrcaRouter Lite 장애 조치 데모](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"`가 프로바이더 장애를 실시간으로 흡수 — 코드 변경 없음. 녹화 방법: [DEMO.md](./DEMO.md).*
+
 ## 언어
 
 - [한국어](./README.md)

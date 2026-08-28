@@ -9,6 +9,10 @@ OpenAI対応。ビヨク。単一のワークスペース。ストリーミン�
 [![モデル](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![ライセンス](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![OrcaRouter Lite フェイルオーバーデモ](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` がプロバイダー障害をリアルタイムで吸収 — コード変更なし。収録手順: [DEMO.md](./DEMO.md)。*
+
 ## 言語
 
 - [英語](./README.md)

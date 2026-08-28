@@ -9,6 +9,10 @@
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![OrcaRouter Lite 故障转移演示](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` 实时吸收上游厂商故障 —— 无需改动任何代码。录制方式见 [DEMO.md](./DEMO.md)。*
+
 ## 语言
 
 - [English](./README.md)

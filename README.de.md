@@ -9,6 +9,10 @@ OpenAI-kompatibel. BYOK. Einzelner Workspace. Streaming. `model="auto"`.
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![OrcaRouter Lite Failover-Demo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` fängt einen Provider-Ausfall in Echtzeit ab — ohne Codeänderung. Aufnahme-Anleitung: [DEMO.md](./DEMO.md).*
+
 ## Sprachen
 
 - [English](./README.md)

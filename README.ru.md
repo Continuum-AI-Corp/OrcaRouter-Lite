@@ -9,6 +9,10 @@ OpenAI-совместимый. BYOK. Один рабочий пространс�
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![Демо failover OrcaRouter Lite](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` в реальном времени поглощает сбой провайдера — без изменений в коде. Как записать: [DEMO.md](./DEMO.md).*
+
 ## Языки
 
 - [English](./README.md)

@@ -9,6 +9,10 @@ OpenAI-compatible। BYOK। एकल-वर्कस्पेस। स्ट�
 [![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
+![OrcaRouter Lite फेलओवर डेमो](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
+
+*`model="auto"` रीयल-टाइम में प्रोवाइडर आउटेज को सोख लेता है — कोड में कोई बदलाव नहीं। रिकॉर्डिंग तरीका: [DEMO.md](./DEMO.md)।*
+
 ## भाषाएँ
 
 - [English](./README.md)

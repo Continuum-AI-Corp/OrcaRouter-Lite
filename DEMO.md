@@ -82,7 +82,8 @@ Trim to ≤30s. Export under 8 MB so GitHub renders inline in the README.
 
 ## Where to publish
 
-- README hero (replace the placeholder image link)
+- README hero — already wired: save the recording as `demo.gif` in the repo
+  root and every `README*.md` picks it up (the image sits under the badges)
 - Show HN cover image
 - Twitter/Threads launch post
 - ProductHunt gallery
