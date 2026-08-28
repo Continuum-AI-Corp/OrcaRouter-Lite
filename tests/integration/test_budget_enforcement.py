@@ -114,6 +114,7 @@ async def _make_budgeted_key(
 
 
 async def _add_billable_spend(factory, key_id: str, microcents: int) -> None:
+    from packages.db.models.api_key import ApiKey
     from packages.db.models.request_log import RequestLog
 
     async with factory() as s:
@@ -131,6 +132,13 @@ async def _add_billable_spend(factory, key_id: str, microcents: int) -> None:
             latency_ms=10,
             status_code=200,
         ))
+        # The budget counter lives on the key, not the request-log rows, so
+        # pre-load it directly to simulate prior spend.
+        await s.execute(
+            ApiKey.__table__.update()
+            .where(ApiKey.id == key_id)
+            .values(spent_microcents=ApiKey.spent_microcents + microcents)
+        )
         await s.commit()
 
 

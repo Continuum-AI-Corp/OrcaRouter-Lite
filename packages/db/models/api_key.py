@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from packages.db.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
@@ -18,7 +18,15 @@ class ApiKey(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(20), nullable=False)
     model_allowlist: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    budget_limit_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # BIGINT (not Integer): a client-supplied value up to the microcent scale
+    # can exceed a 32-bit int4 on Postgres, which would otherwise 500 on insert.
+    budget_limit_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Running lifetime spend in microcents. Maintained transactionally by
+    # spend.claim_budget / spend.settle_budget so the budget cap holds even
+    # under concurrent requests for the same key.
+    spent_microcents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0", default=0
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

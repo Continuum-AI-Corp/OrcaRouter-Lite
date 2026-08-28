@@ -31,7 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import budget_exceeded, get_lifetime_spend_microcents
+from packages.auth.spend import MICROCENTS_PER_CENT, claim_budget, settle_budget
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -307,33 +307,37 @@ async def execute_chat(
             detail=f"Model '{body.model}' is not allowed for this API key",
         )
 
-    # Budget enforcement: `budget_limit_cents` is a lifetime cap on this
-    # key's total spend (sum of `cost_microcents` for all non-deleted
-    # request-log rows, including streaming 499/503 rows that already
-    # incurred provider billing). Checked before any routing, resolution,
-    # or cache work so an exhausted key costs the operator nothing — no
-    # upstream attempt, no cache fill.
-    #
-    # NOTE: This is a best-effort soft limit, not a hard atomic cap.
-    # Spend is read before the request and the current request's cost is
-    # only written after the response/stream completes. N concurrent
-    # requests from the same budgeted key all observe the same
-    # pre-request total and may all pass the check, exceeding the cap by
-    # up to N× per-request cost in a burst. A hard cap would require a
-    # reservation/claim or row-level lock before dispatch; the current
-    # design trades strictness for simplicity and avoids holding a DB
-    # transaction across the upstream call. See spend.py for aggregation
-    # semantics.
+    # Budget enforcement: `budget_limit_cents` is a hard lifetime cap on this
+    # key's total spend. We claim the *remaining* budget atomically at request
+    # start (see packages.auth.spend), so the cap holds even under concurrent
+    # requests for the same key and across processes. The exact cost is only
+    # known after the upstream response/stream completes, so we provisionally
+    # claim the whole remainder and reconcile with the real cost via
+    # `_settle_budget` at the end of the request. A key whose in-flight request
+    # errors before it can be charged stays at its cap (fail-closed) until the
+    # operator intervenes — it can never be *under*-charged.
     if kc.budget_limit_cents is not None:
-        spend = await get_lifetime_spend_microcents(db, str(kc.key_id))
-        if budget_exceeded(spend, kc.budget_limit_cents):
+        cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
+        claimed = await claim_budget(db, str(kc.key_id), cap)
+        if claimed is None:
             raise HTTPException(
                 status_code=429,
-                detail=(
-                    "API key budget exhausted "
-                    f"({spend} of {kc.budget_limit_cents * 10_000} microcents spent)."
-                ),
+                detail=f"API key budget exhausted ({cap} microcents lifetime cap reached).",
             )
+        kc._budget_claim = claimed
+
+    async def _settle_budget(session, actual_microcents: int) -> None:
+        """Reconcile the provisional budget claim with the actual cost.
+
+        Idempotent: only the first call for a request does work. `session` is
+        the DB session to run the reconcile on (the request session, or the
+        dedicated log session for the streaming path).
+        """
+        claim = getattr(kc, "_budget_claim", None)
+        if claim is None or getattr(kc, "_budget_settled", False):
+            return
+        kc._budget_settled = True
+        await settle_budget(session, str(kc.key_id), claim, actual_microcents)
 
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
@@ -521,6 +525,7 @@ async def execute_chat(
             await db.commit()
         except Exception as commit_err:
             logger.warning("request_log_commit_failed", error=str(commit_err))
+        await _settle_budget(db, 0)
         return JSONResponse(
             content=cache_hit_response,
             headers={
@@ -574,6 +579,7 @@ async def execute_chat(
                 await db.commit()
             except Exception as commit_err:
                 logger.warning("request_log_commit_failed", error=str(commit_err))
+            await _settle_budget(db, 0)
 
         try:
             stream_obj = await client.acompletion(
@@ -710,6 +716,7 @@ async def execute_chat(
                         db.add(log)
                         try:
                             await db.commit()
+                            await _settle_budget(db, row_values.get("cost_microcents") or 0)
                         except Exception:
                             try:
                                 await db.rollback()
@@ -723,6 +730,7 @@ async def execute_chat(
                             return
                         s.add(log)
                         await s.commit()
+                        await _settle_budget(s, row_values.get("cost_microcents") or 0)
                     finally:
                         try:
                             await s.close()
@@ -984,6 +992,7 @@ async def execute_chat(
             await db.commit()
         except Exception as commit_err:
             logger.warning("request_log_commit_failed", error=str(commit_err))
+        await _settle_budget(db, log.cost_microcents)
 
     if isinstance(response, dict) and "_orca_meta" in response:
         response = {k: v for k, v in response.items() if k != "_orca_meta"}
