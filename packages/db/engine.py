@@ -54,22 +54,56 @@ def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
     `journal_mode=WAL` by returning the prior mode ("delete") rather than
     raising, so a silent no-op here would leave us believing we have WAL when
     we do not. We log a warning instead of swallowing it.
+
+    This is a pool ``connect`` hook: ANY exception raised here fails every
+    connection attempt and takes the process down. Degraded (previous journal
+    mode) is strictly better than dead, so nothing in here may propagate.
     """
     sqlite3_conn = _unwrap_sqlite3(dbapi_connection)
     if sqlite3_conn is None:
+        logger.warning("sqlite_pragmas_skipped", reason="could not unwrap sqlite3 connection")
         return
-    cursor = sqlite3_conn.cursor()
+    cursor = None
     try:
-        mode = cursor.execute("PRAGMA journal_mode=WAL;").fetchone()[0]
-        if mode.lower() != "wal":
-            url = str(connection_record.engine.url)
-            logger.warning("sqlite_wal_not_applied", url=redacted_url(url), mode=mode)
-        # NORMAL is the WAL-recommended durability level: safe across app
-        # crashes and avoids an fsync per WAL write (FULL would pay that cost).
-        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS};")
-        cursor.execute("PRAGMA synchronous=NORMAL;")
+        try:
+            cursor = sqlite3_conn.cursor()
+        except Exception as exc:  # noqa: BLE001 - hook must not propagate
+            logger.warning(
+                "sqlite_pragmas_not_applied",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return
+        # WAL may fail two ways: returning the prior mode, or raising (e.g.
+        # read-only files raise "attempt to write a readonly database").
+        # Both are the same operational fact — degraded, not dead.
+        try:
+            mode = cursor.execute("PRAGMA journal_mode=WAL;").fetchone()[0]
+            if str(mode).lower() != "wal":
+                logger.warning("sqlite_wal_not_applied", mode=mode)
+        except Exception as exc:  # noqa: BLE001 - hook must not propagate
+            logger.warning(
+                "sqlite_wal_not_applied",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        try:
+            # NORMAL is the WAL-recommended durability level: safe across app
+            # crashes and avoids an fsync per WAL write (FULL would pay that cost).
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS};")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+        except Exception as exc:  # noqa: BLE001 - hook must not propagate
+            logger.warning(
+                "sqlite_pragmas_not_applied",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
     finally:
-        cursor.close()
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                pass
 
 
 def build_engine(database_url: str) -> AsyncEngine:
@@ -86,10 +120,10 @@ def build_engine(database_url: str) -> AsyncEngine:
             future=True,
         )
 
-        # `build_engine` can be called more than once per process (notably in
-        # tests); avoid stacking duplicate connect listeners on the same engine.
-        if not event.contains(engine.sync_engine, "connect", _configure_sqlite_connection):
-            event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
+        # Fresh engine per call, so no dedup guard is needed (the previous
+        # `event.contains` check was dead code — `engine.sync_engine` is a
+        # new object each time).
+        event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
 
         return engine
 
