@@ -1,40 +1,5 @@
 """Tests for app.main.create_app — boot, /health, error format, CORS."""
 
-import pytest
-
-
-@pytest.fixture
-async def lite_app(tmp_sqlite_url, monkeypatch):
-    """Boot a fresh app against a tempfile SQLite."""
-    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
-
-    # Reset the singleton settings so the new env is picked up
-    from app import config as cfg
-
-    cfg.get_settings.cache_clear()
-
-    from packages.db.engine import build_engine
-    from packages.db.models.base import Base
-
-    engine = build_engine(tmp_sqlite_url)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Register session factory bound to this engine
-    from sqlalchemy.ext.asyncio import async_sessionmaker
-
-    from packages.db import session as session_mod
-
-    session_mod._session_factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    from app.main import create_app
-
-    yield create_app()
-
-    await engine.dispose()
-    session_mod._session_factory = None
-
-
 async def test_health_returns_ok(lite_app):
     from httpx import ASGITransport, AsyncClient
 
