@@ -1,13 +1,16 @@
 """Check i actually enforce budget_limit_cents.
 
 The column was loaded but never checked, so a leaked key spent freely.
-I check it in execute_chat against recorded spend. The current request's
-cost is logged after it finishes, so the overshoot is one request.
+I hold against it in execute_chat before the upstream call and hand the
+hold back once the real cost is in the log.
 """
 
+import asyncio
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -125,3 +128,88 @@ async def test_key_without_budget_is_never_blocked(tmp_sqlite_url, monkeypatch):
         )
         # no budget set means no cap, so it fails downstream but never 429
         assert resp.status_code != 429
+
+
+def _claim_in_thread(url: str, kc, body, model: str) -> int:
+    """Claim on its own event loop, so the writers really overlap.
+
+    Twenty coroutines on one loop don't: they queue up and sqlite sees
+    them one at a time, so a read-then-write check looks perfectly safe.
+    A thread each means twenty connections racing for the same cap.
+    """
+    from app.routes.chat import _BudgetHold, _estimate_reserve_microcents
+
+    async def _run() -> int:
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from packages.db.engine import build_engine
+
+        engine = build_engine(url)
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+                hold = _BudgetHold(db)
+                try:
+                    await hold.acquire(kc, body, model)
+                except HTTPException:
+                    return 0  # refused
+                return _estimate_reserve_microcents(body, model)
+        finally:
+            await engine.dispose()
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
+@pytest.mark.asyncio
+async def test_requests_arriving_together_cannot_all_claim_the_cap(tmp_sqlite_url, monkeypatch):
+    """Twenty at once must not each get to spend the whole cap.
+
+    Reading the total and then comparing it lets every caller read an
+    empty ledger and all walk through it. One INSERT..SELECT can't: the
+    writer lock makes the second caller wait for the first one's row.
+    """
+    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.schemas import ChatCompletionRequest
+    from packages.auth.types import KeyContext
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_mod._session_factory = factory
+
+    async with factory() as s:
+        await seed_initial_state(s)
+        key = _mk_key("sk-orca-parallelkey1", budget_limit_cents=1)
+        s.add(key)
+        await s.commit()
+        key_id = key.id
+    await engine.dispose()
+
+    body = ChatCompletionRequest(
+        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+    )
+    kc = KeyContext(
+        key_id=key_id, workspace_id="default", name="parallel", budget_limit_cents=1
+    )
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        claimed = list(
+            pool.map(
+                lambda _: _claim_in_thread(tmp_sqlite_url, kc, body, "gpt-4o-mini"),
+                range(20),
+            )
+        )
+
+    cap = 10_000  # budget_limit_cents=1, in microcents
+    # > 0 so the cap isn't just refusing everything, <= cap so twenty
+    # callers can't each reserve the whole thing
+    assert 0 < sum(claimed) <= cap

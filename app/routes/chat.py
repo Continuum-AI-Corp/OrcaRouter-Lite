@@ -12,13 +12,13 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import prompt_cache, router_cache
@@ -34,6 +34,7 @@ from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
+from packages.db.models.budget_hold import BudgetHold
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.types import UpstreamProviderError
@@ -265,36 +266,107 @@ async def chat_completions(
     return await execute_chat(body, kc, db)
 
 
-async def _assert_budget_available(db: AsyncSession, kc: KeyContext) -> None:
-    """Block the key once it has spent its budget.
+# How long a hold still counts against the cap. Long enough that a slow
+# stream isn't released out from under itself, short enough that a request
+# which died mid-flight stops blocking the key's budget.
+_HOLD_TTL = timedelta(minutes=15)
 
-    The cap was loaded but never checked, so a leaked key spent freely.
-    I sum what's already logged for this key; the current request's own
-    cost is written after it finishes, so one request can overshoot
-    before the next one is refused. An unknown period sums all time,
-    which is stricter than guessing wrong. No budget set means skip.
+# What i reserve for a request that doesn't cap its own output length.
+_RESERVE_OUTPUT_TOKENS = 4096
+
+
+def _estimate_reserve_microcents(body: ChatCompletionRequest, model_id: str | None) -> int:
+    """What i hold against the key until the real cost is logged.
+
+    Charging after the request is too late, the money is already gone. So
+    i reserve an upper bound first and hand the rest back once the spend
+    is in the log. A model i can't price reserves nothing: its logged cost
+    is 0 too, so there's nothing to protect against.
     """
-    if kc.budget_limit_cents is None:
-        return
-    stmt = select(func.coalesce(func.sum(RequestLog.cost_microcents), 0)).where(
-        RequestLog.api_key_id == kc.key_id
+    priced = _lookup_priced_model(model_id)
+    if priced is None:
+        return 0
+    prompt = "".join(str(m.content) for m in body.messages)
+    input_tokens = max(1, len(prompt) // 4)  # rough, only needs to be an upper bound
+    output_tokens = body.max_tokens or _RESERVE_OUTPUT_TOKENS
+    cost_usd = (
+        input_tokens * priced.input_cost_per_token
+        + output_tokens * priced.output_cost_per_token
     )
-    if kc.budget_period == "monthly":
+    return max(0, int(cost_usd * 1_000_000))
+
+
+class _BudgetHold:
+    """A reservation against a key's budget, released once the spend is logged.
+
+    `acquire` is a single statement on purpose. Reading the total and then
+    comparing it lets N parallel requests read the same total and all spend
+    past the cap. One INSERT..SELECT can't: sqlite serialises writers, so
+    the second caller sees the first one's hold.
+    """
+
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
+        self._id: str | None = None
+        # Set when the stream takes over: the response returns before the
+        # body is consumed, so the hold has to outlive this function.
+        self.transferred = False
+
+    async def acquire(self, kc: KeyContext, body: ChatCompletionRequest, model_id: str) -> None:
+        if kc.budget_limit_cents is None:
+            return  # no cap on this key, nothing to hold
+
         now = datetime.now(timezone.utc)
-        stmt = stmt.where(
-            RequestLog.created_at
-            >= now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        )
-    spent_microcents = (await db.execute(stmt)).scalar_one()
-    if spent_microcents >= kc.budget_limit_cents * 10_000:  # cents → microcents
-        raise HTTPException(
-            status_code=429,
-            detail=(
-                "API key budget exhausted: "
-                f"{spent_microcents / 1_000_000:.4f} USD spent this period "
-                f"against a {kc.budget_limit_cents / 100:.2f} USD cap."
+        reserve = _estimate_reserve_microcents(body, model_id)
+        hold_id = str(uuid.uuid4())
+        result = await self._db.execute(
+            text(
+                """
+                INSERT INTO budget_holds
+                    (id, api_key_id, workspace_id, reserve_microcents, created_at)
+                SELECT :id, :key_id, :workspace_id, :reserve, :now
+                WHERE (
+                    SELECT COALESCE(SUM(cost_microcents), 0) FROM requests_log
+                    WHERE api_key_id = :key_id AND created_at >= :period_start
+                ) + (
+                    SELECT COALESCE(SUM(reserve_microcents), 0) FROM budget_holds
+                    WHERE api_key_id = :key_id AND created_at > :hold_cutoff
+                ) + :reserve <= :cap
+                """
             ),
+            {
+                "id": hold_id,
+                "key_id": str(kc.key_id),
+                "workspace_id": str(kc.workspace_id),
+                "reserve": reserve,
+                "now": now,
+                "period_start": now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+                "hold_cutoff": now - _HOLD_TTL,
+                "cap": kc.budget_limit_cents * 10_000,  # cents to microcents
+            },
         )
+        await self._db.commit()
+        if result.rowcount != 1:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "API key budget exhausted: "
+                    f"this request would pass the {kc.budget_limit_cents / 100:.2f} USD cap."
+                ),
+            )
+        self._id = hold_id
+
+    async def release(self) -> None:
+        """Drop the reservation. Safe twice, and safe when never held."""
+        if self._id is None:
+            return
+        hold_id, self._id = self._id, None
+        try:
+            await self._db.execute(delete(BudgetHold).where(BudgetHold.id == hold_id))
+            await self._db.commit()
+        except Exception as release_err:
+            # it clears itself once _HOLD_TTL runs out
+            logger.warning("budget_hold_release_failed", error=str(release_err))
 
 
 async def execute_chat(
@@ -303,6 +375,24 @@ async def execute_chat(
     db: AsyncSession,
     *,
     log_status: Callable[[int, str | None], int] | None = None,
+) -> JSONResponse | StreamingResponse:
+    """Every ingress path (OpenAI, Anthropic, Gemini) funnels through here,
+    so the budget is held in one place and covers all three."""
+    hold = _BudgetHold(db)
+    try:
+        return await _run_chat(body, kc, db, log_status=log_status, hold=hold)
+    finally:
+        if not hold.transferred:
+            await hold.release()
+
+
+async def _run_chat(
+    body: ChatCompletionRequest,
+    kc: KeyContext,
+    db: AsyncSession,
+    *,
+    log_status: Callable[[int, str | None], int] | None = None,
+    hold: _BudgetHold,
 ) -> JSONResponse | StreamingResponse:
     """Protocol-agnostic chat engine — the full pipeline behind
     POST /v1/chat/completions (allowlist → auto-resolution → prompt cache →
@@ -324,9 +414,6 @@ async def execute_chat(
     # not the post-resolution primary.
     requested_model = body.model
     was_auto = body.model == "auto"
-
-    # i check the budget first, every ingress path funnels through here
-    await _assert_budget_available(db, kc)
 
     # Allowlist enforcement is split: pinned requests check up front, auto
     # requests defer to after resolution (since "auto" itself is never in
@@ -477,6 +564,11 @@ async def execute_chat(
     per_call_kwargs: dict = {}
     if was_auto:
         per_call_kwargs["num_retries"] = settings.router_num_retries_auto
+
+    # Hold the budget now that i know which model i'm paying for. Doing it
+    # after auto-resolution means "auto" reserves a real price too, and a
+    # cache hit never gets here because it returns below.
+    await hold.acquire(kc, body, resolved_model)
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"
@@ -923,7 +1015,17 @@ async def execute_chat(
                         await _finalize()
                     except Exception:
                         pass
+                    # after the log row: the spend has to be counted before
+                    # the hold against it comes off
+                    try:
+                        await hold.release()
+                    except Exception:
+                        pass
 
+        # The response returns before the body is read, so execute_chat's
+        # finally would drop the hold too early — sse() owns it now. If the
+        # process dies mid-stream the row just sits until _HOLD_TTL clears it.
+        hold.transferred = True
         return StreamingResponse(
             sse(),
             media_type="text/event-stream",

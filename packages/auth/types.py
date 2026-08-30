@@ -15,5 +15,4 @@ class KeyContext:
     key_type: str = "standard"
     role_label: str | None = None
     budget_limit_cents: int | None = None
-    budget_period: str = "monthly"
     model_allowlist: list[str] | None = None
