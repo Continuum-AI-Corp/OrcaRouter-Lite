@@ -1,7 +1,7 @@
 """Check SQLite survives concurrent writes.
 
 Stock SQLite turns two overlapping writes into "database is locked",
-which hit us as 500/503. I now set WAL, synchronous=NORMAL and a 30s
+which hit us as 500/503. I now set WAL, synchronous=NORMAL and a 5s
 busy timeout on every connection.
 """
 
@@ -20,7 +20,7 @@ async def test_sqlite_engine_enables_wal_and_busy_timeout(tmp_sqlite_url):
             busy_timeout = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
             synchronous = (await conn.execute(text("PRAGMA synchronous"))).scalar()
         assert journal_mode.lower() == "wal"
-        assert busy_timeout == 30000
+        assert busy_timeout == 5000
         # 1 = NORMAL (0 = OFF, 2 = FULL).
         assert synchronous == 1
     finally:

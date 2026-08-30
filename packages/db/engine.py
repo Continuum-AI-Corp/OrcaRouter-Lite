@@ -32,6 +32,10 @@ def _register_sqlite_pragmas(engine: AsyncEngine) -> None:
     during a write and busy_timeout makes writers wait instead of
     failing. WAL is saved in the db file, so existing deployments
     upgrade themselves on first connect.
+
+    The wait is 5s, not longer: it happens inside a request, so 30s would
+    pin that request for 30s and turn one slow write into a pile-up. A
+    lock held past 5s is a real fault and should surface as one.
     """
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -40,7 +44,7 @@ def _register_sqlite_pragmas(engine: AsyncEngine) -> None:
         try:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA busy_timeout=5000")
         finally:
             cursor.close()
 
@@ -48,7 +52,7 @@ def _register_sqlite_pragmas(engine: AsyncEngine) -> None:
 def build_engine(database_url: str) -> AsyncEngine:
     """Build an async engine for the given URL.
 
-    SQLite gets WAL and a 30s busy timeout (see `_register_sqlite_pragmas`);
+    SQLite gets WAL and a 5s busy timeout (see `_register_sqlite_pragmas`);
     Postgres uses defaults with pool pre-ping.
     """
     if database_url.startswith("sqlite"):

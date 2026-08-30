@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from packages.db import session as session_mod
     from packages.db.engine import dispose_engine, get_engine, redacted_url
     from packages.db.models.base import Base
+    from packages.db.schema import ensure_runtime_indexes
 
     settings = get_settings()
 
@@ -68,6 +69,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # an upgraded database already has these tables, so create_all
+        # won't put the new index on them
+        await ensure_runtime_indexes(conn)
 
     # Fail closed before any traffic can be served: refuse to boot when
     # provider credentials are (or would be) sealed with the publicly-known
