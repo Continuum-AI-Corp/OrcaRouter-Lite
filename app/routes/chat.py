@@ -12,11 +12,13 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from datetime import datetime, timezone
 
 import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import prompt_cache, router_cache
@@ -263,6 +265,38 @@ async def chat_completions(
     return await execute_chat(body, kc, db)
 
 
+async def _assert_budget_available(db: AsyncSession, kc: KeyContext) -> None:
+    """Block the key once it has spent its budget.
+
+    The cap was loaded but never checked, so a leaked key spent freely.
+    I sum what's already logged for this key; the current request's own
+    cost is written after it finishes, so one request can overshoot
+    before the next one is refused. An unknown period sums all time,
+    which is stricter than guessing wrong. No budget set means skip.
+    """
+    if kc.budget_limit_cents is None:
+        return
+    stmt = select(func.coalesce(func.sum(RequestLog.cost_microcents), 0)).where(
+        RequestLog.api_key_id == kc.key_id
+    )
+    if kc.budget_period == "monthly":
+        now = datetime.now(timezone.utc)
+        stmt = stmt.where(
+            RequestLog.created_at
+            >= now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        )
+    spent_microcents = (await db.execute(stmt)).scalar_one()
+    if spent_microcents >= kc.budget_limit_cents * 10_000:  # cents → microcents
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "API key budget exhausted: "
+                f"{spent_microcents / 1_000_000:.4f} USD spent this period "
+                f"against a {kc.budget_limit_cents / 100:.2f} USD cap."
+            ),
+        )
+
+
 async def execute_chat(
     body: ChatCompletionRequest,
     kc: KeyContext,
@@ -290,6 +324,9 @@ async def execute_chat(
     # not the post-resolution primary.
     requested_model = body.model
     was_auto = body.model == "auto"
+
+    # i check the budget first, every ingress path funnels through here
+    await _assert_budget_available(db, kc)
 
     # Allowlist enforcement is split: pinned requests check up front, auto
     # requests defer to after resolution (since "auto" itself is never in
