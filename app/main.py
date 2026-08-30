@@ -180,6 +180,13 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled(request, exc: Exception):
+        # i log it or i can't debug 500s later
+        structlog.get_logger().exception(
+            "unhandled_exception",
+            method=request.method,
+            path=request.url.path,
+            error=str(exc),
+        )
         native = _native_error(request, 500, "Internal server error")
         if native is not None:
             return native

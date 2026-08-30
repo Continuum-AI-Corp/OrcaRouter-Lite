@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 from urllib.parse import parse_qs
 
+import structlog
+
 from packages.auth.key_validator import AuthError, validate_api_key
 from packages.db import session as session_mod
 
@@ -213,6 +215,12 @@ class AuthMiddleware:
                     except AuthError as e:
                         auth_error = e
         except Exception:
+            # db is down, i log why
+            structlog.get_logger().exception(
+                "auth_middleware_db_failure",
+                method=scope.get("method"),
+                path=path,
+            )
             await _send_error(send, scope, 503, "Service temporarily unavailable", "server_error")
             return
 
