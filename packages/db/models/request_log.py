@@ -15,7 +15,10 @@ class RequestLog(Base, UUIDMixin, SoftDeleteMixin):
     )
 
     workspace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    api_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # Indexed for the per-key budget SUM (see execute_chat's pre-flight
+    # spend check) — the only hot query on this table that isn't served
+    # by the workspace/created_at composite above.
+    api_key_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     model_requested: Mapped[str] = mapped_column(String(100), nullable=False)
     model_resolved: Mapped[str] = mapped_column(String(200), nullable=False)
