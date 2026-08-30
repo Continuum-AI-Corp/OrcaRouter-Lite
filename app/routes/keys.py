@@ -24,12 +24,17 @@ class CreateKey(BaseModel):
 
 @router.get("")
 async def list_keys(
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    # Workspace-scoped: keys are tenant data, and the column is indexed.
+    # Without this filter any authenticated key could enumerate every
+    # key in the database across workspaces (IDOR).
     rows = (
         await db.execute(
-            select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
+            select(ApiKey)
+            .where(ApiKey.is_deleted == 0, ApiKey.workspace_id == kc.workspace_id)
+            .order_by(ApiKey.created_at)
         )
     ).scalars().all()
     return {
@@ -55,11 +60,18 @@ async def create_key(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     full_key, key_hash, key_prefix = generate_api_key()
+    # Inherit the CALLER's restrictions. The request body carries only a
+    # name, so anything left NULL here would mint an unrestricted key —
+    # letting a restricted key permanently escape its own allowlist and
+    # budget by creating a sibling. A child key is never less restricted
+    # than the key that created it.
     row = ApiKey(
         workspace_id=kc.workspace_id,
         name=body.name,
         key_hash=key_hash,
         key_prefix=key_prefix,
+        model_allowlist=kc.model_allowlist,
+        budget_limit_cents=kc.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -76,12 +88,18 @@ async def create_key(
 @router.delete("/{key_id}", status_code=204)
 async def revoke_key(
     key_id: str,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    # Same workspace scope as list_keys: without it any authenticated key
+    # could revoke keys belonging to other workspaces (IDOR).
     row = (
         await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+            select(ApiKey).where(
+                ApiKey.id == key_id,
+                ApiKey.is_deleted == 0,
+                ApiKey.workspace_id == kc.workspace_id,
+            )
         )
     ).scalar_one_or_none()
     if row is None:
