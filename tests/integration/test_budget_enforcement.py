@@ -8,17 +8,22 @@ hold back once the real cost is in the log.
 import asyncio
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from structlog.testing import capture_logs
 
 from app.main import create_app
+from app.routes import chat
 from app.seed import seed_initial_state
 from packages.auth.hashing import hash_api_key
 from packages.db import session as session_mod
 from packages.db.models.api_key import ApiKey
+from packages.db.models.budget_hold import BudgetHold
 from packages.db.models.request_log import RequestLog
 
 
@@ -213,3 +218,80 @@ async def test_requests_arriving_together_cannot_all_claim_the_cap(tmp_sqlite_ur
     # > 0 so the cap isn't just refusing everything, <= cap so twenty
     # callers can't each reserve the whole thing
     assert 0 < sum(claimed) <= cap
+
+
+@pytest.mark.asyncio
+async def test_a_stream_beats_its_hold(tmp_sqlite_url, monkeypatch):
+    """The beat runs inside the chunk loop, where unit tests can't reach it.
+
+    Interval set to zero so every chunk writes one. A broken UPDATE would
+    not fail the request — heartbeat swallows its own errors so a slow
+    budget can't kill a working stream — so the warning is the only trace.
+    """
+    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    from app import config as cfg
+    from app import router_cache
+
+    cfg.get_settings.cache_clear()
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    session_mod._session_factory = factory
+
+    async with factory() as s:
+        await seed_initial_state(s)
+        s.add(_mk_key("sk-orca-streambeatkey1", budget_limit_cents=100))
+        await s.commit()
+
+    async def _chunks():
+        yield {
+            "id": "c", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+            "created": 0,
+            "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}],
+        }
+        yield {
+            "id": "c", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+            "created": 0,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+            "_orca_meta": {"provider": "openai", "latency_ms": 12},
+        }
+
+    fake_client = AsyncMock()
+    fake_client.acompletion = AsyncMock(return_value=_chunks())
+    monkeypatch.setattr(router_cache, "get_router", AsyncMock(return_value=fake_client))
+    monkeypatch.setattr(chat, "_HOLD_HEARTBEAT", timedelta(0))
+
+    app = create_app()
+    with capture_logs() as logs:
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://t",
+        ) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+                headers={"Authorization": "Bearer sk-orca-streambeatkey1"},
+            )
+
+    assert resp.status_code == 200
+    assert "[DONE]" in resp.text
+    assert [e for e in logs if e.get("event") == "budget_hold_heartbeat_failed"] == []
+
+    # the stream owns the hold until the log row is in, then hands it back
+    async with factory() as s:
+        assert (await s.execute(select(BudgetHold))).scalars().all() == []
+    await engine.dispose()
