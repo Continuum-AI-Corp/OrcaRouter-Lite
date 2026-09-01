@@ -149,10 +149,10 @@ def _claim_in_thread(url: str, kc, body, model: str) -> int:
             async with async_sessionmaker(engine, expire_on_commit=False)() as db:
                 hold = _BudgetHold(db)
                 try:
-                    await hold.acquire(kc, body, model)
+                    await hold.acquire(kc, body, [model])
                 except HTTPException:
                     return 0  # refused
-                return _estimate_reserve_microcents(body, model)
+                return _estimate_reserve_microcents(body, [model])
         finally:
             await engine.dispose()
 

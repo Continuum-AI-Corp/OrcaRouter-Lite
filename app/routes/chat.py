@@ -11,6 +11,7 @@ import asyncio
 import json
 import time
 import uuid
+import zlib
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
 from datetime import datetime, timedelta, timezone
 
@@ -271,29 +272,52 @@ async def chat_completions(
 # which died mid-flight stops blocking the key's budget.
 _HOLD_TTL = timedelta(minutes=15)
 
-# What i reserve for a request that doesn't cap its own output length.
-_RESERVE_OUTPUT_TOKENS = 4096
+# What i assume for output when the caller sets no max_tokens. The logged
+# cost is the real number, so this only has to not be wildly under it.
+_DEFAULT_OUTPUT_TOKENS = 8192
+
+# Images and audio bill per piece, not per character: a 1024px image is
+# around a thousand tokens while its str() is a URL of maybe sixty.
+_MEDIA_TOKENS = 2048
 
 
-def _estimate_reserve_microcents(body: ChatCompletionRequest, model_id: str | None) -> int:
-    """What i hold against the key until the real cost is logged.
+def _input_token_ceiling(body: ChatCompletionRequest) -> int:
+    """Upper bound on the tokens i get billed for the prompt.
 
-    Charging after the request is too late, the money is already gone. So
-    i reserve an upper bound first and hand the rest back once the spend
-    is in the log. A model i can't price reserves nothing: its logged cost
-    is 0 too, so there's nothing to protect against.
+    `content` turns into a list of parts as soon as vision or audio is
+    involved, and str() of that list counts an image as a few dozen
+    characters. Anything that isn't text gets a flat allowance instead.
     """
-    priced = _lookup_priced_model(model_id)
-    if priced is None:
+    total = 0
+    for m in body.messages:
+        for part in m.content if isinstance(m.content, list) else [m.content]:
+            if isinstance(part, dict) and not isinstance(part.get("text"), str):
+                total += _MEDIA_TOKENS
+            else:
+                total += len(str(part)) // 4
+    return max(1, total)
+
+
+def _estimate_reserve_microcents(body: ChatCompletionRequest, model_ids) -> int:
+    """Worst case over every model this request could end up paying for.
+
+    It only has to be an upper bound: the hold comes off once the real
+    cost is in the log, and under-reserving is what lets a request walk
+    past a cap the operator set in real money. Auto-routing can cascade,
+    so i price every candidate and keep the dearest. A model i can't price
+    reserves nothing — its logged cost is 0 too.
+    """
+    priced = [p for p in (_lookup_priced_model(m) for m in model_ids) if p]
+    if not priced:
         return 0
-    prompt = "".join(str(m.content) for m in body.messages)
-    input_tokens = max(1, len(prompt) // 4)  # rough, only needs to be an upper bound
-    output_tokens = body.max_tokens or _RESERVE_OUTPUT_TOKENS
-    cost_usd = (
-        input_tokens * priced.input_cost_per_token
-        + output_tokens * priced.output_cost_per_token
+    input_tokens = _input_token_ceiling(body)
+    # `n` bills a whole completion each time
+    output_tokens = (body.max_tokens or _DEFAULT_OUTPUT_TOKENS) * max(1, body.n or 1)
+    worst = max(
+        input_tokens * m.input_cost_per_token + output_tokens * m.output_cost_per_token
+        for m in priced
     )
-    return max(0, int(cost_usd * 1_000_000))
+    return max(0, int(worst * 1_000_000))
 
 
 class _BudgetHold:
@@ -301,8 +325,8 @@ class _BudgetHold:
 
     `acquire` is a single statement on purpose. Reading the total and then
     comparing it lets N parallel requests read the same total and all spend
-    past the cap. One INSERT..SELECT can't: sqlite serialises writers, so
-    the second caller sees the first one's hold.
+    past the cap. One INSERT..SELECT can't, so long as the writers are made
+    to queue: sqlite does that on its own, postgres needs the lock below.
     """
 
     def __init__(self, db: AsyncSession) -> None:
@@ -312,12 +336,23 @@ class _BudgetHold:
         # body is consumed, so the hold has to outlive this function.
         self.transferred = False
 
-    async def acquire(self, kc: KeyContext, body: ChatCompletionRequest, model_id: str) -> None:
+    async def acquire(self, kc: KeyContext, body: ChatCompletionRequest, model_ids) -> None:
         if kc.budget_limit_cents is None:
             return  # no cap on this key, nothing to hold
 
+        key_id = str(kc.key_id)
+        if self._db.get_bind().dialect.name == "postgresql":
+            # postgres hands every caller the same snapshot, so without
+            # this they'd all read the same remaining budget and all pass.
+            # One lock per key makes them queue; it drops when the insert
+            # commits. sqlite serialises writers itself and needs nothing.
+            await self._db.execute(
+                text("SELECT pg_advisory_xact_lock(:lock)"),
+                {"lock": zlib.crc32(key_id.encode())},
+            )
+
         now = datetime.now(timezone.utc)
-        reserve = _estimate_reserve_microcents(body, model_id)
+        reserve = _estimate_reserve_microcents(body, model_ids)
         hold_id = str(uuid.uuid4())
         result = await self._db.execute(
             text(
@@ -336,7 +371,7 @@ class _BudgetHold:
             ),
             {
                 "id": hold_id,
-                "key_id": str(kc.key_id),
+                "key_id": key_id,
                 "workspace_id": str(kc.workspace_id),
                 "reserve": reserve,
                 "now": now,
@@ -567,8 +602,9 @@ async def _run_chat(
 
     # Hold the budget now that i know which model i'm paying for. Doing it
     # after auto-resolution means "auto" reserves a real price too, and a
-    # cache hit never gets here because it returns below.
-    await hold.acquire(kc, body, resolved_model)
+    # cache hit never gets here because it returns below. The whole
+    # candidate list goes in because a cascade can land on any of them.
+    await hold.acquire(kc, body, candidates or [resolved_model])
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"
