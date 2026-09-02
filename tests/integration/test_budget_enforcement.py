@@ -199,8 +199,13 @@ async def test_requests_arriving_together_cannot_all_claim_the_cap(tmp_sqlite_ur
         key_id = key.id
     await engine.dispose()
 
+    # max_tokens pinned so the reserve doesn't move with whatever output
+    # ceiling this litellm build publishes. Sized so twenty of them are well
+    # past the cap: the point is the race, not the arithmetic.
     body = ChatCompletionRequest(
-        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=1600,
     )
     kc = KeyContext(
         key_id=key_id, workspace_id="default", name="parallel", budget_limit_cents=1
