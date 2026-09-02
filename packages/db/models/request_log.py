@@ -15,7 +15,8 @@ class RequestLog(Base, UUIDMixin, SoftDeleteMixin):
     )
 
     workspace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    api_key_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # indexed for the budget sum i do per key in execute_chat
+    api_key_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     trace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     model_requested: Mapped[str] = mapped_column(String(100), nullable=False)
     model_resolved: Mapped[str] = mapped_column(String(200), nullable=False)

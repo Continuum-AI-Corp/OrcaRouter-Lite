@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 
 # ── Provider mapping: litellm prefix → (our provider id, litellm prefix string) ──
 # Each entry maps a litellm provider key (the part before the `/` in the model
@@ -243,6 +244,51 @@ try:
             CATALOG_BY_ID[_id] = _sm
 except ImportError:
     pass
+
+
+class Priced(NamedTuple):
+    """What a model bills, and the most output it will produce."""
+
+    input_cost_per_token: float
+    output_cost_per_token: float
+    max_output_tokens: int | None = None
+
+
+def _litellm_cost() -> dict:
+    """litellm's own cost table, read fresh (operators register models)."""
+    try:
+        import litellm
+    except Exception:
+        return {}
+    return getattr(litellm, "model_cost", {}) or {}
+
+
+def _max_output(entry: dict) -> int | None:
+    value = entry.get("max_output_tokens") or entry.get("max_tokens")
+    return int(value) if isinstance(value, (int, float)) and value > 0 else None
+
+
+def litellm_priced(model_id: str) -> Priced | None:
+    """The price litellm itself would bill, or None when it has no entry.
+
+    The catalog is a filtered view: it keeps only the providers we route to
+    by name, so a deployment pointing anywhere else is missing from it while
+    litellm still prices it. Same table litellm computes response_cost from,
+    so this is what a money cap has to be measured against.
+    """
+    entry = _litellm_cost().get(model_id)
+    if not isinstance(entry, dict):
+        return None
+    in_cost = entry.get("input_cost_per_token")
+    out_cost = entry.get("output_cost_per_token")
+    if not in_cost and not out_cost:
+        return None
+    return Priced(float(in_cost or 0.0), float(out_cost or 0.0), _max_output(entry))
+
+
+def litellm_max_output(model_id: str) -> int | None:
+    entry = _litellm_cost().get(model_id)
+    return _max_output(entry) if isinstance(entry, dict) else None
 
 
 def all_model_ids() -> list[str]:

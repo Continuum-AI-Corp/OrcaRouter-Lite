@@ -24,12 +24,15 @@ class CreateKey(BaseModel):
 
 @router.get("")
 async def list_keys(
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    # i only list my own workspace, else any key could read them all
     rows = (
         await db.execute(
-            select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
+            select(ApiKey)
+            .where(ApiKey.is_deleted == 0, ApiKey.workspace_id == kc.workspace_id)
+            .order_by(ApiKey.created_at)
         )
     ).scalars().all()
     return {
@@ -55,11 +58,15 @@ async def create_key(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     full_key, key_hash, key_prefix = generate_api_key()
+    # the body only has a name, so i copy my own limits onto the new key
+    # or a restricted key could just mint itself an unrestricted sibling
     row = ApiKey(
         workspace_id=kc.workspace_id,
         name=body.name,
         key_hash=key_hash,
         key_prefix=key_prefix,
+        model_allowlist=kc.model_allowlist,
+        budget_limit_cents=kc.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -76,12 +83,17 @@ async def create_key(
 @router.delete("/{key_id}", status_code=204)
 async def revoke_key(
     key_id: str,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    # same as list, i can only revoke keys in my own workspace
     row = (
         await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+            select(ApiKey).where(
+                ApiKey.id == key_id,
+                ApiKey.is_deleted == 0,
+                ApiKey.workspace_id == kc.workspace_id,
+            )
         )
     ).scalar_one_or_none()
     if row is None:

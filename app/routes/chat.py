@@ -11,12 +11,15 @@ import asyncio
 import json
 import time
 import uuid
+import zlib
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from datetime import datetime, timedelta, timezone
 
 import anyio
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy import delete, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import prompt_cache, router_cache
@@ -32,8 +35,15 @@ from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
+from packages.db.models.budget_hold import BudgetHold
 from packages.db.models.request_log import RequestLog
-from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
+from packages.litellm_adapter.catalog import (
+    CATALOG,
+    CATALOG_BY_ID,
+    Priced,
+    litellm_max_output,
+    litellm_priced,
+)
 from packages.litellm_adapter.types import UpstreamProviderError
 
 logger = structlog.get_logger()
@@ -227,29 +237,48 @@ def _compute_cost_microcents(
     return max(0, int(cost_usd * 1_000_000))
 
 
-def _lookup_priced_model(model_id: str | None):
-    """Try four id-shape variants, return the first catalog hit or None.
+def _model_id_variants(model_id: str) -> tuple[str, ...]:
+    """The shapes a model id turns up in: as-is, prefix stripped, dated
+    alias stripped ("claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet",
+    which is the only form in our catalog for some entries)."""
+    bare = model_id.split("/", 1)[-1] if "/" in model_id else model_id
+    base = canonical_model_base(bare)
+    return (model_id, bare, base) if base != bare else (model_id, bare)
 
-    Order:
-      1. as-is
-      2. provider-prefix stripped ("openai/gpt-4o" -> "gpt-4o")
-      3. version-suffix stripped (handles "claude-3-5-sonnet-20241022" ->
-         "claude-3-5-sonnet" when the response was a dated alias and only
-         the base form is in our catalog)
+
+def _lookup_priced_model(model_id: str | None):
+    """First catalog hit across the shapes a response can come back as."""
+    if not model_id:
+        return None
+    for variant in _model_id_variants(model_id):
+        m = CATALOG_BY_ID.get(variant)
+        if m is not None:
+            return m
+    return None
+
+
+def _priced(model_id: str | None) -> Priced | None:
+    """What one model bills: the catalog first, then litellm itself.
+
+    The catalog only holds the providers we route to by name, so a
+    deployment pointed anywhere else isn't in it — but litellm prices it
+    all the same, and that's the number that lands in the log. Neither
+    having it means litellm reports no cost either, so there's nothing to
+    reserve against.
     """
     if not model_id:
         return None
-    m = CATALOG_BY_ID.get(model_id)
-    if m is not None:
-        return m
-    bare = model_id.split("/", 1)[-1] if "/" in model_id else model_id
-    if bare != model_id:
-        m = CATALOG_BY_ID.get(bare)
-        if m is not None:
-            return m
-    base = canonical_model_base(bare)
-    if base != bare:
-        return CATALOG_BY_ID.get(base)
+    for variant in _model_id_variants(model_id):
+        m = CATALOG_BY_ID.get(variant)
+        if m is not None and (m.input_cost_per_token or m.output_cost_per_token):
+            return Priced(
+                m.input_cost_per_token,
+                m.output_cost_per_token,
+                litellm_max_output(variant),
+            )
+        p = litellm_priced(variant)
+        if p is not None:
+            return p
     return None
 
 
@@ -263,12 +292,222 @@ async def chat_completions(
     return await execute_chat(body, kc, db)
 
 
+# How long a hold still counts against the cap, and how often a live stream
+# refreshes it. Half the ttl: a hold that stops beating gets reaped, a slow
+# stream never slips out of the sum while it's still spending.
+_HOLD_TTL = timedelta(minutes=15)
+_HOLD_HEARTBEAT = _HOLD_TTL / 2
+
+# What i assume for output when neither the caller nor litellm caps it.
+_DEFAULT_OUTPUT_TOKENS = 8192
+
+# Images bill per piece, not per character: a 1024px image is around a
+# thousand tokens while its str() is a URL of maybe sixty.
+_IMAGE_TOKENS = 2048
+# Audio bills by duration, ~32 tokens per 6s: this covers a 25 minute clip.
+_AUDIO_TOKENS = 8192
+# Anthropic prices a cache write at 1.25x the base input rate, and that's
+# the dearest any provider prices a prompt token.
+_CACHE_WRITE_MULTIPLIER = 1.25
+
+
+def _text_token_ceiling(text: str) -> int:
+    """Upper bound on what a string bills as.
+
+    //4 is the english average, not a ceiling: chinese bills closer to one
+    token per character and emoji worse than that. Anything past ASCII gets
+    a token each, which over-counts some scripts and is right for the ones
+    that matter.
+    """
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return (len(text) - non_ascii) // 4 + non_ascii
+
+
+def _input_token_ceiling(body: ChatCompletionRequest) -> int:
+    """Upper bound on the prompt tokens i get billed for.
+
+    Tools are billed as input and can dwarf the messages they sit next to,
+    so they go in the same total. `content` turns into a list of parts as
+    soon as vision or audio is involved, and those bill by the piece.
+    """
+    total = 0
+    for m in body.messages:
+        for part in m.content if isinstance(m.content, list) else [m.content]:
+            if not isinstance(part, dict):
+                total += _text_token_ceiling(str(part))
+            elif isinstance(part.get("text"), str):
+                total += _text_token_ceiling(part["text"])
+            elif "audio" in str(part.get("type", "")):
+                total += _AUDIO_TOKENS
+            else:
+                total += _IMAGE_TOKENS
+        if m.tool_calls:
+            total += _text_token_ceiling(json.dumps(m.tool_calls, default=str))
+    if body.tools:
+        total += _text_token_ceiling(json.dumps(body.tools, default=str))
+    return max(1, total)
+
+
+def _estimate_reserve_microcents(body: ChatCompletionRequest, model_ids) -> int:
+    """Worst case over every model this request could end up paying for.
+
+    It only has to be an upper bound: the hold comes off once the real
+    cost is in the log, and under-reserving is what lets a request walk
+    past a cap the operator set in real money. Auto-routing can cascade,
+    so i price every candidate and keep the dearest.
+    """
+    priced = [p for p in (_priced(m) for m in model_ids) if p]
+    if not priced:
+        return 0
+    input_tokens = _input_token_ceiling(body)
+    # `n` bills a whole completion each time
+    n = max(1, body.n or 1)
+    worst = max(
+        input_tokens * p.input_cost_per_token * _CACHE_WRITE_MULTIPLIER
+        # with no max_tokens the model's own ceiling is the bound; litellm
+        # doesn't publish one for every model, hence the fallback
+        + n * (body.max_tokens or p.max_output_tokens or _DEFAULT_OUTPUT_TOKENS)
+        * p.output_cost_per_token
+        for p in priced
+    )
+    return max(0, int(worst * 1_000_000))
+
+
+class _BudgetHold:
+    """A reservation against a key's budget, released once the spend is logged.
+
+    `acquire` is a single statement on purpose. Reading the total and then
+    comparing it lets N parallel requests read the same total and all spend
+    past the cap. One INSERT..SELECT can't, so long as the writers are made
+    to queue: sqlite does that on its own, postgres needs the lock below.
+    """
+
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
+        self._id: str | None = None
+        # Set when the stream takes over: the response returns before the
+        # body is consumed, so the hold has to outlive this function.
+        self.transferred = False
+        self._last_beat = 0.0
+
+    async def acquire(self, kc: KeyContext, body: ChatCompletionRequest, model_ids) -> None:
+        if kc.budget_limit_cents is None:
+            return  # no cap on this key, nothing to hold
+
+        key_id = str(kc.key_id)
+        if self._db.get_bind().dialect.name == "postgresql":
+            # postgres hands every caller the same snapshot, so without
+            # this they'd all read the same remaining budget and all pass.
+            # One lock per key makes them queue; it drops when the insert
+            # commits. sqlite serialises writers itself and needs nothing.
+            await self._db.execute(
+                text("SELECT pg_advisory_xact_lock(:lock)"),
+                {"lock": zlib.crc32(key_id.encode())},
+            )
+
+        now = datetime.now(timezone.utc)
+        reserve = _estimate_reserve_microcents(body, model_ids)
+        hold_id = str(uuid.uuid4())
+        result = await self._db.execute(
+            text(
+                """
+                INSERT INTO budget_holds
+                    (id, api_key_id, workspace_id, reserve_microcents, last_seen_at)
+                SELECT :id, :key_id, :workspace_id, :reserve, :now
+                WHERE (
+                    SELECT COALESCE(SUM(cost_microcents), 0) FROM requests_log
+                    WHERE api_key_id = :key_id AND created_at >= :period_start
+                ) + (
+                    SELECT COALESCE(SUM(reserve_microcents), 0) FROM budget_holds
+                    WHERE api_key_id = :key_id AND last_seen_at > :hold_cutoff
+                ) + :reserve <= :cap
+                """
+            ),
+            {
+                "id": hold_id,
+                "key_id": key_id,
+                "workspace_id": str(kc.workspace_id),
+                "reserve": reserve,
+                "now": now,
+                "period_start": now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+                "hold_cutoff": now - _HOLD_TTL,
+                "cap": kc.budget_limit_cents * 10_000,  # cents to microcents
+            },
+        )
+        await self._db.commit()
+        if result.rowcount != 1:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "API key budget exhausted: "
+                    f"this request would pass the {kc.budget_limit_cents / 100:.2f} USD cap."
+                ),
+            )
+        self._id = hold_id
+
+    async def heartbeat(self) -> None:
+        """Keep a live stream's hold from ageing out of the cap sum.
+
+        The TTL reaps holds for requests that died, but it can't tell a
+        dead request from a slow one: the log row for a stream only lands
+        when the stream ends, so a stream past the TTL would stop counting
+        towards the cap while still spending against it. Called between
+        chunks; only writes when half the TTL is up.
+        """
+        if self._id is None:
+            return
+        now = time.monotonic()
+        if now - self._last_beat < _HOLD_HEARTBEAT.total_seconds():
+            return
+        self._last_beat = now
+        try:
+            await self._db.execute(
+                update(BudgetHold)
+                .where(BudgetHold.id == self._id)
+                .values(last_seen_at=datetime.now(timezone.utc))
+            )
+            await self._db.commit()
+        except Exception as beat_err:
+            # worst case it ages out the way a dead request's hold would
+            logger.warning("budget_hold_heartbeat_failed", error=str(beat_err))
+
+    async def release(self) -> None:
+        """Drop the reservation. Safe twice, and safe when never held."""
+        if self._id is None:
+            return
+        hold_id, self._id = self._id, None
+        try:
+            await self._db.execute(delete(BudgetHold).where(BudgetHold.id == hold_id))
+            await self._db.commit()
+        except Exception as release_err:
+            # it clears itself once _HOLD_TTL runs out
+            logger.warning("budget_hold_release_failed", error=str(release_err))
+
+
 async def execute_chat(
     body: ChatCompletionRequest,
     kc: KeyContext,
     db: AsyncSession,
     *,
     log_status: Callable[[int, str | None], int] | None = None,
+) -> JSONResponse | StreamingResponse:
+    """Every ingress path (OpenAI, Anthropic, Gemini) funnels through here,
+    so the budget is held in one place and covers all three."""
+    hold = _BudgetHold(db)
+    try:
+        return await _run_chat(body, kc, db, log_status=log_status, hold=hold)
+    finally:
+        if not hold.transferred:
+            await hold.release()
+
+
+async def _run_chat(
+    body: ChatCompletionRequest,
+    kc: KeyContext,
+    db: AsyncSession,
+    *,
+    log_status: Callable[[int, str | None], int] | None = None,
+    hold: _BudgetHold,
 ) -> JSONResponse | StreamingResponse:
     """Protocol-agnostic chat engine — the full pipeline behind
     POST /v1/chat/completions (allowlist → auto-resolution → prompt cache →
@@ -440,6 +679,12 @@ async def execute_chat(
     per_call_kwargs: dict = {}
     if was_auto:
         per_call_kwargs["num_retries"] = settings.router_num_retries_auto
+
+    # Hold the budget now that i know which model i'm paying for. Doing it
+    # after auto-resolution means "auto" reserves a real price too, and a
+    # cache hit never gets here because it returns below. The whole
+    # candidate list goes in because a cascade can land on any of them.
+    await hold.acquire(kc, body, candidates or [resolved_model])
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"
@@ -773,6 +1018,7 @@ async def execute_chat(
                     if d.get("model"):
                         agg_model = d["model"]
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
+                    await hold.heartbeat()
                 yield "data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
                 # Client closed the connection (Ctrl+C, tab closed, browser
@@ -886,7 +1132,17 @@ async def execute_chat(
                         await _finalize()
                     except Exception:
                         pass
+                    # after the log row: the spend has to be counted before
+                    # the hold against it comes off
+                    try:
+                        await hold.release()
+                    except Exception:
+                        pass
 
+        # The response returns before the body is read, so execute_chat's
+        # finally would drop the hold too early — sse() owns it now. If the
+        # process dies mid-stream the row just sits until _HOLD_TTL clears it.
+        hold.transferred = True
         return StreamingResponse(
             sse(),
             media_type="text/event-stream",

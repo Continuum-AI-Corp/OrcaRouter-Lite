@@ -132,3 +132,35 @@ async def db_session(tmp_sqlite_url) -> AsyncGenerator:
         yield session
 
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def lite_app(tmp_sqlite_url, monkeypatch) -> AsyncGenerator:
+    """Boot a fresh app against a tempfile SQLite."""
+    monkeypatch.setenv("DATABASE_URL", tmp_sqlite_url)
+
+    # i clear the cached settings so my new env is picked up
+    from app import config as cfg
+
+    cfg.get_settings.cache_clear()
+
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # i point the session factory at this engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db import session as session_mod
+
+    session_mod._session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    from app.main import create_app
+
+    yield create_app()
+
+    await engine.dispose()
+    session_mod._session_factory = None
