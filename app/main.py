@@ -69,6 +69,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # create_all only makes missing tables, never alters existing ones. Bring
+    # existing deployments (SQLite volume, Postgres) up to date with columns added
+    # after their initial release so they don't 503 on the new ORM columns.
+    from packages.db.migrate import ensure_budget_columns
+
+    await ensure_budget_columns(engine)
+
     # Fail closed before any traffic can be served: refuse to boot when
     # provider credentials are (or would be) sealed with the publicly-known
     # dev encryption key. Runs after create_all so a fresh database's empty
