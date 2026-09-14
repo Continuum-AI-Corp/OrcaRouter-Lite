@@ -206,9 +206,18 @@ def required_capabilities(body: dict) -> set[str]:
     if has_tools_payload and not tool_choice_explicit_none:
         needs.add("tools")
     if isinstance(tool_choice, dict):
+        # A dict tool_choice (e.g. {"type": "function", "function": {"name": "..."}})
+        # names a specific tool — requires tools in the body (or at least a
+        # tool-capable model that won"t error on the reference).
         needs.add("tools")
     elif isinstance(tool_choice, str) and tool_choice not in ("", "none"):
-        needs.add("tools")
+        # String tool_choice without a tools payload (e.g. tool_choice="auto"
+        # with no tools defined) is a no-op per the OpenAI spec — the provider
+        # ignores it. Don"t require a tool-capable model in that case, or a
+        # client that sends tool_choice="auto" on every request (some SDKs do)
+        # would be unable to reach non-tool models through auto routing.
+        if has_tools_payload:
+            needs.add("tools")
 
     rf = body.get("response_format")
     if isinstance(rf, dict) and rf.get("type") in ("json_object", "json_schema"):
