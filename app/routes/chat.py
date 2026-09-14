@@ -544,6 +544,15 @@ async def execute_chat(
             try:
                 await db.commit()
             except Exception as commit_err:
+                # Roll back so the request-scoped session is not left in a
+                # dirty state. Without this, the next DB operation on the
+                # same session (e.g. the streaming _finalize or the
+                # blocking path's own commit) fails with InvalidRequestError
+                # because the pending INSERT is still attached.
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
                 logger.warning("request_log_commit_failed", error=str(commit_err))
 
         try:
