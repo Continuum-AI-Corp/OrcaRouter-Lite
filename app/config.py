@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Providers we accept from env vars. Must stay in sync with:
@@ -143,6 +144,45 @@ class Settings(BaseSettings):
     # 2x in-deployment retries (which would add ~30-90s of perceived latency).
     router_num_retries_default: int = 2
     router_num_retries_auto: int = 0
+
+    # ── Field validators ──────────────────────────────
+    # Catch misconfiguration at startup with a clear message rather than
+    # letting an out-of-range value reach uvicorn / LiteLLM Router and
+    # produce a confusing runtime error.
+
+    @field_validator("port")
+    @classmethod
+    def _port_in_range(cls, v: int) -> int:
+        if not 1 <= v <= 65535:
+            raise ValueError(f"port must be 1–65535, got {v}")
+        return v
+
+    @field_validator("router_cooldown_seconds")
+    @classmethod
+    def _cooldown_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"router_cooldown_seconds must be >= 0, got {v}"
+            )
+        return v
+
+    @field_validator("router_allowed_fails")
+    @classmethod
+    def _allowed_fails_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"router_allowed_fails must be >= 0, got {v}"
+            )
+        return v
+
+    @field_validator("router_num_retries_default", "router_num_retries_auto")
+    @classmethod
+    def _retries_non_negative(cls, v: int, info) -> int:
+        if v < 0:
+            raise ValueError(
+                f"{info.field_name} must be >= 0, got {v}"
+            )
+        return v
 
     def env_provider_keys(self) -> dict[str, str]:
         """Return the configured ENV-sourced provider keys as {provider: key}."""
