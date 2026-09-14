@@ -54,7 +54,16 @@ _LOG_COMMIT_BACKOFF_S: tuple[float, ...] = (0.1, 0.4)
 
 
 def _chunk_to_dict(chunk) -> dict:
-    """Normalize a litellm chunk (Pydantic model or dict) into a plain dict."""
+    """Normalize a litellm chunk (Pydantic model or dict) into a plain dict.
+
+    Returns an empty dict for None chunks — some LiteLLM stream wrappers
+    yield None as a heartbeat/keepalive signal, and crashing on those
+    would kill the stream for a non-event. Other unexpected types fall
+    through to dict() which will raise TypeError if the object is not
+    iterable, surfacing the bug rather than silently swallowing it.
+    """
+    if chunk is None:
+        return {}
     if isinstance(chunk, dict):
         return chunk
     if hasattr(chunk, "model_dump"):
