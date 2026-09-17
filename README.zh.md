@@ -28,6 +28,8 @@
 - [Tiếng Việt](./README.vi.md)
 - [हिन्दी](./README.hi.md)
 
+**更多产品：**[全部模型 API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
+
 OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源单工作区版本。在你的笔记本上运行它，把它打包进你的产品里，或者直接使用托管的 `api.orcarouter.ai` 来覆盖那些你不想自己管理密钥的长尾模型。
 
 > **为什么选我们？** LiteLLM 是一个库；OpenRouter 是闭源的托管服务；Ollama 仅限本地。我们是**带托管 fallback 的自托管服务器**——这句话其他人都说不出来。

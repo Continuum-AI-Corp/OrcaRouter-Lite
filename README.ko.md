@@ -28,6 +28,8 @@ OpenAI 호환. BYOK. 단일 작업 공간. 스트리밍. `모델="자동"`.
 - [Tiếng Viet](./README.vi.md)
 - [힌디어](./README.hi.md)
 
+**관련 제품:** [전체 모델 API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
+
 OrcaRouter Lite는 [OrcaRouter](https://www.orcarouter.ai)의 오픈 소스 단일 작업 공간 버전입니다. 랩톱에서 실행하거나, 제품에 포함하여 배송하거나, 키를 관리하고 싶지 않은 모델의 롱테일에 직접 호스팅된 `api.orcarouter.ai`를 사용하세요.
 
 > **왜 우리인가요?** LiteLLM은 도서관입니다. OpenRouter는 비공개 소스로 호스팅됩니다. Ollama는 로컬 전용입니다. 우리는 **관리형 대체 기능을 갖춘 자체 호스팅 서버**입니다. 누구도 말할 수 없는 문장입니다.

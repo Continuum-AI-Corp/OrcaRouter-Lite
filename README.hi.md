@@ -28,6 +28,8 @@ OpenAI-compatible। BYOK। एकल-वर्कस्पेस। स्ट�
 - [Tiếng Việt](./README.vi.md)
 - [हिन्दी](./README.hi.md)
 
+**हमें यहाँ भी पाएँ:** [सभी मॉडल API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
+
 OrcaRouter Lite, [OrcaRouter](https://www.orcarouter.ai) का ओपन-सोर्स single-workspace संस्करण है। इसे अपने लैपटॉप पर चलाएँ, अपने प्रोडक्ट में पैक करें, या उन मॉडलों की लंबी टेल के लिए सीधे hosted `api.orcarouter.ai` का उपयोग करें जिनकी कुंजियाँ आप खुद नहीं मैनेज करना चाहते।
 
 > **हम क्यों?** LiteLLM एक लाइब्रेरी है; OpenRouter closed-source hosted है; Ollama केवल local है। हम **मैनेज्ड फ़ॉलबैक के साथ self-hosted सर्वर** हैं — एक ऐसा वाक्य जो उनमें से कोई नहीं कह सकता।
