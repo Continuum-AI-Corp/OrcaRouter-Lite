@@ -72,6 +72,7 @@ def test_cache_key_differs_on_model():
 
 @pytest.mark.parametrize("field,other", [
     ("max_tokens", 4096),
+    ("max_completion_tokens", 10),
     ("stop", ["END"]),
     ("tool_choice", {"type": "function", "function": {"name": "f"}}),
     ("top_p", 0.5),

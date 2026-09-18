@@ -34,6 +34,7 @@ def cache_key(
     response_format: dict | None,
     seed: int | None,
     max_tokens: int | None = None,
+    max_completion_tokens: int | None = None,
     stop: str | list[str] | None = None,
     tool_choice: str | dict | None = None,
     top_p: float | None = None,
@@ -45,7 +46,8 @@ def cache_key(
     """Deterministic SHA-256 key over every input that shapes the output.
 
     All the output-shaping parameters belong here, not just the prompt:
-    two requests that differ only in `max_tokens` (64 vs 4096), `stop`, or
+    two requests that differ only in `max_tokens` / `max_completion_tokens`
+    (64 vs 4096), `stop`, or
     `tool_choice` (auto vs a forced function) produce genuinely different
     completions, so sharing one cache entry between them would serve a
     truncated answer, or prose where the caller demanded a tool call. The
@@ -77,6 +79,7 @@ def cache_key(
         "response_format": response_format or None,
         "seed": seed,
         "max_tokens": max_tokens,
+        "max_completion_tokens": max_completion_tokens,
         # Normalize stop to a list: "stop": "foo" and "stop": ["foo"]
         # produce the same upstream behavior, so they must share a cache
         # entry. Without this, a string-vs-list difference fragments the
