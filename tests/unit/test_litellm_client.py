@@ -101,6 +101,19 @@ async def test_acompletion_stream_returns_async_iterable_not_dict(fake_router_wi
     assert len(chunks) == 2
 
 
+async def test_acompletion_forwards_parallel_tool_calls_false(fake_router_with_stream):
+    """Issue #124: `parallel_tool_calls=False` must reach LiteLLM Router
+    kwargs as False, not be dropped as a falsy value."""
+    await fake_router_with_stream.acompletion(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+        parallel_tool_calls=False,
+    )
+    call = fake_router_with_stream._router.acompletion.await_args
+    assert call.kwargs["parallel_tool_calls"] is False
+
+
 async def test_acompletion_non_stream_returns_dict_with_orca_meta(fake_router_with_stream):
     """Non-stream path must keep returning a dict with the _orca_meta
     injection — that's the contract the existing chat.py blocking path

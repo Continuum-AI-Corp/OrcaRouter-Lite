@@ -17,6 +17,7 @@ class CompletionRequest:
     stop: list[str] | None = None
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    parallel_tool_calls: bool | None = None
     response_format: dict | None = None
     seed: int | None = None
     n: int = 1
