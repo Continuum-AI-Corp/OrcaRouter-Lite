@@ -77,6 +77,65 @@ def _mask_key(api_key: str) -> str:
     return "..."
 
 
+# Soft prefix checks for known upstreams. Unknown providers are not guessed
+# at — BYOK can be anything. A miss here is a WARNING on PUT, never a
+# rejection: unusual-but-valid keys must still store. Together is omitted
+# because live keys are not a stable prefix (historically hex, now mixed)
+# and a false warning is noisier than silence there.
+_KNOWN_KEY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "openai": ("sk-",),
+    "anthropic": ("sk-ant-",),
+    "groq": ("gsk_",),
+    "xai": ("xai-",),
+    "deepseek": ("sk-",),
+    "fireworks": ("fw_",),
+    "orcarouter": ("sk-orca-",),
+}
+
+_PROVIDER_DISPLAY = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google",
+    "groq": "Groq",
+    "xai": "xAI",
+    "deepseek": "DeepSeek",
+    "fireworks": "Fireworks",
+    "orcarouter": "OrcaRouter",
+}
+
+
+def _google_key_matches(key: str) -> bool:
+    """Google keys are either an AI Studio / Cloud API key (`AIza…`) or a
+    service-account JSON blob (starts with `{`)."""
+    return key.startswith("AIza") or key.startswith("{")
+
+
+def provider_key_format_warning(provider: str, api_key: str) -> str | None:
+    """Return a warning if `api_key` is obviously the wrong shape for a
+    known provider. `None` means "looks fine" or "provider is unknown —
+    don't guess". The caller still stores the key either way."""
+    key = api_key.strip()
+    slug = provider.strip().lower()
+    if slug == "google":
+        if _google_key_matches(key):
+            return None
+        expected = "'AIza...' or service-account JSON"
+    else:
+        prefixes = _KNOWN_KEY_PREFIXES.get(slug)
+        if not prefixes:
+            return None
+        if any(key.startswith(p) for p in prefixes):
+            return None
+        expected = " or ".join(f"'{p}...'" for p in prefixes)
+
+    shown = key[:5]
+    label = _PROVIDER_DISPLAY.get(slug, slug)
+    return (
+        f"Key prefix '{shown}' doesn't match known {label} format "
+        f"(expected {expected}). Verify this is correct."
+    )
+
+
 @router.get("")
 async def list_providers(
     _kc: KeyContext = Depends(get_key_context),
@@ -186,12 +245,18 @@ async def set_provider_key(
     await db.commit()
     await cache_invalidation_bus.broadcast_router_cache_invalidation()
 
-    return ProviderKeyOut(
+    payload = ProviderKeyOut(
         provider=existing.provider,
         key_prefix=existing.key_prefix,
         is_enabled=existing.is_enabled,
         source="db",
     ).model_dump()
+    # Soft format check: store anyway (BYOK), but tell the operator at
+    # write time so an obvious typo doesn't surface later as a 401/cooldown.
+    warning = provider_key_format_warning(provider, body.api_key)
+    if warning:
+        payload["warnings"] = [warning]
+    return payload
 
 
 @router.delete("/{provider}", status_code=204)

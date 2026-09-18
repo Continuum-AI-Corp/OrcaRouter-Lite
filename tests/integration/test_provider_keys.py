@@ -60,6 +60,66 @@ async def test_list_returns_empty_initially(authed_client):
     assert r.json() == {"providers": []}
 
 
+async def test_put_empty_or_whitespace_key_is_rejected(authed_client):
+    """Empty / whitespace-only values stay 422; format warnings are a
+    separate, softer path for non-empty junk."""
+    for value in ("", "   ", "\n\t"):
+        r = await authed_client.put(
+            "/v1/providers/openai", json={"api_key": value}
+        )
+        assert r.status_code == 422, r.text
+        msg = (
+            r.json().get("error", {}).get("message")
+            or r.json().get("detail")
+            or ""
+        )
+        assert "empty" in str(msg).lower()
+
+
+async def test_put_obviously_invalid_key_warns_but_still_stores(authed_client):
+    """Issue #142: `"abc"` must not 200 silently. Warn at PUT, still
+    persist (BYOK — warning, not rejection) so unusual keys aren't blocked."""
+    r = await authed_client.put(
+        "/v1/providers/openai",
+        json={"api_key": "abc"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider"] == "openai"
+    assert body["is_enabled"] is True
+    assert body["source"] == "db"
+    warnings = body.get("warnings") or []
+    assert len(warnings) == 1
+    assert "sk-" in warnings[0]
+    assert "OpenAI" in warnings[0]
+    assert "Verify this is correct" in warnings[0]
+
+    listing = await authed_client.get("/v1/providers")
+    rows = listing.json()["providers"]
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "openai"
+    assert "warnings" not in rows[0]
+
+
+async def test_put_matching_prefix_has_no_warnings(authed_client):
+    r = await authed_client.put(
+        "/v1/providers/anthropic",
+        json={"api_key": "sk-ant-api03-real-looking-key"},
+    )
+    assert r.status_code == 200, r.text
+    assert "warnings" not in r.json()
+
+
+async def test_put_unknown_provider_does_not_warn(authed_client):
+    """Custom / unknown provider ids are BYOK — no format guess."""
+    r = await authed_client.put(
+        "/v1/providers/my-proxy",
+        json={"api_key": "abc"},
+    )
+    assert r.status_code == 200, r.text
+    assert "warnings" not in r.json()
+
+
 async def test_set_provider_key_then_list(authed_client):
     r = await authed_client.put(
         "/v1/providers/openai",
