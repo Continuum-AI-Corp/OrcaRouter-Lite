@@ -110,6 +110,42 @@ async def test_put_matching_prefix_has_no_warnings(authed_client):
     assert "warnings" not in r.json()
 
 
+async def test_put_strips_whitespace_stores_stripped_key_without_warning(
+    authed_client, tmp_sqlite_url,
+):
+    """Leading/trailing whitespace is stripped once before encrypt, mask,
+    format-check, and storage. A matching prefix with padding must not
+    warn, and the stored/masked value is the stripped key."""
+    padded = "  sk-ant-api03-real-looking-key  "
+    stripped = padded.strip()
+    r = await authed_client.put(
+        "/v1/providers/anthropic",
+        json={"api_key": padded},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "warnings" not in body
+    expected_prefix = stripped[:8] + "..." + stripped[-4:]
+    assert body["key_prefix"] == expected_prefix
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.auth.encryption import decrypt_credential
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        rows = (await s.execute(select(ProviderKey))).scalars().all()
+    await engine.dispose()
+
+    assert len(rows) == 1
+    assert decrypt_credential(rows[0].encrypted_key) == stripped
+    assert rows[0].key_prefix == expected_prefix
+
+
 async def test_put_unknown_provider_does_not_warn(authed_client):
     """Custom / unknown provider ids are BYOK — no format guess."""
     r = await authed_client.put(

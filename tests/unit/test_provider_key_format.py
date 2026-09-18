@@ -14,6 +14,7 @@ from app.routes.providers import provider_key_format_warning
     [
         ("openai", "sk-test-12345"),
         ("openai", "sk-proj-abcdefghijklmnopqrstuvwxyz"),
+        ("openai", "  sk-test-12345  "),  # strip before prefix check
         ("anthropic", "sk-ant-api03-abc"),
         ("groq", "gsk_abc123"),
         ("xai", "xai-grok-key"),
@@ -35,6 +36,7 @@ def test_matching_or_unknown_provider_has_no_warning(provider, key):
     "provider, key, expected_fragment",
     [
         ("openai", "abc", "sk-"),
+        ("openai", "abcde", "sk-"),  # len == 5: still too short to echo
         ("openai", "gsk_oops", "sk-"),
         ("anthropic", "sk-not-ant", "sk-ant-"),
         ("groq", "sk-wrong", "gsk_"),
@@ -51,8 +53,10 @@ def test_obvious_mismatch_returns_warning(provider, key, expected_fragment):
     assert warning is not None
     assert expected_fragment in warning
     assert "Verify this is correct" in warning
-    # Never echo the full key — only a short prefix.
-    assert key not in warning or len(key) <= 5
+    # Never echo the key — short secrets must not appear at all.
+    assert key not in warning
+    if len(key) <= 5:
+        assert "<too-short>" in warning
 
 
 def test_warning_uses_short_prefix_not_full_key():
