@@ -48,16 +48,30 @@ def test_decrypt_handles_legacy_unversioned_blob(hex_key):
 
 
 def test_decrypt_recovers_legacy_blob_whose_nonce_starts_with_version_byte(hex_key):
-    """A legacy blob with nonce[0] == 0x01 (~0.4% of old blobs) must not brick."""
+    """Legacy blob with nonce[0] == 0x01 must decrypt via v1 InvalidTag fallback.
+
+    ~0.4% of unversioned blobs start with the v1 version byte. Decrypt tries
+    the versioned layout first, authentication fails, then the unversioned
+    nonce||ciphertext parse must still return the plaintext.
+    """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     from packages.auth.encryption import VERSION_BYTE, decrypt_credential
 
     aes = AESGCM(hex_key)
+    plaintext = "test-provider-key-sk-abc123"
     nonce = VERSION_BYTE + os.urandom(11)
-    tricky_legacy = nonce + aes.encrypt(nonce, b"tricky", None)
-    assert tricky_legacy[:1] == b"\x01"
-    assert decrypt_credential(tricky_legacy) == "tricky"
+    tricky_legacy = nonce + aes.encrypt(nonce, plaintext.encode("utf-8"), None)
+
+    # First byte collides with v1, so the versioned branch is entered.
+    assert tricky_legacy[:1] == VERSION_BYTE
+
+    # Framing this blob as v1 (skip byte 0, next 12 as nonce) must fail auth.
+    v1_nonce, v1_ciphertext = tricky_legacy[1:13], tricky_legacy[13:]
+    with pytest.raises(InvalidTag):
+        aes.decrypt(v1_nonce, v1_ciphertext, None)
+
+    assert decrypt_credential(tricky_legacy) == plaintext
 
 
 def test_wrong_key_raises_invalid_tag(hex_key):
