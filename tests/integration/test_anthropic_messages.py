@@ -202,6 +202,23 @@ async def test_blocking_response_shape_and_orca_headers(native_client):
     assert kwargs["max_tokens"] == 128
 
 
+async def test_blocking_forwards_hosted_fallback_header(native_client):
+    """Native Anthropic ingress must relay x-orca-fallback so a 429-cooled
+    BYOK key is visible on every protocol surface, not just /v1/chat."""
+    client, fake, key = native_client
+    hosted = _openai_response()
+    hosted["_orca_meta"] = {
+        "provider": "orcarouter",
+        "fallback": True,
+        "latency_ms": 12,
+    }
+    fake.acompletion.return_value = hosted
+    r = await client.post("/v1/messages", json=_messages_payload(),
+                          headers={"x-api-key": key})
+    assert r.status_code == 200
+    assert r.headers.get("x-orca-fallback") == "true"
+
+
 async def test_missing_max_tokens_is_400_invalid_request_not_422(native_client):
     client, _, key = native_client
     payload = _messages_payload()

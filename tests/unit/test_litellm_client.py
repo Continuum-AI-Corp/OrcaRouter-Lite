@@ -222,6 +222,64 @@ async def test_acompletion_orca_meta_cost_none_when_litellm_omits_it(monkeypatch
     assert result["_orca_meta"]["provider"] == "openai"
 
 
+async def test_acompletion_marks_hosted_fallback_when_local_key_is_bypassed(monkeypatch):
+    """Issue #140: after a local 429 cools the BYOK deployment, LiteLLM
+    serves the hosted peer. custom_llm_provider stays "openai" (that's how
+    the hosted entry is wired), so the adapter must recover the source
+    from the pinned `hosted::` model_id and flag `_orca_meta.fallback`.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import litellm
+
+    from packages.litellm_adapter.client import OrcaLiteLLMClient
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    class _HostedResponse:
+        model = "gpt-4o-mini"
+        _hidden_params = {
+            "response_cost": 0.000_012,
+            "custom_llm_provider": "openai",
+            "model_id": "hosted::openai/gpt-4o-mini",
+            "api_base": "https://api.orcarouter.ai/v1",
+        }
+
+        def model_dump(self):
+            return {"model": self.model, "choices": [], "usage": {}}
+
+    fake_router = MagicMock()
+    fake_router.acompletion = AsyncMock(side_effect=lambda **_: _HostedResponse())
+    monkeypatch.setattr(litellm, "Router", lambda **_: fake_router)
+
+    client = OrcaLiteLLMClient(
+        deployments=[
+            ProviderDeployment(
+                model_name="gpt-4o-mini", litellm_model="openai/gpt-4o-mini",
+                api_key="sk-local", provider="openai",
+            ),
+            ProviderDeployment(
+                model_name="gpt-4o-mini", litellm_model="openai/gpt-4o-mini",
+                api_key="sk-orca", api_base="https://api.orcarouter.ai/v1",
+                provider="orcarouter", custom_llm_provider="openai",
+                deployment_id="hosted::openai/gpt-4o-mini",
+            ),
+        ],
+        strategy="balanced",
+        cooldown_time=0,
+    )
+    result = await client.acompletion(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    meta = result["_orca_meta"]
+    assert meta["provider"] == "orcarouter", (
+        "hosted traffic must not stay attributed as openai — that's the "
+        "analytics gap that hid the BYOK rate-limit"
+    )
+    assert meta.get("fallback") is True
+    assert meta.get("cost_usd") == 0.000_012
+
+
 async def test_acompletion_stream_raises_no_providers_when_router_is_none():
     """No-key configurations short-circuit before LiteLLM gets called.
     Stream requests must hit the same guard as non-stream ones."""

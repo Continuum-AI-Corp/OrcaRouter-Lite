@@ -143,6 +143,7 @@ async def test_chat_completion_writes_request_log(chat_client):
     assert log.input_tokens == 5
     assert log.output_tokens == 2
     assert log.status_code == 200
+    assert log.fallback_level == 0
 
 
 async def test_chat_completion_validation_error_for_empty_messages(chat_client):
@@ -181,3 +182,67 @@ async def test_chat_completion_logs_active_strategy(chat_client):
     async with session_mod._session_factory() as s:
         log = (await s.execute(select(RequestLog))).scalars().one()
     assert log.routing_strategy == "cheapest"
+
+
+async def test_chat_completion_no_fallback_header_on_local_hit(chat_client):
+    """Local BYOK success must not look like a hosted bypass."""
+    client, _fake = chat_client
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    assert "x-orca-fallback" not in r.headers
+
+
+async def test_chat_completion_signals_hosted_fallback_after_local_429(chat_client):
+    """Issue #140: hosted serving a model the local key covers must set
+    `x-orca-fallback: true` and record orcarouter + fallback_level=1 so
+    the dashboard can tell BYOK was bypassed (typically after a 429
+    cooldown) instead of looking like a normal local completion.
+    """
+    client, fake = chat_client
+    fake.acompletion.return_value = {
+        "id": "chatcmpl-hosted-fb",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "from hosted"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        "_orca_meta": {
+            "provider": "orcarouter",
+            "fallback": True,
+            "latency_ms": 88,
+        },
+    }
+
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers.get("x-orca-fallback") == "true"
+    assert r.headers.get("x-orca-resolved-model") == "gpt-4o-mini"
+    # Internal meta must not leak onto the OpenAI wire body.
+    assert "_orca_meta" not in r.json()
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        log = (await s.execute(select(RequestLog))).scalars().one()
+    assert log.provider == "orcarouter"
+    assert log.fallback_level == 1
+    assert log.model_resolved == "gpt-4o-mini"
