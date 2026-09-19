@@ -272,6 +272,36 @@ def test_hosted_key_source_treats_undecryptable_db_row_as_unconfigured():
     assert hosted_key_source(env_key="sk-orca-env", db_keys=[corrupt]) == "env"
 
 
+def test_build_deployments_logs_undecryptable_rows(caplog):
+    """Issue #137: decrypt failures must not be a silent `continue`.
+    The row is still skipped (env fallback stays available) but a
+    warning names the provider so operators can see the rotation."""
+    import logging
+
+    from app.config import Settings
+    from app.router_cache import build_deployments
+    from packages.db.models.provider_key import ProviderKey
+
+    s = Settings(_env_file=None)
+    caplog.set_level(logging.WARNING, logger="orca.router")
+    deps = build_deployments(
+        env_keys={},
+        db_keys=[
+            ProviderKey(
+                provider="openai",
+                encrypted_key=b"too-short-to-be-valid-aesgcm",
+                key_prefix="sk-...",
+                label="default",
+                is_enabled=True,
+            )
+        ],
+        settings=s,
+    )
+    assert deps == []
+    assert "openai" in caplog.text
+    assert "CREDENTIAL_ENCRYPTION_KEY" in caplog.text
+
+
 def test_usable_providers_from_db_skips_undecryptable_rows():
     """Helper that mirrors build_deployments' decryption filter so callers
     reporting 'configured providers' (e.g. /v1/analytics/unreachable) can't

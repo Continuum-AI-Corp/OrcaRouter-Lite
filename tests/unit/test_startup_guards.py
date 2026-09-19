@@ -125,6 +125,109 @@ async def test_guard_fails_closed_on_transient_db_error(guarded_db, monkeypatch)
         )
 
 
+async def test_audit_reports_undecryptable_rows_without_raising(guarded_db, caplog):
+    """A rotated/corrupt ciphertext must be visible at startup, but must
+    not refuse boot — the dashboard is how the operator re-saves keys."""
+    import logging
+
+    from packages.auth.encryption import encrypt_credential
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=encrypt_credential("sk-good"),
+            key_prefix="sk-good...xxxx",
+        ))
+        s.add(ProviderKey(
+            provider="anthropic",
+            encrypted_key=b"not-valid-aesgcm-ciphertext",
+            key_prefix="sk-ant-...xxxx",
+        ))
+        await s.commit()
+
+    caplog.set_level(logging.ERROR, logger="orca.credentials")
+    audit = await audit_stored_provider_credentials(make_session=factory)
+    assert audit.undecryptable == ("anthropic",)
+    assert audit.reencrypted == ()
+    assert "anthropic" in caplog.text
+    assert "CREDENTIAL_ENCRYPTION_KEY" in caplog.text
+
+
+async def test_audit_reencrypts_rows_sealed_with_previous_key(guarded_db, monkeypatch):
+    """CREDENTIAL_ENCRYPTION_PREVIOUS_KEY is the documented migrate path:
+    seal under key A, rotate Settings to key B + previous=A, audit must
+    rewrite the row so it opens with B alone."""
+    from app import config as cfg
+    from packages.auth.encryption import decrypt_credential, encrypt_credential
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    key_a = "aa" * 32
+    key_b = "bb" * 32
+
+    cfg.get_settings.cache_clear()
+    s_a = cfg.Settings(_env_file=None, credential_encryption_key=key_a)
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_a)
+    blob_a = encrypt_credential("sk-to-migrate")
+
+    url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=blob_a,
+            key_prefix="sk-to-m...rate",
+        ))
+        await s.commit()
+
+    s_b = cfg.Settings(
+        _env_file=None,
+        credential_encryption_key=key_b,
+        credential_encryption_previous_key=key_a,
+    )
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_b)
+
+    audit = await audit_stored_provider_credentials(
+        make_session=factory, previous_key=key_a,
+    )
+    assert audit.reencrypted == ("openai",)
+    assert audit.undecryptable == ()
+
+    from sqlalchemy import select
+
+    async with factory() as s:
+        row = (await s.execute(select(ProviderKey))).scalar_one()
+        migrated = row.encrypted_key
+    assert migrated != blob_a
+    assert decrypt_credential(migrated) == "sk-to-migrate"
+
+    # Previous key no longer required.
+    s_b_only = cfg.Settings(_env_file=None, credential_encryption_key=key_b)
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_b_only)
+    assert decrypt_credential(migrated) == "sk-to-migrate"
+
+
+async def test_audit_skips_deleted_rows(guarded_db):
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=b"corrupt",
+            key_prefix="sk-...",
+            is_deleted=1,
+        ))
+        await s.commit()
+
+    audit = await audit_stored_provider_credentials(make_session=factory)
+    assert audit.undecryptable == ()
+    assert audit.reencrypted == ()
+
+
 async def test_guard_allows_missing_table_on_fresh_sqlite(tmp_sqlite_url):
     """A fresh DB pre-migration where provider_keys doesn't exist counts
     as zero rows for sqlite (inspected via engine, not string matching)."""

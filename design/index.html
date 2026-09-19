@@ -323,10 +323,17 @@
               <div>
                 <h2 class="card-title">Provider keys <span class="pill">BYOK</span></h2>
                 <p class="card-sub">
-                  Encrypted at rest with AES-256-GCM. Env vars override DB rows for the same provider.
+                  Encrypted at rest with AES-256-GCM. After rotating
+                  <code>CREDENTIAL_ENCRYPTION_KEY</code>, re-save keys here or set
+                  <code>CREDENTIAL_ENCRYPTION_PREVIOUS_KEY</code> and restart.
                 </p>
               </div>
             </header>
+
+            <div class="callout callout-warn" id="providers-decrypt-banner" hidden>
+              <div class="callout-head">Stored keys cannot be decrypted</div>
+              <p class="card-sub" id="providers-decrypt-banner-body"></p>
+            </div>
 
             <div class="provider-quickadd" id="provider-quickadd"></div>
 

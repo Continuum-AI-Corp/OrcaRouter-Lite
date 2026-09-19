@@ -4,14 +4,24 @@
 credentials would be (or are) protected by the publicly-known dev
 encryption key. Kept separate from `packages.auth.encryption` so the
 crypto module stays free of SQLAlchemy imports.
+
+`audit_stored_provider_credentials` is the companion check for key
+rotation: it re-encrypts rows that still open with
+`CREDENTIAL_ENCRYPTION_PREVIOUS_KEY`, and logs remaining failures
+instead of letting `build_deployments` drop them silently.
 """
 
 from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.auth.encryption import is_using_insecure_dev_key
+
+logger = logging.getLogger("orca.credentials")
 
 _ALLOW_FLAG_ENV = "ORCA_ALLOW_INSECURE_DEV_KEY"
 
@@ -134,4 +144,84 @@ async def assert_credential_encryption_ready(
         "CREDENTIAL_ENCRYPTION_KEY, and re-save your provider keys. "
         "(If you knowingly want to keep using the insecure dev key, set "
         "ORCA_ALLOW_INSECURE_DEV_KEY=1.)"
+    )
+
+
+@dataclass(frozen=True)
+class CredentialAudit:
+    """Outcome of the startup scan over `provider_keys`."""
+
+    reencrypted: tuple[str, ...]
+    undecryptable: tuple[str, ...]
+
+
+async def audit_stored_provider_credentials(
+    *,
+    make_session,
+    previous_key: str = "",
+) -> CredentialAudit:
+    """Re-encrypt rows sealed with `previous_key`; report the rest.
+
+    Does not refuse boot: the dashboard must stay up so an operator can
+    re-save keys. Failures are logged at ERROR with the provider names.
+    """
+    from packages.auth.encryption import (
+        credential_is_decryptable,
+        decrypt_credential,
+        encrypt_credential,
+        materialize_encryption_key,
+    )
+    from packages.db.models.provider_key import ProviderKey
+
+    previous_bytes = (
+        materialize_encryption_key(previous_key) if previous_key.strip() else None
+    )
+
+    async with make_session() as session:
+        rows = (
+            await session.execute(
+                select(ProviderKey).where(ProviderKey.is_deleted == 0)
+            )
+        ).scalars().all()
+
+        reencrypted: list[str] = []
+        undecryptable: list[str] = []
+        for row in rows:
+            if credential_is_decryptable(row.encrypted_key):
+                continue
+            if previous_bytes is not None:
+                try:
+                    plaintext = decrypt_credential(
+                        row.encrypted_key, key=previous_bytes
+                    )
+                except Exception:
+                    plaintext = None
+                if plaintext is not None:
+                    row.encrypted_key = encrypt_credential(plaintext)
+                    reencrypted.append(row.provider)
+                    continue
+            undecryptable.append(row.provider)
+            logger.error(
+                "undecryptable_provider_key: stored key for %s cannot be "
+                "decrypted with the current CREDENTIAL_ENCRYPTION_KEY. "
+                "Chat will skip this provider (503 if nothing else is "
+                "configured). Re-save the key in the dashboard, or set "
+                "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY to the prior value "
+                "and restart to re-encrypt.",
+                row.provider,
+            )
+
+        if reencrypted:
+            await session.commit()
+            logger.warning(
+                "reencrypted_provider_keys: re-sealed %s with the current "
+                "CREDENTIAL_ENCRYPTION_KEY. Remove "
+                "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY from .env after "
+                "confirming the dashboard shows those providers as enabled.",
+                ", ".join(reencrypted),
+            )
+
+    return CredentialAudit(
+        reencrypted=tuple(reencrypted),
+        undecryptable=tuple(undecryptable),
     )

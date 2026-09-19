@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # warning), and packages.db.guards refuses to boot once real
     # credentials are at stake. Generate one: `openssl rand -hex 32`.
     credential_encryption_key: str = ""
+    # Prior CREDENTIAL_ENCRYPTION_KEY, used only during rotation. Startup
+    # re-encrypts stored provider keys that still open with this value.
+    # Leave empty (and unset the env var) after a successful migrate.
+    credential_encryption_previous_key: str = ""
     api_key_pepper: str = ""
     # Explicit opt-out from the startup guard that refuses to run with the
     # publicly-known dev encryption key when real credentials are at stake.

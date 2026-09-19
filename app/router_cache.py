@@ -11,6 +11,7 @@ instantiating litellm.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from packages.auth.encryption import decrypt_credential
@@ -20,6 +21,8 @@ from packages.litellm_adapter.hosted_catalog import (
     HOSTED_MODELS,
 )
 from packages.litellm_adapter.types import ProviderDeployment
+
+logger = logging.getLogger("orca.router")
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -48,10 +51,10 @@ def build_deployments(
     for row in db_keys:
         if not row.is_enabled or row.is_deleted:
             continue
-        try:
-            db_provider_keys[row.provider] = decrypt_credential(row.encrypted_key)
-        except Exception:
+        plaintext = _decrypt_stored_key(row, log_failures=True)
+        if plaintext is None:
             continue
+        db_provider_keys[row.provider] = plaintext
 
     # Step 1+2: provider keys (DB > env). The hosted "orcarouter" provider
     # has no rows in `models_for_provider`, so it's silently skipped here and
@@ -138,12 +141,35 @@ def usable_providers_from_db(db_keys: list["ProviderKey"]) -> set[str]:
     for row in db_keys:
         if not row.is_enabled or row.is_deleted:
             continue
-        try:
-            decrypt_credential(row.encrypted_key)
-        except Exception:
+        if _decrypt_stored_key(row, log_failures=False) is None:
             continue
         out.add(row.provider)
     return out
+
+
+def _decrypt_stored_key(row: "ProviderKey", *, log_failures: bool) -> str | None:
+    """Decrypt a DB row. Returns None when the current key cannot open it.
+
+    `build_deployments` still skips the row (env fallback stays available)
+    but logs so a CREDENTIAL_ENCRYPTION_KEY rotation is not silent.
+    Listing/unreachable helpers pass `log_failures=False` to avoid
+    repeating the same warning on every dashboard poll.
+    """
+    try:
+        return decrypt_credential(row.encrypted_key)
+    except Exception as exc:
+        if log_failures:
+            logger.warning(
+                "undecryptable_provider_key: stored key for %s cannot be "
+                "decrypted with the current CREDENTIAL_ENCRYPTION_KEY (%s). "
+                "The row is skipped so env fallback can still serve traffic. "
+                "Re-save the key in the dashboard, or set "
+                "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY to the prior value "
+                "and restart to re-encrypt.",
+                row.provider,
+                type(exc).__name__,
+            )
+        return None
 
 
 # ── Cached router instance ────────────────────────────────────────────────

@@ -229,7 +229,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 - `POST /v1/messages` — **Anthropic Messages API ingress** (Claude Code / Anthropic SDKs connect directly; `+ /count_tokens`)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API ingress** (google-genai SDK connects directly; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — discoverable model catalog (100+ models from `litellm.model_cost`)
-- `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys
+- `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys (`decryptable` flags rows that no longer open after a `CREDENTIAL_ENCRYPTION_KEY` rotation)
 - `GET/PUT /v1/routing` — change strategy (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, no telemetry leaves the box
 - `GET  /v1/hosted` — hosted-fallback status (drives the dashboard's "Get $5 free credit" card)
@@ -237,6 +237,26 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 - Single-page dashboard at `/`
 - SQLite by default; Postgres opt-in via `DATABASE_URL`; Redis optional
 - Multi-worker safe: set `REDIS_URL` and config changes (provider keys, routing, quality overrides) are invalidated across all workers/replicas via pub/sub. Single worker (the default) needs no Redis.
+
+### Rotating `CREDENTIAL_ENCRYPTION_KEY`
+
+Dashboard-stored provider keys are sealed with AES-256-GCM using `CREDENTIAL_ENCRYPTION_KEY`. Changing that value without a migrate step leaves the ciphertext intact but unreadable: `build_deployments` skips the row, chat returns 503 if nothing else is configured, and the providers list now reports `decryptable: false` instead of a green "Enabled".
+
+To rotate without re-entering every key:
+
+```bash
+# 1. Keep the old key, set the new one
+CREDENTIAL_ENCRYPTION_KEY=<new 64-hex>
+CREDENTIAL_ENCRYPTION_PREVIOUS_KEY=<old 64-hex>
+
+# 2. Restart. Startup re-encrypts stored keys and logs
+#    reencrypted_provider_keys / undecryptable_provider_keys.
+
+# 3. Confirm the dashboard shows Enabled, then unset the previous key
+#    and restart once more.
+```
+
+If you already rotated without `CREDENTIAL_ENCRYPTION_PREVIOUS_KEY`, re-save each provider key in the dashboard (or fall back to env vars). Do not reuse a previous key as the current key after you have already re-saved — that would reseal new ciphertext with the old material.
 
 ### Cross-provider prompt cache
 

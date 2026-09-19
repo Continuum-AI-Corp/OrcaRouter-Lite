@@ -314,6 +314,20 @@ async function loadProviders() {
 function renderProviders() {
   const tbody = $("#providers-table tbody");
   const empty = $("#providers-empty");
+  const banner = $("#providers-decrypt-banner");
+  const bannerBody = $("#providers-decrypt-banner-body");
+  const broken = state.providers.filter((p) => p.source === "db" && p.decryptable === false);
+  if (banner && bannerBody) {
+    if (broken.length) {
+      const names = broken.map((p) => p.provider).join(", ");
+      bannerBody.textContent =
+        `${names} ${broken.length === 1 ? "is" : "are"} sealed with a different CREDENTIAL_ENCRYPTION_KEY. ` +
+        `Re-save ${broken.length === 1 ? "this key" : "these keys"} below, or set CREDENTIAL_ENCRYPTION_PREVIOUS_KEY to the prior value and restart.`;
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
   tbody.innerHTML = "";
   if (!state.providers.length) {
     empty.classList.add("shown");
@@ -328,18 +342,22 @@ function renderProviders() {
       // Operator can still PUT a DB-sourced key for the same provider
       // to override the env value (the runtime resolver picks DB > env).
       const isEnv = p.source === "env";
+      const cannotDecrypt = p.source === "db" && p.decryptable === false;
       const sourceBadge = isEnv
         ? '<span class="pill muted" title="Set via .env / environment variable. Edit the env file and restart to change.">env</span>'
         : '';
       const removeBtn = isEnv
         ? `<span class="muted small" title="Remove the OPENAI_API_KEY (or equivalent) from .env and restart the server.">env-managed</span>`
         : `<button class="btn btn-ghost btn-sm btn-danger del-prov" data-prov="${escapeHtml(p.provider)}">Remove</button>`;
+      const statusPill = cannotDecrypt
+        ? '<span class="pill err" title="Ciphertext does not open with the current CREDENTIAL_ENCRYPTION_KEY. Re-save the key or set CREDENTIAL_ENCRYPTION_PREVIOUS_KEY and restart.">Can\'t decrypt</span>'
+        : (p.is_enabled
+          ? '<span class="pill ok">Enabled</span>'
+          : '<span class="pill muted">Disabled</span>');
       tr.innerHTML = `
         <td><strong>${escapeHtml(p.provider)}</strong> ${sourceBadge}</td>
         <td><code>${escapeHtml(p.key_prefix || "—")}</code></td>
-        <td>${p.is_enabled
-          ? '<span class="pill ok">Enabled</span>'
-          : '<span class="pill muted">Disabled</span>'}</td>
+        <td>${statusPill}</td>
         <td class="th-actions">${removeBtn}</td>
       `;
       tbody.appendChild(tr);
@@ -370,13 +388,22 @@ function renderProviders() {
 function renderQuickAdd() {
   const wrap = $("#provider-quickadd");
   if (!wrap) return;
-  // DB-sourced providers are "fully configured" — disable the chip so
-  // the operator doesn't accidentally re-PUT and clobber a known-good key.
+  // Healthy DB-sourced providers are "fully configured" — disable the
+  // chip so the operator doesn't accidentally re-PUT and clobber a
+  // known-good key. Undecryptable DB rows stay clickable so the operator
+  // can re-enter the key after a CREDENTIAL_ENCRYPTION_KEY rotation.
   // ENV-sourced providers stay clickable: clicking pre-fills the form so
   // the operator can write a DB row that overrides the env value (matches
   // the runtime resolver's DB > env precedence).
   const dbConfigured = new Set(
-    state.providers.filter((p) => p.source === "db").map((p) => p.provider)
+    state.providers
+      .filter((p) => p.source === "db" && p.decryptable !== false)
+      .map((p) => p.provider)
+  );
+  const brokenDb = new Set(
+    state.providers
+      .filter((p) => p.source === "db" && p.decryptable === false)
+      .map((p) => p.provider)
   );
   const envConfigured = new Set(
     state.providers.filter((p) => p.source === "env").map((p) => p.provider)
@@ -384,14 +411,20 @@ function renderQuickAdd() {
   wrap.innerHTML = `<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Quick-add:</span>` +
     PROVIDERS_KNOWN.map((p) => {
       const isDb = dbConfigured.has(p.id);
+      const isBroken = brokenDb.has(p.id);
       const isEnv = envConfigured.has(p.id);
-      const cls = isDb ? "configured" : (isEnv ? "env-override" : "");
+      const cls = isDb ? "configured" : (isBroken ? "needs-resave" : (isEnv ? "env-override" : ""));
       const disabled = isDb ? "disabled" : "";
-      const title = isEnv
-        ? `${p.label} is set via .env. Click to override with a custom key (writes a DB row that takes precedence).`
-        : "";
+      const title = isBroken
+        ? `${p.label} is stored but cannot be decrypted. Click to re-enter the key.`
+        : (isEnv
+          ? `${p.label} is set via .env. Click to override with a custom key (writes a DB row that takes precedence).`
+          : "");
+      const suffix = isBroken
+        ? " <span class=\"small muted\">(re-enter)</span>"
+        : (isEnv ? " <span class=\"small muted\">(env, override)</span>" : "");
       return `<button class="chip ${cls}" data-prov-pick="${p.id}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
-        ${escapeHtml(p.label)}${isEnv ? " <span class=\"small muted\">(env, override)</span>" : ""}
+        ${escapeHtml(p.label)}${suffix}
       </button>`;
     }).join("");
   $$("[data-prov-pick]").forEach((b) =>

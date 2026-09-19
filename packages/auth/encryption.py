@@ -63,6 +63,21 @@ def _get_encryption_key() -> bytes:
     return key
 
 
+def materialize_encryption_key(key_hex: str) -> bytes:
+    """Turn a hex string or passphrase into a 32-byte AES-256 key.
+
+    64-hex (or longer) values are used as raw key bytes; anything else is
+    hashed with SHA-256 so a human-chosen passphrase still yields 32 bytes.
+    """
+    try:
+        raw = bytes.fromhex(key_hex)
+        if len(raw) >= 32:
+            return raw[:32]
+    except ValueError:
+        pass
+    return hashlib.sha256(key_hex.encode()).digest()
+
+
 def _resolve_key_material() -> tuple[bytes, str]:
     """Return (key_bytes, source) where source names how the key was obtained.
 
@@ -82,22 +97,10 @@ def _resolve_key_material() -> tuple[bytes, str]:
         # fall through to env-only behavior.
         pass
     if key_hex:
-        try:
-            raw = bytes.fromhex(key_hex)
-            if len(raw) >= 32:
-                return raw[:32], "config"
-        except ValueError:
-            pass
-        return hashlib.sha256(key_hex.encode()).digest(), "config"
+        return materialize_encryption_key(key_hex), "config"
     key_hex = os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "")
     if key_hex:
-        try:
-            raw = bytes.fromhex(key_hex)
-            if len(raw) >= 32:
-                return raw[:32], "env"
-        except ValueError:
-            pass
-        return hashlib.sha256(key_hex.encode()).digest(), "env"
+        return materialize_encryption_key(key_hex), "env"
     # Dev fallback so test fixtures and `docker compose up` Just Work.
     _warn_dev_fallback_once()
     return hashlib.sha256(b"orcarouter-lite-dev-key").digest(), "dev-fallback"
@@ -116,9 +119,8 @@ def encrypt_credential(plaintext: str) -> bytes:
     return VERSION_BYTE + nonce + aes.encrypt(nonce, plaintext.encode("utf-8"), None)
 
 
-def decrypt_credential(blob: bytes) -> str:
-    key = _get_encryption_key()
-    aes = AESGCM(key)
+def decrypt_credential(blob: bytes, *, key: bytes | None = None) -> str:
+    aes = AESGCM(key if key is not None else _get_encryption_key())
 
     if blob[:1] == VERSION_BYTE and len(blob) >= 1 + _NONCE_LEN + _TAG_LEN:
         try:
@@ -139,3 +141,16 @@ def decrypt_credential(blob: bytes) -> str:
         raise InvalidTag("ciphertext too short")
     nonce, ciphertext = blob[:_NONCE_LEN], blob[_NONCE_LEN:]
     return aes.decrypt(nonce, ciphertext, None).decode("utf-8")
+
+
+def credential_is_decryptable(blob: bytes) -> bool:
+    """True when `blob` opens with the current CREDENTIAL_ENCRYPTION_KEY.
+
+    Used by the providers list and startup audit so a rotated key cannot
+    present as "enabled" while `build_deployments` silently drops the row.
+    """
+    try:
+        decrypt_credential(blob)
+    except Exception:
+        return False
+    return True

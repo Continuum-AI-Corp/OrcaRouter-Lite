@@ -77,6 +77,7 @@ async def test_set_provider_key_then_list(authed_client):
     assert len(rows) == 1
     assert rows[0]["provider"] == "openai"
     assert rows[0]["is_enabled"] is True
+    assert rows[0]["decryptable"] is True
     assert "encrypted_key" not in rows[0]
     assert "api_key" not in rows[0]
 
@@ -238,6 +239,7 @@ async def test_list_surfaces_env_provider_keys_with_source_marker(
     )
     assert openai_row["source"] == "env"
     assert openai_row["is_enabled"] is True
+    assert openai_row["decryptable"] is True
     # Plaintext must NOT round-trip through the response
     assert "sk-env-openai-12345" not in r.text
     # Mask preserves first/last hint so operator can identify which key
@@ -441,3 +443,42 @@ async def test_undecryptable_db_row_does_not_suppress_env_entry(
     assert "env" in sources, (
         f"env entry must remain visible when DB ciphertext is corrupt, got: {rows}"
     )
+    db_row = next(p for p in rows if p["source"] == "db")
+    assert db_row["is_enabled"] is True
+    assert db_row["decryptable"] is False, (
+        "rotated/corrupt ciphertext must be flagged so the dashboard does "
+        "not render a green Enabled pill for an unusable key"
+    )
+
+
+async def test_list_flags_undecryptable_db_row_without_env_fallback(
+    authed_client, tmp_sqlite_url,
+):
+    """Issue #137: after a key rotation the dashboard still showed
+    is_enabled=true with no signal. Listing must set decryptable=false
+    even when there is no env fallback to surface."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=b"this-is-not-a-valid-aesgcm-ciphertext",
+            key_prefix="sk-broken...xxxx",
+            is_enabled=True,
+        ))
+        await s.commit()
+    await engine.dispose()
+
+    r = await authed_client.get("/v1/providers")
+    assert r.status_code == 200
+    rows = r.json()["providers"]
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "openai"
+    assert rows[0]["source"] == "db"
+    assert rows[0]["is_enabled"] is True
+    assert rows[0]["decryptable"] is False

@@ -1089,6 +1089,17 @@ tbody tr.row-in { animation: row-in 320ms var(--ease) both; }
   animation: fade-up var(--d-slow) var(--ease) both;
 }
 .callout-head { display: flex; align-items: center; gap: 8px; color: var(--brand-deep); font-size: 13.5px; }
+.callout-warn {
+  background: linear-gradient(135deg, var(--warn-soft) 0%, white 100%);
+  border-color: var(--warn-soft);
+  margin-bottom: var(--s-4);
+}
+.callout-warn .callout-head { color: #8a5a07; }
+.chip.needs-resave {
+  background: var(--warn-soft);
+  border-color: var(--warn-soft);
+  color: #8a5a07;
+}
 
 .recent-mini {
   display: flex;
