@@ -52,11 +52,18 @@ def cache_key(
     native surfaces pass stop/tool_choice through, so a narrower key is
     reachable in normal use.
 
+    The payload carries `"v": 2` so pre-v2 entries (six fields, omitted
+    temperature coerced to 0.0) can never match.
+
     `user` is deliberately excluded: it is an abuse-monitoring hint that
     does not change the completion, and keying on it would fragment the
     cache per caller for no correctness gain.
     """
     payload = {
+        # v2: original key hashed only six fields, so e.g. max_tokens=16
+        # collided with max_tokens=4000. The version field keeps those
+        # entries from ever matching this key space.
+        "v": 2,
         "model": model,
         "messages": messages,
         # Keyed on the true wire value: an ABSENT temperature is not the
@@ -87,23 +94,24 @@ def is_cacheable(body: dict) -> bool:
 
     - Streaming responses are skipped (caching SSE chunks correctly is more
       trouble than it's worth for v1).
-    - temperature == 0 → deterministic.
-    - Any other temperature, INCLUDING AN ABSENT ONE, needs an explicit
-      seed. Every upstream this proxies defaults temperature to 1.0 —
-      OpenAI, Anthropic and Gemini alike — so a request that omits it is
-      sampled, not deterministic, and caching it would replay one
-      arbitrary sample to every later caller. That is not a hypothetical
-      on the native surfaces: their translators only set temperature when
-      the wire request carried it, and Claude Code never sends one, so
-      omission is the norm there. An agent retrying an identical call
-      would keep getting the same stale answer.
-    - With a seed, any temperature is fine — the seed pins the output.
+    - With an explicit seed, any sampling params are fine — the seed pins
+      the output.
+    - Otherwise temperature must be EXPLICITLY zero AND top_p must not
+      narrow the distribution. An OMITTED temperature means the provider
+      default (1.0 — maximally non-deterministic), never cacheable. A
+      narrowed top_p samples from a truncated distribution even at
+      temperature 0, so it is also not cacheable without a seed.
     """
     if body.get("stream"):
         return False
-    if body.get("temperature") == 0:
+    if body.get("seed") is not None:
         return True
-    return body.get("seed") is not None
+    if body.get("temperature") != 0:
+        return False
+    top_p = body.get("top_p")
+    if top_p is not None and top_p != 1:
+        return False
+    return True
 
 
 # ── Backends ──────────────────────────────────────────────────────────
