@@ -1,4 +1,4 @@
-"""Tests for /v1/models, /v1/keys (rotate), /v1/routing (strategy)."""
+"""Tests for /v1/models, /v1/keys (rotate / allowlist), /v1/routing (strategy)."""
 
 from __future__ import annotations
 
@@ -98,6 +98,8 @@ async def test_list_keys_shows_seeded_key(lite_client):
     assert len(body["keys"]) == 1
     assert body["keys"][0]["name"] == "default"
     assert "key_hash" not in body["keys"][0]
+    # Seeded key is unrestricted — null, not [].
+    assert body["keys"][0]["model_allowlist"] is None
 
 
 async def test_create_new_key_returns_plaintext_once(lite_client):
@@ -107,10 +109,126 @@ async def test_create_new_key_returns_plaintext_once(lite_client):
     body = r.json()
     assert body["api_key"].startswith("sk-orca-")
     assert body["name"] == "ci-runner"
+    assert body["model_allowlist"] is None
 
     listing = await client.get("/v1/keys")
     names = {k["name"] for k in listing.json()["keys"]}
     assert names == {"default", "ci-runner"}
+
+
+async def test_create_key_with_allowlist(lite_client):
+    client, _ = lite_client
+    r = await client.post(
+        "/v1/keys",
+        json={"name": "scoped", "model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["model_allowlist"] == ["gpt-4o-mini"]
+
+    listing = await client.get("/v1/keys")
+    scoped = next(k for k in listing.json()["keys"] if k["name"] == "scoped")
+    assert scoped["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_create_key_empty_allowlist_is_deny_all(lite_client):
+    """[] is stored as [] (deny everything), not coerced to null."""
+    client, _ = lite_client
+    r = await client.post("/v1/keys", json={"name": "locked", "model_allowlist": []})
+    assert r.status_code == 201, r.text
+    assert r.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    locked = next(k for k in listing.json()["keys"] if k["name"] == "locked")
+    assert locked["model_allowlist"] == []
+
+
+async def test_create_key_rejects_unknown_model_ids(lite_client):
+    client, _ = lite_client
+    r = await client.post(
+        "/v1/keys",
+        json={
+            "name": "typo",
+            "model_allowlist": ["gpt-4o-mni", "also-fake", "gpt-4o-mini"],
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "gpt-4o-mni" in r.text
+    assert "also-fake" in r.text
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "typo" not in names
+
+
+async def test_put_key_updates_allowlist(lite_client):
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "mutable"})).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] == ["gpt-4o-mini"]
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_put_key_empty_allowlist_is_deny_all(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "lockable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(f"/v1/keys/{created['id']}", json={"model_allowlist": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] == []
+
+
+async def test_put_key_null_allowlist_clears_restriction(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "clearable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": None},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] is None
+
+
+async def test_put_key_rejects_unknown_model_ids(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "stable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": ["not-a-real-model"]},
+    )
+    assert r.status_code == 422, r.text
+    assert "not-a-real-model" in r.text
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_put_key_missing_returns_404(lite_client):
+    client, _ = lite_client
+    r = await client.put(
+        "/v1/keys/does-not-exist",
+        json={"model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 404
 
 
 async def test_revoke_key_blocks_reauth(lite_client):

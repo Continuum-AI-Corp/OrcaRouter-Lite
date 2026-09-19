@@ -1,4 +1,4 @@
-"""API key management — list, create, revoke."""
+"""API key management — list, create, update allowlist, revoke."""
 
 from __future__ import annotations
 
@@ -14,12 +14,54 @@ from app.deps import get_db, get_key_context
 from packages.auth.hashing import generate_api_key
 from packages.auth.types import KeyContext
 from packages.db.models.api_key import ApiKey
+from packages.litellm_adapter.catalog import CATALOG_BY_ID
 
 router = APIRouter(prefix="/v1/keys", tags=["keys"])
 
 
 class CreateKey(BaseModel):
     name: str
+    # None (omitted) = unrestricted. [] = deny everything. See UpdateKey.
+    model_allowlist: list[str] | None = None
+
+
+class UpdateKey(BaseModel):
+    # Required so JSON null (clear → unrestricted) is distinct from [].
+    # `is not None` semantics: [] is a deny-everything lock, not "no restriction".
+    model_allowlist: list[str] | None
+
+
+def _validate_model_allowlist(ids: list[str] | None) -> list[str] | None:
+    """Reject unknown catalog ids at write time.
+
+    None stays None (unrestricted). An explicit empty list is valid — it is
+    the operator's deny-everything signal, and must not be coerced to None.
+    """
+    if ids is None:
+        return None
+    unknown = sorted({m for m in ids if m not in CATALOG_BY_ID})
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown model id(s): {unknown}. "
+                "Allowlist entries must match the catalog."
+            ),
+        )
+    return ids
+
+
+def _key_public(r: ApiKey) -> dict:
+    return {
+        "id": r.id,
+        "name": r.name,
+        "key_prefix": r.key_prefix,
+        "is_active": r.is_active,
+        "model_allowlist": r.model_allowlist,
+        "last_used_at": iso_utc(r.last_used_at),
+        "revoked_at": iso_utc(r.revoked_at),
+        "created_at": iso_utc(r.created_at),
+    }
 
 
 @router.get("")
@@ -32,20 +74,7 @@ async def list_keys(
             select(ApiKey).where(ApiKey.is_deleted == 0).order_by(ApiKey.created_at)
         )
     ).scalars().all()
-    return {
-        "keys": [
-            {
-                "id": r.id,
-                "name": r.name,
-                "key_prefix": r.key_prefix,
-                "is_active": r.is_active,
-                "last_used_at": iso_utc(r.last_used_at),
-                "revoked_at": iso_utc(r.revoked_at),
-                "created_at": iso_utc(r.created_at),
-            }
-            for r in rows
-        ]
-    }
+    return {"keys": [_key_public(r) for r in rows]}
 
 
 @router.post("", status_code=201)
@@ -54,23 +83,44 @@ async def create_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    allowlist = _validate_model_allowlist(body.model_allowlist)
     full_key, key_hash, key_prefix = generate_api_key()
     row = ApiKey(
         workspace_id=kc.workspace_id,
         name=body.name,
         key_hash=key_hash,
         key_prefix=key_prefix,
+        model_allowlist=allowlist,
     )
     db.add(row)
     await db.commit()
     await db.refresh(row)
 
     return {
-        "id": row.id,
-        "name": row.name,
-        "key_prefix": row.key_prefix,
+        **_key_public(row),
         "api_key": full_key,  # plaintext shown ONCE
     }
+
+
+@router.put("/{key_id}")
+async def update_key(
+    key_id: str,
+    body: UpdateKey,
+    _kc: KeyContext = Depends(get_key_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    row = (
+        await db.execute(
+            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Key not found")
+
+    row.model_allowlist = _validate_model_allowlist(body.model_allowlist)
+    await db.commit()
+    await db.refresh(row)
+    return _key_public(row)
 
 
 @router.delete("/{key_id}", status_code=204)
