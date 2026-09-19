@@ -191,6 +191,95 @@ async def test_all_invalid_candidates_still_401(app_with_auth):
     assert r.status_code == 401
 
 
+def test_prefer_auth_error_ranks_specificity():
+    """A malformed later candidate must not hide a revoked-or-recognized
+    key. Ties keep the first error (not last-wins)."""
+    from app.middleware.auth import _prefer_auth_error
+    from packages.auth.key_validator import AuthError
+
+    revoked = AuthError("API key revoked")
+    missing = AuthError("Invalid API key")
+    malformed = AuthError("Invalid API key format")
+    unknown = AuthError("permission denied")
+    forbidden = AuthError("API key revoked", status_code=403)
+
+    assert _prefer_auth_error(None, malformed) is malformed
+    assert _prefer_auth_error(revoked, malformed) is revoked
+    assert _prefer_auth_error(malformed, revoked) is revoked
+    assert _prefer_auth_error(missing, malformed) is missing
+    assert _prefer_auth_error(malformed, missing) is missing
+    assert _prefer_auth_error(revoked, missing) is revoked
+    assert _prefer_auth_error(missing, revoked) is revoked
+    # Equal rank: keep the first, not the last.
+    first_malformed = AuthError("Invalid API key format")
+    assert _prefer_auth_error(first_malformed, malformed) is first_malformed
+    # Unknown messages beat format but lose to revoked.
+    assert _prefer_auth_error(malformed, unknown) is unknown
+    assert _prefer_auth_error(unknown, revoked) is revoked
+    # Higher HTTP status is more specific than a 401 with the same message.
+    assert _prefer_auth_error(revoked, forbidden) is forbidden
+
+
+async def test_malformed_x_api_key_does_not_shadow_revoked_bearer(
+    app_with_auth, db_session,
+):
+    """Regression #138: last-wins on AuthError let a bogus x-api-key hide
+    'API key revoked' from a recognizable Bearer key."""
+    from datetime import datetime, timezone
+
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import select
+
+    from app.seed import seed_initial_state
+    from packages.db.models.api_key import ApiKey
+
+    seed = await seed_initial_state(db_session)
+    row = (await db_session.execute(select(ApiKey))).scalar_one()
+    row.revoked_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get(
+            "/v1/protected",
+            headers={
+                "Authorization": f"Bearer {seed.api_key}",
+                "x-api-key": "not-a-valid-format",
+            },
+        )
+    assert r.status_code == 401
+    assert r.json()["error"]["message"] == "API key revoked"
+
+
+async def test_malformed_bearer_does_not_shadow_revoked_x_api_key(
+    app_with_auth, db_session,
+):
+    """Same ranking in the opposite header order: a proxy-injected Bearer
+    that fails format must not hide a revoked sk-orca key in x-api-key."""
+    from datetime import datetime, timezone
+
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import select
+
+    from app.seed import seed_initial_state
+    from packages.db.models.api_key import ApiKey
+
+    seed = await seed_initial_state(db_session)
+    row = (await db_session.execute(select(ApiKey))).scalar_one()
+    row.revoked_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app_with_auth), base_url="http://t") as c:
+        r = await c.get(
+            "/v1/protected",
+            headers={
+                "Authorization": "Bearer gateway-injected-token",
+                "x-api-key": seed.api_key,
+            },
+        )
+    assert r.status_code == 401
+    assert r.json()["error"]["message"] == "API key revoked"
+
+
 async def test_empty_bearer_falls_through_to_x_api_key(app_with_auth, db_session):
     """An empty `Authorization: Bearer ` (e.g. blanked by a proxy) must not
     short-circuit the documented fallback chain — a valid key in x-api-key
