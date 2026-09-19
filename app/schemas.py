@@ -24,6 +24,10 @@ class ChatCompletionRequest(BaseModel):
     stop: str | list[str] | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
+    # Pass-through for OpenAI's `logit_bias` map (token id → bias).
+    # Without this field declared, Pydantic silently drops it and
+    # LiteLLM never sees the token suppression / boost.
+    logit_bias: dict[int, float] | None = None
     user: str | None = None
     seed: int | None = None
     response_format: dict | None = None
