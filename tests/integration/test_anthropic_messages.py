@@ -212,7 +212,11 @@ async def test_blocking_forwards_hosted_fallback_header(native_client):
         "fallback": True,
         "latency_ms": 12,
     }
-    fake.acompletion.return_value = hosted
+
+    async def _hosted(**_kwargs):
+        return hosted
+
+    fake.acompletion.side_effect = _hosted
     r = await client.post("/v1/messages", json=_messages_payload(),
                           headers={"x-api-key": key})
     assert r.status_code == 200
