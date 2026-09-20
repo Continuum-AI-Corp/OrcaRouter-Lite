@@ -228,6 +228,122 @@ async def test_audit_skips_deleted_rows(guarded_db):
     assert audit.reencrypted == ()
 
 
+async def test_cas_reencrypt_skips_when_ciphertext_changed(guarded_db):
+    """Optimistic guard: a PUT that rewrote encrypted_key between our
+    snapshot and the UPDATE must win. rowcount==0, stored blob unchanged."""
+    from sqlalchemy import select
+
+    from packages.auth.encryption import encrypt_credential
+    from packages.db.guards import _cas_reencrypt_provider_key
+    from packages.db.models.provider_key import ProviderKey
+
+    url, factory = guarded_db
+    original = encrypt_credential("sk-old")
+    newer = encrypt_credential("sk-from-put")
+    stale_rewrite = encrypt_credential("sk-old")
+
+    async with factory() as s:
+        row = ProviderKey(
+            provider="openai",
+            encrypted_key=original,
+            key_prefix="sk-old...xxxx",
+        )
+        s.add(row)
+        await s.commit()
+        row_id = row.id
+
+    async with factory() as s:
+        live = (await s.execute(select(ProviderKey))).scalar_one()
+        live.encrypted_key = newer
+        live.key_prefix = "sk-from-...put"
+        await s.commit()
+
+    async with factory() as s:
+        wrote = await _cas_reencrypt_provider_key(
+            s,
+            row_id=row_id,
+            observed_encrypted_key=original,
+            new_encrypted_key=stale_rewrite,
+        )
+        await s.commit()
+
+    assert wrote is False
+    async with factory() as s:
+        stored = (await s.execute(select(ProviderKey))).scalar_one()
+    assert stored.encrypted_key == newer
+
+
+async def test_audit_does_not_clobber_concurrent_provider_key_put(
+    guarded_db, monkeypatch,
+):
+    """Rolling-restart race: audit SELECTs ciphertext sealed with the
+    previous key, an operator PUT commits a new key, then the audit's
+    write must not restore the old plaintext.
+
+    Interleave the PUT after the snapshot session closes and before the
+    per-row CAS transaction opens — the same gap a live PUT would hit.
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy import select
+
+    from app import config as cfg
+    from packages.auth.encryption import decrypt_credential, encrypt_credential
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    key_a = "aa" * 32
+    key_b = "bb" * 32
+
+    cfg.get_settings.cache_clear()
+    s_a = cfg.Settings(_env_file=None, credential_encryption_key=key_a)
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_a)
+    blob_a = encrypt_credential("sk-to-migrate")
+
+    url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=blob_a,
+            key_prefix="sk-to-m...rate",
+        ))
+        await s.commit()
+
+    s_b = cfg.Settings(
+        _env_file=None,
+        credential_encryption_key=key_b,
+        credential_encryption_previous_key=key_a,
+    )
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_b)
+    put_blob = encrypt_credential("sk-from-put")
+
+    sessions = 0
+
+    @asynccontextmanager
+    async def racing_factory():
+        nonlocal sessions
+        sessions += 1
+        async with factory() as session:
+            yield session
+        if sessions == 1:
+            async with factory() as s:
+                row = (await s.execute(select(ProviderKey))).scalar_one()
+                row.encrypted_key = put_blob
+                row.key_prefix = "sk-from-...put"
+                await s.commit()
+
+    audit = await audit_stored_provider_credentials(
+        make_session=racing_factory, previous_key=key_a,
+    )
+    assert audit.reencrypted == ()
+    assert audit.undecryptable == ()
+
+    async with factory() as s:
+        stored = (await s.execute(select(ProviderKey))).scalar_one()
+    assert stored.encrypted_key == put_blob
+    assert decrypt_credential(stored.encrypted_key) == "sk-from-put"
+
+
 async def test_guard_allows_missing_table_on_fresh_sqlite(tmp_sqlite_url):
     """A fresh DB pre-migration where provider_keys doesn't exist counts
     as zero rows for sqlite (inspected via engine, not string matching)."""

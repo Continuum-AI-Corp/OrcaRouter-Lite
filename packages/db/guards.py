@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.auth.encryption import is_using_insecure_dev_key
@@ -155,6 +155,40 @@ class CredentialAudit:
     undecryptable: tuple[str, ...]
 
 
+async def _cas_reencrypt_provider_key(
+    session: AsyncSession,
+    *,
+    row_id: str,
+    observed_encrypted_key: bytes,
+    new_encrypted_key: bytes,
+) -> bool:
+    """Write ``new_encrypted_key`` only if the row is still what we read.
+
+    The startup audit and ``PUT /v1/providers/{id}`` both write
+    ``provider_keys.encrypted_key``. A booting replica's re-encrypt of the
+    previous-key plaintext must not land after an operator PUT of a new
+    key (rolling restart): that would silently restore the old credential.
+
+    Version token is the observed ciphertext, not ``updated_at``: SQLite
+    stores ``CURRENT_TIMESTAMP`` as ``YYYY-MM-DD HH:MM:SS`` while the
+    ORM binds microseconds, so an ``updated_at`` predicate never matches
+    on the default dialect. AES-GCM ciphertext already changes on every
+    PUT (fresh nonce), so it is the reliable compare-and-swap key.
+    """
+    from packages.db.models.provider_key import ProviderKey
+
+    result = await session.execute(
+        update(ProviderKey)
+        .where(
+            ProviderKey.id == row_id,
+            ProviderKey.encrypted_key == observed_encrypted_key,
+        )
+        .values(encrypted_key=new_encrypted_key)
+        .execution_options(synchronize_session=False)
+    )
+    return (result.rowcount or 0) == 1
+
+
 async def audit_stored_provider_credentials(
     *,
     make_session,
@@ -164,6 +198,14 @@ async def audit_stored_provider_credentials(
 
     Does not refuse boot: the dashboard must stay up so an operator can
     re-save keys. Failures are logged at ERROR with the provider names.
+
+    Re-encryption is a compare-and-swap in a fresh transaction per row,
+    not an ORM identity-map mutate + commit. Holding the original
+    snapshot across a later unconditional UPDATE would clobber a
+    concurrent provider-key PUT that landed after we SELECTed.
+    ``with_for_update`` on the snapshot read serializes a racing PUT on
+    dialects that honor row locks (Postgres); SQLite compiles it away,
+    so the CAS is the portable guard.
     """
     from packages.auth.encryption import (
         credential_is_decryptable,
@@ -180,27 +222,31 @@ async def audit_stored_provider_credentials(
     async with make_session() as session:
         rows = (
             await session.execute(
-                select(ProviderKey).where(ProviderKey.is_deleted == 0)
+                select(ProviderKey)
+                .where(ProviderKey.is_deleted == 0)
+                .with_for_update()
             )
         ).scalars().all()
+        snapshots = [
+            (row.id, row.provider, bytes(row.encrypted_key))
+            for row in rows
+        ]
 
-        reencrypted: list[str] = []
-        undecryptable: list[str] = []
-        for row in rows:
-            if credential_is_decryptable(row.encrypted_key):
-                continue
-            if previous_bytes is not None:
-                try:
-                    plaintext = decrypt_credential(
-                        row.encrypted_key, key=previous_bytes
-                    )
-                except Exception:
-                    plaintext = None
-                if plaintext is not None:
-                    row.encrypted_key = encrypt_credential(plaintext)
-                    reencrypted.append(row.provider)
-                    continue
-            undecryptable.append(row.provider)
+    reencrypted: list[str] = []
+    undecryptable: list[str] = []
+    for row_id, provider, encrypted_key in snapshots:
+        if credential_is_decryptable(encrypted_key):
+            continue
+        plaintext = None
+        if previous_bytes is not None:
+            try:
+                plaintext = decrypt_credential(
+                    encrypted_key, key=previous_bytes
+                )
+            except Exception:
+                plaintext = None
+        if plaintext is None:
+            undecryptable.append(provider)
             logger.error(
                 "undecryptable_provider_key: stored key for %s cannot be "
                 "decrypted with the current CREDENTIAL_ENCRYPTION_KEY. "
@@ -208,18 +254,37 @@ async def audit_stored_provider_credentials(
                 "configured). Re-save the key in the dashboard, or set "
                 "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY to the prior value "
                 "and restart to re-encrypt.",
-                row.provider,
+                provider,
+            )
+            continue
+
+        new_blob = encrypt_credential(plaintext)
+        async with make_session() as session:
+            wrote = await _cas_reencrypt_provider_key(
+                session,
+                row_id=row_id,
+                observed_encrypted_key=encrypted_key,
+                new_encrypted_key=new_blob,
+            )
+            await session.commit()
+        if wrote:
+            reencrypted.append(provider)
+        else:
+            logger.info(
+                "reencrypt_skipped_concurrent_update: %s changed while "
+                "startup re-encryption ran; leaving the newer ciphertext "
+                "in place.",
+                provider,
             )
 
-        if reencrypted:
-            await session.commit()
-            logger.warning(
-                "reencrypted_provider_keys: re-sealed %s with the current "
-                "CREDENTIAL_ENCRYPTION_KEY. Remove "
-                "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY from .env after "
-                "confirming the dashboard shows those providers as enabled.",
-                ", ".join(reencrypted),
-            )
+    if reencrypted:
+        logger.warning(
+            "reencrypted_provider_keys: re-sealed %s with the current "
+            "CREDENTIAL_ENCRYPTION_KEY. Remove "
+            "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY from .env after "
+            "confirming the dashboard shows those providers as enabled.",
+            ", ".join(reencrypted),
+        )
 
     return CredentialAudit(
         reencrypted=tuple(reencrypted),
