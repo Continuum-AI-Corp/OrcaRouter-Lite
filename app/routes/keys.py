@@ -83,6 +83,23 @@ async def create_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    # A restricted key (non-None allowlist, including []) may only mint
+    # keys whose allowlist is non-null and a subset of its own. Omitting
+    # the field (None) would create an unrestricted key and let the
+    # holder escape the operator constraint.
+    if kc.model_allowlist is not None and (
+        body.model_allowlist is None
+        or not set(body.model_allowlist) <= set(kc.model_allowlist)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Restricted API keys cannot create unrestricted keys."
+                if body.model_allowlist is None
+                else "Restricted API keys can only create keys whose model_allowlist is a subset of their own."
+            ),
+        )
+
     allowlist = _validate_model_allowlist(body.model_allowlist)
     full_key, key_hash, key_prefix = generate_api_key()
     row = ApiKey(

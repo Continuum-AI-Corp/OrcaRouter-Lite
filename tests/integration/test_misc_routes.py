@@ -271,6 +271,126 @@ async def test_restricted_key_cannot_clear_own_allowlist_to_unrestricted(lite_cl
     assert row["model_allowlist"] == ["gpt-4o-mini"]
 
 
+async def test_restricted_key_cannot_create_unrestricted_key(lite_client):
+    """Omitting model_allowlist (or sending JSON null) would mint an
+    unrestricted key. A restricted caller must not escalate that way."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        omitted = await restricted.post("/v1/keys", json={"name": "escape"})
+        explicit_null = await restricted.post(
+            "/v1/keys", json={"name": "escape-null", "model_allowlist": None}
+        )
+    assert omitted.status_code == 403, omitted.text
+    assert explicit_null.status_code == 403, explicit_null.text
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "escape" not in names
+    assert "escape-null" not in names
+
+
+async def test_restricted_key_cannot_create_broader_allowlist(lite_client):
+    """A restricted key may not mint a sibling with models outside its
+    own allowlist — including when the caller itself is locked to []."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    locked = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "deny-all-creator", "model_allowlist": []},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        wider = await restricted.post(
+            "/v1/keys",
+            json={"name": "wider", "model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        other = await restricted.post(
+            "/v1/keys",
+            json={"name": "other-model", "model_allowlist": ["gpt-4o"]},
+        )
+    assert wider.status_code == 403, wider.text
+    assert other.status_code == 403, other.text
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {locked['api_key']}"},
+    ) as deny_all:
+        r = await deny_all.post(
+            "/v1/keys",
+            json={"name": "from-empty", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "wider" not in names
+    assert "other-model" not in names
+    assert "from-empty" not in names
+
+
+async def test_restricted_key_can_create_subset_allowlist(lite_client):
+    """A restricted key may create a key whose allowlist is a non-null
+    subset of its own, including [] (deny-everything)."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        same = await restricted.post(
+            "/v1/keys",
+            json={"name": "same-scope", "model_allowlist": ["gpt-4o-mini"]},
+        )
+        empty = await restricted.post(
+            "/v1/keys",
+            json={"name": "locked-child", "model_allowlist": []},
+        )
+    assert same.status_code == 201, same.text
+    assert same.json()["model_allowlist"] == ["gpt-4o-mini"]
+    assert empty.status_code == 201, empty.text
+    assert empty.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert {"same-scope", "locked-child"} <= names
+
+
 async def test_restricted_key_cannot_update_other_key_allowlist(lite_client):
     """A restricted key may not rewrite a sibling key's allowlist."""
     from httpx import AsyncClient
