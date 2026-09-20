@@ -7,8 +7,9 @@ crypto module stays free of SQLAlchemy imports.
 
 `audit_stored_provider_credentials` is the companion check for key
 rotation: it re-encrypts rows that still open with
-`CREDENTIAL_ENCRYPTION_PREVIOUS_KEY`, and logs remaining failures
-instead of letting `build_deployments` drop them silently.
+`CREDENTIAL_ENCRYPTION_PREVIOUS_KEY` (never onto the publicly-known
+dev-fallback key), and logs remaining failures instead of letting
+`build_deployments` drop them silently.
 """
 
 from __future__ import annotations
@@ -206,6 +207,10 @@ async def audit_stored_provider_credentials(
     ``with_for_update`` on the snapshot read serializes a racing PUT on
     dialects that honor row locks (Postgres); SQLite compiles it away,
     so the CAS is the portable guard.
+
+    Never reseals onto the publicly-known development fallback. When
+    ``is_using_insecure_dev_key()`` is true, rows that open with
+    ``previous_key`` stay as they are and are reported as undecryptable.
     """
     from packages.auth.encryption import (
         credential_is_decryptable,
@@ -253,6 +258,25 @@ async def audit_stored_provider_credentials(
                 "Chat will skip this provider (503 if nothing else is "
                 "configured). Re-save the key in the dashboard, or set "
                 "CREDENTIAL_ENCRYPTION_PREVIOUS_KEY to the prior value "
+                "and restart to re-encrypt.",
+                provider,
+            )
+            continue
+
+        # encrypt_credential uses _get_encryption_key(), which falls
+        # back to the SHA-256 of a source-constant seed. Resealing
+        # production ciphertext onto that key is irreversible from
+        # the operator's point of view: backups of the new blobs
+        # decrypt with a publicly-known key. Skip rather than migrate.
+        if is_using_insecure_dev_key():
+            undecryptable.append(provider)
+            logger.error(
+                "reencrypt_skipped_insecure_dev_key: stored key for %s "
+                "opens with CREDENTIAL_ENCRYPTION_PREVIOUS_KEY, but "
+                "CREDENTIAL_ENCRYPTION_KEY is unset so the destination "
+                "would be the publicly-known development key. Leaving "
+                "the existing ciphertext in place. Set a real "
+                "CREDENTIAL_ENCRYPTION_KEY (`openssl rand -hex 32`) "
                 "and restart to re-encrypt.",
                 provider,
             )

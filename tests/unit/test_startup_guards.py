@@ -209,6 +209,70 @@ async def test_audit_reencrypts_rows_sealed_with_previous_key(guarded_db, monkey
     assert decrypt_credential(migrated) == "sk-to-migrate"
 
 
+async def test_audit_does_not_reencrypt_onto_insecure_dev_key(
+    guarded_db, monkeypatch, caplog,
+):
+    """CREDENTIAL_ENCRYPTION_KEY unset + PREVIOUS_KEY set must not migrate
+    real ciphertext onto the publicly-known SHA-256 fallback — even when
+    ORCA_ALLOW_INSECURE_DEV_KEY / allow_insecure_dev_key lets boot proceed.
+    """
+    import logging
+
+    from sqlalchemy import select
+
+    from app import config as cfg
+    from packages.auth.encryption import (
+        decrypt_credential,
+        encrypt_credential,
+        is_using_insecure_dev_key,
+        materialize_encryption_key,
+    )
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    key_a = "aa" * 32
+
+    cfg.get_settings.cache_clear()
+    s_a = cfg.Settings(_env_file=None, credential_encryption_key=key_a)
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_a)
+    blob_a = encrypt_credential("sk-production-secret")
+
+    url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=blob_a,
+            key_prefix="sk-prod...xxxx",
+        ))
+        await s.commit()
+
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    s_dev = cfg.Settings(
+        _env_file=None,
+        credential_encryption_key="",
+        credential_encryption_previous_key=key_a,
+        allow_insecure_dev_key=True,
+    )
+    monkeypatch.setattr(cfg, "get_settings", lambda: s_dev)
+    assert is_using_insecure_dev_key()
+
+    caplog.set_level(logging.ERROR, logger="orca.credentials")
+    audit = await audit_stored_provider_credentials(
+        make_session=factory, previous_key=key_a,
+    )
+    assert audit.reencrypted == ()
+    assert audit.undecryptable == ("openai",)
+    assert "reencrypt_skipped_insecure_dev_key" in caplog.text
+
+    async with factory() as s:
+        stored = (await s.execute(select(ProviderKey))).scalar_one()
+    assert stored.encrypted_key == blob_a
+    # Still opens with the real previous key, not the public fallback.
+    assert decrypt_credential(
+        stored.encrypted_key, key=materialize_encryption_key(key_a),
+    ) == "sk-production-secret"
+
+
 async def test_audit_skips_deleted_rows(guarded_db):
     from packages.db.guards import audit_stored_provider_credentials
     from packages.db.models.provider_key import ProviderKey
