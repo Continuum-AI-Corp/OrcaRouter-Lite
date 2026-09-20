@@ -204,16 +204,19 @@ async def test_put_key_null_allowlist_clears_restriction(lite_client):
 
 
 async def test_restricted_key_can_update_own_allowlist(lite_client):
-    """A restricted key may PUT /v1/keys/{own_id} with a non-null list,
-    including [] (deny-everything). Existing schema: [] is not coerced
-    to null."""
+    """A restricted key may PUT /v1/keys/{own_id} only to a subset of its
+    current allowlist, including [] (deny-everything). Existing schema:
+    [] is not coerced to null."""
     from httpx import AsyncClient
 
     client, _ = lite_client
     created = (
         await client.post(
             "/v1/keys",
-            json={"name": "self-update", "model_allowlist": ["gpt-4o-mini"]},
+            json={
+                "name": "self-update",
+                "model_allowlist": ["gpt-4o-mini", "gpt-4o"],
+            },
         )
     ).json()
     restricted_id = created["id"]
@@ -222,12 +225,19 @@ async def test_restricted_key_can_update_own_allowlist(lite_client):
     async with AsyncClient(
         transport=client._transport, base_url="http://t", headers=headers
     ) as restricted:
+        same = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        assert same.status_code == 200, same.text
+        assert same.json()["model_allowlist"] == ["gpt-4o-mini", "gpt-4o"]
+
         narrowed = await restricted.put(
             f"/v1/keys/{restricted_id}",
-            json={"model_allowlist": ["gpt-4o"]},
+            json={"model_allowlist": ["gpt-4o-mini"]},
         )
         assert narrowed.status_code == 200, narrowed.text
-        assert narrowed.json()["model_allowlist"] == ["gpt-4o"]
+        assert narrowed.json()["model_allowlist"] == ["gpt-4o-mini"]
 
         empty = await restricted.put(
             f"/v1/keys/{restricted_id}",
@@ -239,6 +249,59 @@ async def test_restricted_key_can_update_own_allowlist(lite_client):
     listing = await client.get("/v1/keys")
     row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
     assert row["model_allowlist"] == []
+
+
+async def test_restricted_key_cannot_widen_own_allowlist(lite_client):
+    """A restricted key must not add models outside its current list —
+    including when the caller itself is locked to []."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-widen", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    locked = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "deny-all-self", "model_allowlist": []},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        extra = await restricted.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        other = await restricted.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o"]},
+        )
+    assert extra.status_code == 403, extra.text
+    assert other.status_code == 403, other.text
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {locked['api_key']}"},
+    ) as deny_all:
+        r = await deny_all.put(
+            f"/v1/keys/{locked['id']}",
+            json={"model_allowlist": ["gpt-4o-mini"]},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    scoped = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    empty = next(k for k in listing.json()["keys"] if k["id"] == locked["id"])
+    assert scoped["model_allowlist"] == ["gpt-4o-mini"]
+    assert empty["model_allowlist"] == []
 
 
 async def test_restricted_key_cannot_clear_own_allowlist_to_unrestricted(lite_client):
@@ -468,6 +531,111 @@ async def test_revoke_key_blocks_reauth(lite_client):
                            headers={"Authorization": f"Bearer {new_key}"}) as fresh:
         r2 = await fresh.get("/v1/keys")
     assert r2.status_code == 401
+
+
+async def test_restricted_key_cannot_revoke_other_keys(lite_client):
+    """A restricted key may not revoke a sibling or the operator key."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    listing = await client.get("/v1/keys")
+    operator_id = next(k["id"] for k in listing.json()["keys"] if k["name"] == "default")
+    restricted = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-revoker", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    sibling = (await client.post("/v1/keys", json={"name": "sibling"})).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {restricted['api_key']}"},
+    ) as caller:
+        against_sibling = await caller.delete(f"/v1/keys/{sibling['id']}")
+        against_operator = await caller.delete(f"/v1/keys/{operator_id}")
+    assert against_sibling.status_code == 403, against_sibling.text
+    assert against_operator.status_code == 403, against_operator.text
+
+    listing = await client.get("/v1/keys")
+    by_id = {k["id"]: k for k in listing.json()["keys"]}
+    assert by_id[sibling["id"]]["is_active"] is True
+    assert by_id[sibling["id"]]["revoked_at"] is None
+    assert by_id[operator_id]["is_active"] is True
+    assert by_id[operator_id]["revoked_at"] is None
+
+
+async def test_restricted_key_can_revoke_itself(lite_client):
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-revoke", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        r = await restricted.delete(f"/v1/keys/{created['id']}")
+    assert r.status_code == 204
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as revoked:
+        r2 = await revoked.get("/v1/keys")
+    assert r2.status_code == 401
+
+
+async def test_update_key_rechecks_restriction_at_write_time(lite_client):
+    """kc.model_allowlist is captured at auth. A concurrent restrict must
+    still be honored: re-read the caller with FOR UPDATE and reject a
+    stale self-clear to null."""
+    from sqlalchemy import select
+
+    from app.deps import get_key_context
+    from packages.auth.types import KeyContext
+    from packages.db import session as session_mod
+    from packages.db.models.api_key import ApiKey
+
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "racy"})).json()
+
+    async with session_mod._session_factory() as s:
+        row = (
+            await s.execute(select(ApiKey).where(ApiKey.id == created["id"]))
+        ).scalar_one()
+        row.model_allowlist = ["gpt-4o-mini"]
+        workspace_id = row.workspace_id
+        await s.commit()
+
+    stale = KeyContext(
+        key_id=created["id"],
+        workspace_id=workspace_id,
+        name="racy",
+        model_allowlist=None,
+    )
+    app = client._transport.app
+    app.dependency_overrides[get_key_context] = lambda: stale
+    try:
+        r = await client.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": None},
+        )
+    finally:
+        app.dependency_overrides.pop(get_key_context, None)
+
+    assert r.status_code == 403, r.text
+    listing = await client.get("/v1/keys")
+    stored = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert stored["model_allowlist"] == ["gpt-4o-mini"]
 
 
 # ── /v1/routing ───────────────────────────────────────────────────────

@@ -64,6 +64,97 @@ def _key_public(r: ApiKey) -> dict:
     }
 
 
+async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
+    """Re-read a key and take a write lock (SELECT FOR UPDATE).
+
+    Auth-time ``kc.model_allowlist`` is a snapshot from ``validate_api_key``.
+    An operator may restrict the caller between authenticate and commit, so
+    every write re-loads the caller (and the target, when different) under
+    ``FOR UPDATE`` and re-runs the restriction check against that fresh
+    value. SQLite silently drops ``FOR UPDATE``; the re-read still sees a
+    committed restrict in this request's session.
+    """
+    return (
+        await db.execute(
+            select(ApiKey)
+            .where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
+async def _lock_caller(db: AsyncSession, key_id: str) -> ApiKey:
+    caller = await _lock_key(db, key_id)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return caller
+
+
+def _require_create_within_allowlist(
+    caller_allowlist: list[str] | None,
+    new_allowlist: list[str] | None,
+) -> None:
+    """Restricted callers may only mint a non-null subset of their own list."""
+    if caller_allowlist is None:
+        return
+    if new_allowlist is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys cannot create unrestricted keys.",
+        )
+    if not set(new_allowlist) <= set(caller_allowlist):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Restricted API keys can only create keys whose "
+                "model_allowlist is a subset of their own."
+            ),
+        )
+
+
+def _require_update_within_allowlist(
+    caller_allowlist: list[str] | None,
+    caller_id: str,
+    target_id: str,
+    new_allowlist: list[str] | None,
+) -> None:
+    """Unrestricted operator may set any value, including None.
+
+    A restricted caller may only update its own row, and only to a
+    non-null list that is a subset of its current allowlist.
+    """
+    if caller_allowlist is None:
+        return
+    if caller_id != target_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys can only update their own model_allowlist.",
+        )
+    if new_allowlist is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys cannot clear their own model_allowlist.",
+        )
+    if not set(new_allowlist) <= set(caller_allowlist):
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys can only narrow their own model_allowlist.",
+        )
+
+
+def _require_revoke_allowed(
+    caller_allowlist: list[str] | None,
+    caller_id: str,
+    target_id: str,
+) -> None:
+    """A restricted key may revoke itself, never a sibling or operator key."""
+    if caller_allowlist is not None and caller_id != target_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys can only revoke themselves.",
+        )
+
+
 @router.get("")
 async def list_keys(
     _kc: KeyContext = Depends(get_key_context),
@@ -83,22 +174,8 @@ async def create_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    # A restricted key (non-None allowlist, including []) may only mint
-    # keys whose allowlist is non-null and a subset of its own. Omitting
-    # the field (None) would create an unrestricted key and let the
-    # holder escape the operator constraint.
-    if kc.model_allowlist is not None and (
-        body.model_allowlist is None
-        or not set(body.model_allowlist) <= set(kc.model_allowlist)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Restricted API keys cannot create unrestricted keys."
-                if body.model_allowlist is None
-                else "Restricted API keys can only create keys whose model_allowlist is a subset of their own."
-            ),
-        )
+    caller = await _lock_caller(db, kc.key_id)
+    _require_create_within_allowlist(caller.model_allowlist, body.model_allowlist)
 
     allowlist = _validate_model_allowlist(body.model_allowlist)
     full_key, key_hash, key_prefix = generate_api_key()
@@ -126,30 +203,19 @@ async def update_key(
     kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    row = (
-        await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Key not found")
+    # Lock the caller first so a concurrent restrict is visible (and held)
+    # before we decide whether this write is still authorized.
+    caller = await _lock_caller(db, kc.key_id)
+    if key_id == caller.id:
+        row = caller
+    else:
+        row = await _lock_key(db, key_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Key not found")
 
-    # A restricted key (non-None allowlist) may update its own allowlist
-    # to a non-null list, including [] (deny-everything). JSON null would
-    # store None = unrestricted and let the key holder drop the operator
-    # constraint, so that (and any other key) requires an unrestricted
-    # operator key.
-    if kc.model_allowlist is not None and (
-        kc.key_id != row.id or body.model_allowlist is None
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Restricted API keys cannot clear their own model_allowlist."
-                if kc.key_id == row.id
-                else "Restricted API keys can only update their own model_allowlist."
-            ),
-        )
+    _require_update_within_allowlist(
+        caller.model_allowlist, caller.id, row.id, body.model_allowlist
+    )
 
     row.model_allowlist = _validate_model_allowlist(body.model_allowlist)
     await db.commit()
@@ -160,16 +226,18 @@ async def update_key(
 @router.delete("/{key_id}", status_code=204)
 async def revoke_key(
     key_id: str,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    row = (
-        await db.execute(
-            select(ApiKey).where(ApiKey.id == key_id, ApiKey.is_deleted == 0)
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Key not found")
+    caller = await _lock_caller(db, kc.key_id)
+    if key_id == caller.id:
+        row = caller
+    else:
+        row = await _lock_key(db, key_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Key not found")
+
+    _require_revoke_allowed(caller.model_allowlist, caller.id, row.id)
 
     row.is_active = False
     row.revoked_at = datetime.now(timezone.utc)
