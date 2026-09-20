@@ -106,7 +106,7 @@ async def create_key(
 async def update_key(
     key_id: str,
     body: UpdateKey,
-    _kc: KeyContext = Depends(get_key_context),
+    kc: KeyContext = Depends(get_key_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     row = (
@@ -116,6 +116,15 @@ async def update_key(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Key not found")
+
+    # A restricted key (non-None allowlist) may update — including clear —
+    # its own allowlist. It must not rewrite anyone else's. Unrestricted
+    # keys keep the existing operator path (any id).
+    if kc.model_allowlist is not None and kc.key_id != row.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys can only update their own model_allowlist.",
+        )
 
     row.model_allowlist = _validate_model_allowlist(body.model_allowlist)
     await db.commit()

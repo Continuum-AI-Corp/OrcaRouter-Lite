@@ -203,6 +203,78 @@ async def test_put_key_null_allowlist_clears_restriction(lite_client):
     assert r.json()["model_allowlist"] is None
 
 
+async def test_restricted_key_can_clear_own_allowlist(lite_client):
+    """The holder of a restricted key can PUT /v1/keys/{own_id} to drop
+    (null) or tighten ([]) its own allowlist. Existing schema: null =
+    unrestricted; [] = deny-everything, not coerced to null."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-clear", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    restricted_id = created["id"]
+    headers = {"Authorization": f"Bearer {created['api_key']}"}
+
+    async with AsyncClient(
+        transport=client._transport, base_url="http://t", headers=headers
+    ) as restricted:
+        empty = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": []},
+        )
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["model_allowlist"] == []
+
+        cleared = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": None},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["model_allowlist"] is None
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
+    assert row["model_allowlist"] is None
+
+
+async def test_restricted_key_cannot_update_other_key_allowlist(lite_client):
+    """Self-clear is allowed; rewriting a sibling key is not."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    restricted = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-caller", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    other = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "sibling", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {restricted['api_key']}"},
+    ) as caller:
+        r = await caller.put(
+            f"/v1/keys/{other['id']}",
+            json={"model_allowlist": None},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == other["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
 async def test_put_key_rejects_unknown_model_ids(lite_client):
     client, _ = lite_client
     created = (
