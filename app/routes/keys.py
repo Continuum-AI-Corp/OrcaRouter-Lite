@@ -117,13 +117,21 @@ async def update_key(
     if row is None:
         raise HTTPException(status_code=404, detail="Key not found")
 
-    # A restricted key (non-None allowlist) may update — including clear —
-    # its own allowlist. It must not rewrite anyone else's. Unrestricted
-    # keys keep the existing operator path (any id).
-    if kc.model_allowlist is not None and kc.key_id != row.id:
+    # A restricted key (non-None allowlist) may update its own allowlist
+    # to a non-null list, including [] (deny-everything). JSON null would
+    # store None = unrestricted and let the key holder drop the operator
+    # constraint, so that (and any other key) requires an unrestricted
+    # operator key.
+    if kc.model_allowlist is not None and (
+        kc.key_id != row.id or body.model_allowlist is None
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Restricted API keys can only update their own model_allowlist.",
+            detail=(
+                "Restricted API keys cannot clear their own model_allowlist."
+                if kc.key_id == row.id
+                else "Restricted API keys can only update their own model_allowlist."
+            ),
         )
 
     row.model_allowlist = _validate_model_allowlist(body.model_allowlist)

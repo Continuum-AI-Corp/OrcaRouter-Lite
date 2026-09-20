@@ -203,10 +203,47 @@ async def test_put_key_null_allowlist_clears_restriction(lite_client):
     assert r.json()["model_allowlist"] is None
 
 
-async def test_restricted_key_can_clear_own_allowlist(lite_client):
-    """The holder of a restricted key can PUT /v1/keys/{own_id} to drop
-    (null) or tighten ([]) its own allowlist. Existing schema: null =
-    unrestricted; [] = deny-everything, not coerced to null."""
+async def test_restricted_key_can_update_own_allowlist(lite_client):
+    """A restricted key may PUT /v1/keys/{own_id} with a non-null list,
+    including [] (deny-everything). Existing schema: [] is not coerced
+    to null."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-update", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    restricted_id = created["id"]
+    headers = {"Authorization": f"Bearer {created['api_key']}"}
+
+    async with AsyncClient(
+        transport=client._transport, base_url="http://t", headers=headers
+    ) as restricted:
+        narrowed = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": ["gpt-4o"]},
+        )
+        assert narrowed.status_code == 200, narrowed.text
+        assert narrowed.json()["model_allowlist"] == ["gpt-4o"]
+
+        empty = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": []},
+        )
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
+    assert row["model_allowlist"] == []
+
+
+async def test_restricted_key_cannot_clear_own_allowlist_to_unrestricted(lite_client):
+    """JSON null stores None = unrestricted. A restricted key must not
+    lift the operator-imposed allowlist on itself."""
     from httpx import AsyncClient
 
     client, _ = lite_client
@@ -217,32 +254,25 @@ async def test_restricted_key_can_clear_own_allowlist(lite_client):
         )
     ).json()
     restricted_id = created["id"]
-    headers = {"Authorization": f"Bearer {created['api_key']}"}
 
     async with AsyncClient(
-        transport=client._transport, base_url="http://t", headers=headers
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
     ) as restricted:
-        empty = await restricted.put(
-            f"/v1/keys/{restricted_id}",
-            json={"model_allowlist": []},
-        )
-        assert empty.status_code == 200, empty.text
-        assert empty.json()["model_allowlist"] == []
-
         cleared = await restricted.put(
             f"/v1/keys/{restricted_id}",
             json={"model_allowlist": None},
         )
-        assert cleared.status_code == 200, cleared.text
-        assert cleared.json()["model_allowlist"] is None
+    assert cleared.status_code == 403, cleared.text
 
     listing = await client.get("/v1/keys")
     row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
-    assert row["model_allowlist"] is None
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
 
 
 async def test_restricted_key_cannot_update_other_key_allowlist(lite_client):
-    """Self-clear is allowed; rewriting a sibling key is not."""
+    """A restricted key may not rewrite a sibling key's allowlist."""
     from httpx import AsyncClient
 
     client, _ = lite_client
