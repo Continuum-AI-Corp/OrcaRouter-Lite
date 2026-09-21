@@ -252,7 +252,7 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 
 ### 통합
 
-[Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI에 대한 드롭인 구성 SDK](./integrations/vercel_ai.ts) 및 OpenAI Chat Completions 프로토콜을 말하는 모든 도구입니다 — 여기에 네이티브 Anthropic 및 Gemini 와이어 형식도 추가됩니다. [`통합/`](./integrations/)을 참조하세요.
+[Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts) 및 OpenAI Chat Completions 프로토콜을 사용하는 모든 도구를 위한 드롭인 구성 — 여기에 네이티브 Anthropic 및 Gemini 와이어 형식도 추가됩니다. [`integrations/`](./integrations/)을 참조하세요.
 
 ## 고의로 하지 않은 것
 
