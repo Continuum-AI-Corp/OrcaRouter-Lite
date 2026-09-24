@@ -40,6 +40,7 @@ _FORWARDED_HEADERS = (
     "x-orca-resolved-model",
     "x-orca-requested-model",
     "x-orca-routing-strategy",
+    "x-orca-fallback",
 )
 
 

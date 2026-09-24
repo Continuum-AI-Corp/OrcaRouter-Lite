@@ -34,6 +34,11 @@ from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
+from packages.litellm_adapter.hosted_fallback import (
+    hidden_params_of,
+    hosted_bypass_of_local,
+    match_served_deployment,
+)
 from packages.litellm_adapter.types import UpstreamProviderError
 
 logger = structlog.get_logger()
@@ -44,6 +49,7 @@ router = APIRouter(prefix="/v1", tags=["Chat Completions"])
 # native-protocol routes can re-render the failure in their own
 # status/error taxonomy.
 ERROR_TYPE_HEADER = "x-orca-error-type"
+FALLBACK_HEADER = "x-orca-fallback"
 
 # Delays (seconds) between successive attempts to commit a streaming
 # RequestLog row; attempts = len + 1. That row is the only record of a
@@ -133,6 +139,52 @@ def _served_same_group_as_requested(
     return True
 
 
+def _orca_response_headers(
+    *,
+    resolved_model: str,
+    requested_model: str,
+    strategy: str,
+    cache_status: str | None = None,
+    fallback: bool = False,
+) -> dict[str, str]:
+    """Shared x-orca-* headers. `x-orca-fallback: true` is set only when
+    hosted served a model that also has a local BYOK deployment — the
+    silent 429-cooldown bypass from issue #140.
+    """
+    headers = {
+        "x-orca-resolved-model": resolved_model,
+        "x-orca-requested-model": requested_model,
+        "x-orca-routing-strategy": strategy,
+    }
+    if cache_status is not None:
+        headers["x-orca-cache"] = cache_status
+    if fallback:
+        headers[FALLBACK_HEADER] = "true"
+    return headers
+
+
+def _meta_hosted_fallback(response: dict | None) -> bool:
+    if not isinstance(response, dict):
+        return False
+    return bool((response.get("_orca_meta") or {}).get("fallback"))
+
+
+def _stream_hosted_fallback(stream_obj: object, client: object, requested_model: str) -> bool:
+    """Best-effort: LiteLLM stream wrappers sometimes expose `_hidden_params`
+    before the first chunk. Headers flush at StreamingResponse construction,
+    so this is the last chance to tell the client about a hosted bypass.
+    """
+    deployments = getattr(client, "_deployments", []) or []
+    served = match_served_deployment(
+        deployments,
+        hidden=hidden_params_of(stream_obj),
+        served_model=requested_model,
+    )
+    return hosted_bypass_of_local(
+        deployments, served, requested_model=requested_model,
+    )
+
+
 async def _build_log_row(
     *,
     body: ChatCompletionRequest,
@@ -167,6 +219,7 @@ async def _build_log_row(
         model_resolved=resolved,
         provider=meta.get("provider", "unknown"),
         routing_strategy=strategy,
+        fallback_level=1 if meta.get("fallback") else 0,
         input_tokens=input_t,
         output_tokens=output_t,
         cost_microcents=_compute_cost_microcents(
@@ -504,12 +557,12 @@ async def execute_chat(
             logger.warning("request_log_commit_failed", error=str(commit_err))
         return JSONResponse(
             content=cache_hit_response,
-            headers={
-                "x-orca-cache": "HIT",
-                "x-orca-resolved-model": cached_model,
-                "x-orca-requested-model": requested_model,
-                "x-orca-routing-strategy": strategy,
-            },
+            headers=_orca_response_headers(
+                resolved_model=cached_model,
+                requested_model=requested_model,
+                strategy=strategy,
+                cache_status="HIT",
+            ),
         )
 
     # ── Streaming path ─────────────────────────────────────────────────
@@ -593,6 +646,7 @@ async def execute_chat(
             """Drain the chunk stream → emit SSE → write RequestLog when done."""
             agg_usage: dict = {}
             agg_provider = "unknown"
+            agg_fallback = False
             agg_latency = 0
             # The first chunk's `model` field tells us what LiteLLM actually
             # served (could be a cascaded fallback, not the resolved primary).
@@ -610,7 +664,7 @@ async def execute_chat(
                 `log_written` guard makes the second call a no-op when the
                 cancel path already ran.
                 """
-                nonlocal log_written, agg_provider
+                nonlocal log_written, agg_provider, agg_fallback
                 if log_written:
                     return
                 # Real LiteLLM stream chunks don't carry _orca_meta (the
@@ -620,18 +674,37 @@ async def execute_chat(
                 # deployments — same lookup the non-stream adapter does.
                 if agg_provider == "unknown" and agg_model:
                     deployments = getattr(client, "_deployments", []) or []
-                    bare_served = (
-                        agg_model.split("/", 1)[-1] if "/" in agg_model else agg_model
+                    served = match_served_deployment(
+                        deployments,
+                        hidden=hidden_params_of(stream_obj),
+                        served_model=agg_model,
                     )
-                    for d in deployments:
-                        if agg_model in (d.litellm_model, d.model_name) or bare_served == d.model_name:
-                            agg_provider = d.provider
-                            break
+                    if served is not None:
+                        agg_provider = served.provider
+                        if not agg_fallback:
+                            agg_fallback = hosted_bypass_of_local(
+                                deployments, served, requested_model=resolved_model,
+                            )
+                    else:
+                        # Unambiguous name match only — when local + hosted
+                        # share a model_name, guessing the first hit would
+                        # hide the hosted bypass this header exists to
+                        # surface. Fall back to the historical first-match
+                        # so existing stream logs stay attributed.
+                        bare_served = (
+                            agg_model.split("/", 1)[-1] if "/" in agg_model else agg_model
+                        )
+                        for d in deployments:
+                            if agg_model in (d.litellm_model, d.model_name) or bare_served == d.model_name:
+                                agg_provider = d.provider
+                                break
                 synthetic = {
                     "model": agg_model or resolved_model,
                     "usage": agg_usage,
                     "_orca_meta": {"provider": agg_provider},
                 }
+                if agg_fallback:
+                    synthetic["_orca_meta"]["fallback"] = True
                 if agg_latency:
                     # Real LiteLLM chunks carry no _orca_meta, so this is
                     # normally absent — leaving the key out lets
@@ -787,6 +860,8 @@ async def execute_chat(
                         meta = d.pop("_orca_meta") or {}
                         agg_provider = meta.get("provider", agg_provider)
                         agg_latency = meta.get("latency_ms", agg_latency)
+                        if meta.get("fallback"):
+                            agg_fallback = True
                     if "usage" in d and d["usage"]:
                         agg_usage = d["usage"]
                     if d.get("model"):
@@ -916,9 +991,14 @@ async def execute_chat(
                 # promise the resolved primary here. The actual served model
                 # ends up in each chunk's `model` field — clients reading the
                 # stream get authoritative info from there.
-                "x-orca-resolved-model": resolved_model,
-                "x-orca-requested-model": requested_model,
-                "x-orca-routing-strategy": strategy,
+                **_orca_response_headers(
+                    resolved_model=resolved_model,
+                    requested_model=requested_model,
+                    strategy=strategy,
+                    fallback=_stream_hosted_fallback(
+                        stream_obj, client, resolved_model,
+                    ),
+                ),
             },
         )
 
@@ -975,6 +1055,7 @@ async def execute_chat(
         except Exception as commit_err:
             logger.warning("request_log_commit_failed", error=str(commit_err))
 
+    hosted_fallback = _meta_hosted_fallback(response)
     if isinstance(response, dict) and "_orca_meta" in response:
         response = {k: v for k, v in response.items() if k != "_orca_meta"}
 
@@ -1002,15 +1083,16 @@ async def execute_chat(
 
     return JSONResponse(
         content=response,
-        headers={
-            "x-orca-cache": cache_status,
+        headers=_orca_response_headers(
             # actual_resolved reflects post-cascade truth (might differ from
             # the primary if Router fell back). Falls back to resolved_model
             # if the response shape is unexpected.
-            "x-orca-resolved-model": actual_resolved or resolved_model,
-            "x-orca-requested-model": requested_model,
-            "x-orca-routing-strategy": strategy,
-        },
+            resolved_model=actual_resolved or resolved_model,
+            requested_model=requested_model,
+            strategy=strategy,
+            cache_status=cache_status,
+            fallback=hosted_fallback,
+        ),
     )
 
 

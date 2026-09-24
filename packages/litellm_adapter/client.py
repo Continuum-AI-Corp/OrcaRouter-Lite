@@ -12,6 +12,10 @@ import time
 
 import structlog
 
+from packages.litellm_adapter.hosted_fallback import (
+    hidden_params_of,
+    resolve_provider_and_fallback,
+)
 from packages.litellm_adapter.types import ProviderDeployment, UpstreamProviderError
 
 logger = structlog.get_logger(__name__)
@@ -219,26 +223,37 @@ class OrcaLiteLLMClient:
         #     ("openai", "anthropic", "gemini", ...). Beats our own
         #     deployment-loop matching, which can mis-attribute when LiteLLM
         #     rewrites the model name to a dated alias mid-cascade.
-        hidden = getattr(resp, "_hidden_params", {}) or {}
+        #   - model_id / api_base: which deployment won. Hosted pins
+        #     model_info.id to `hosted::{wire_id}` and always sets api_base;
+        #     without those, hosted traffic is attributed as "openai"
+        #     (custom_llm_provider on the hosted entry) and a 429-cooled
+        #     BYOK key is silently bypassed.
+        hidden = hidden_params_of(resp)
         litellm_cost_usd = hidden.get("response_cost")
         litellm_provider = hidden.get("custom_llm_provider")
 
         # Convert litellm's ModelResponse to a plain dict + attach orca metadata.
         out = resp.model_dump() if hasattr(resp, "model_dump") else dict(resp)
 
-        # Provider attribution: LiteLLM's own field wins. Fall back to a
-        # deployment-loop lookup only when LiteLLM didn't supply one (very
-        # old LiteLLM versions; defensive).
-        provider = litellm_provider or "unknown"
-        if not litellm_provider:
-            for d in self._deployments:
-                if d.litellm_model == out.get("model") or d.model_name == out.get("model"):
-                    provider = d.provider
-                    break
+        provider, hosted_fallback = resolve_provider_and_fallback(
+            self._deployments,
+            hidden=hidden,
+            served_model=out.get("model"),
+            requested_model=kwargs.get("model"),
+            litellm_provider=litellm_provider,
+        )
 
         out["_orca_meta"] = {
             "provider": provider,
             "latency_ms": latency_ms,
             "cost_usd": litellm_cost_usd,
         }
+        if hosted_fallback:
+            out["_orca_meta"]["fallback"] = True
+            logger.info(
+                "hosted_fallback_used",
+                model=out.get("model"),
+                requested=kwargs.get("model"),
+                provider=provider,
+            )
         return out
