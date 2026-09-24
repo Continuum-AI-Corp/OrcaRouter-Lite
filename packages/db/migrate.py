@@ -20,7 +20,9 @@ async def ensure_budget_columns(engine) -> None:
     """Add `spent_microcents` to `api_keys` if absent, seeded from request history.
 
     Also widens `budget_limit_cents` to BIGINT on Postgres (the microcent scale
-    can exceed int4). Both are no-ops on a fresh database.
+    can exceed int4) and creates the `ix_requests_log_api_key_spend` index that
+    create_all only builds on fresh databases. All steps are no-ops on a fresh
+    database.
     """
     async with engine.begin() as conn:
         cols = {
@@ -51,4 +53,22 @@ async def ensure_budget_columns(engine) -> None:
         if is_postgres and "budget_limit_cents" in cols:
             await conn.execute(
                 text("ALTER TABLE api_keys ALTER COLUMN budget_limit_cents TYPE BIGINT")
+            )
+
+        # The model declares ix_requests_log_api_key_spend (api_key_id,
+        # is_deleted); create_all only builds it on fresh databases, so an
+        # upgraded deployment would drift. is_deleted has existed since the
+        # first release (SoftDeleteMixin), so the index is always creatable.
+        idx = {
+            i["name"]
+            for i in await conn.run_sync(
+                lambda sync: inspect(sync).get_indexes("requests_log")
+            )
+        }
+        if "ix_requests_log_api_key_spend" not in idx:
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_requests_log_api_key_spend "
+                    "ON requests_log (api_key_id, is_deleted)"
+                )
             )

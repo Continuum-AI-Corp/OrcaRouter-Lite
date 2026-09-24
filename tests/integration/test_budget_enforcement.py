@@ -409,6 +409,32 @@ async def test_budgeted_blocking_without_usage_charges_remaining(budget_env):
     assert await _get_spent(factory, key_id) == 100_000  # 10 cents, fail-closed
 
 
+async def test_budgeted_blocking_httpexception_charges_recorded_cost(budget_env):
+    # A budgeted blocking request whose upstream call raised HTTPException never
+    # received a completion (response == {}, status_code never left 200). The
+    # fail-closed remaining-charge rule applies only to *delivered* usage-less
+    # completions — charging the cap here would repeat the mid-stream-error bug
+    # class on the blocking path. The key must be charged its recorded ~0 cost.
+    from fastapi import HTTPException
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    fake.acompletion = AsyncMock(
+        side_effect=HTTPException(status_code=429, detail="upstream rate limit")
+    )
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 429, r.text
+    assert await _get_spent(factory, key_id) == 0
+
+
 async def test_budgeted_blocking_with_usage_charges_actual(budget_env):
     # Control for the test above: a blocking response WITH usage must charge only
     # the recorded cost (never the remaining allowance) — no over-charging.

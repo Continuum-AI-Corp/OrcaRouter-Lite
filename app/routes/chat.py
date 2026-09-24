@@ -1148,11 +1148,17 @@ async def execute_chat(
         # budgeted key whose successful response carries no usage (provider
         # ignored the forced include_usage) has an unknown cost — charge the
         # full remaining allowance so a delivered completion can never cost
-        # nothing. Error responses keep charging the recorded (≈0) cost.
+        # nothing. Gated on having actually received a completion dict: a
+        # request that failed before the upstream answered (response == {},
+        # e.g. the re-raised HTTPException above, whose status_code never
+        # left 200) charges its recorded ~0 cost instead — mirroring the
+        # cache-hit and pre-stream-failure paths.
         if (
             getattr(kc, "_budget_cap", None) is not None
             and status_code < 400
-            and not (isinstance(response, dict) and response.get("usage"))
+            and isinstance(response, dict)
+            and response
+            and not response.get("usage")
         ):
             settle_amount = max(
                 log.cost_microcents or 0,
