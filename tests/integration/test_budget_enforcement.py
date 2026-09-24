@@ -379,6 +379,59 @@ def _ok_stream():
     return _gen()
 
 
+async def test_budgeted_stream_error_after_unmeasured_content_charges_estimate(budget_env):
+    """Partial content the provider never measured must still cost something.
+
+    The upstream dies mid-generation after a long delivery and no usage frame
+    ever arrives, so nothing measures it. Charging zero — what the recorded cost
+    says — would let a capped key stream unbounded tokens free of charge behind
+    a flaky provider; charging the whole remaining allowance would exhaust the
+    key for a failure it cannot steer. Settlement is therefore priced from the
+    delivered characters, and the same number lands on the row and on the key.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    delivered = "the quick brown fox " * 2_000  # ~40k chars ≈ 10k tokens
+
+    def _failing_stream():
+        async def _gen():
+            yield {"choices": [{"delta": {"content": delivered}, "finish_reason": None}]}
+            raise RuntimeError("upstream exploded mid-generation")
+        return _gen()
+
+    fake.acompletion = AsyncMock(return_value=_failing_stream())
+
+    async with await make_client(key) as c:
+        async with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "say it again " * 400}],
+            },
+        ) as r:
+            text = "\n".join([line async for line in r.aiter_lines()])
+
+    assert "[DONE]" in text
+
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        row = (
+            await s.execute(
+                select(RequestLog).where(RequestLog.api_key_id == key_id)
+            )
+        ).scalars().one()
+    assert row.output_tokens > 0  # the delivery is recorded, not erased
+    spent = await _get_spent(factory, key_id)
+    assert spent == row.cost_microcents  # charged == accounted
+    assert 0 < spent < 1_000_000  # not free, and not the 100-cent cap
+
+
 async def test_budgeted_blocking_without_usage_charges_remaining(budget_env):
     # A budgeted key whose provider ignores the forced include_usage and returns
     # a usage-less completion has an unknown cost. Mirroring the streaming rule,

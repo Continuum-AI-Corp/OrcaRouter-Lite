@@ -59,6 +59,42 @@ FALLBACK_HEADER = "x-orca-fallback"
 # retries hold the (already [DONE]) stream open. Tests shrink this.
 _LOG_COMMIT_BACKOFF_S: tuple[float, ...] = (0.1, 0.4)
 
+# Crude character→token divisor used only to price a delivery the provider
+# never measured (see `_settle_unmeasured_stream`).
+_CHARS_PER_TOKEN = 4
+
+
+def _text_chars(content) -> int:
+    """Character count of a message's text, across str and content-part lists."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(
+            len(part["text"])
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return 0
+
+
+def _settle_unmeasured_stream(agg_usage: dict, agg_output_chars: int, body) -> dict:
+    """Token counts for a stream that delivered content but reported no usage.
+
+    Reached only when the provider failed mid-generation after content had
+    already been forwarded: the prompt was billed upstream and the delivered
+    text is real, so settling that stream at zero would let a flaky provider
+    be streamed for free against a capped key. Character counts divided by 4
+    under-count code and CJK on purpose — an estimate must not over-bill for a
+    failure the caller cannot steer.
+    """
+    if agg_usage or not agg_output_chars:
+        return agg_usage
+    prompt_chars = sum(_text_chars(m.content) for m in body.messages)
+    return {
+        "prompt_tokens": max(1, prompt_chars // _CHARS_PER_TOKEN),
+        "completion_tokens": max(1, agg_output_chars // _CHARS_PER_TOKEN),
+    }
+
 
 def _chunk_to_dict(chunk) -> dict:
     """Normalize a litellm chunk (Pydantic model or dict) into a plain dict.
@@ -682,6 +718,10 @@ async def execute_chat(
             agg_provider = "unknown"
             agg_fallback = False
             agg_latency = 0
+            # Characters of assistant text handed to the client — the only
+            # measure of what a stream delivered when the provider never
+            # reported usage (see `_settle_unmeasured_stream`).
+            agg_output_chars = 0
             # The first chunk's `model` field tells us what LiteLLM actually
             # served (could be a cascaded fallback, not the resolved primary).
             agg_model: str | None = None
@@ -932,6 +972,10 @@ async def execute_chat(
                         usage_seen = True
                     if d.get("model"):
                         agg_model = d["model"]
+                    for choice in d.get("choices") or []:
+                        if isinstance(choice, dict):
+                            delta = choice.get("delta") or {}
+                            agg_output_chars += _text_chars(delta.get("content"))
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
                 yield "data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
@@ -1035,17 +1079,18 @@ async def execute_chat(
                 # an upstream error.
                 yield "data: [DONE]\n\n"
                 # Mark the settlement known: the error response was delivered
-                # in full (terminal [DONE] sent) and its ~0 cost is recorded on
-                # the log row, so charge the actual cost only — not the full
-                # remaining allowance. Otherwise every transient mid-stream
-                # provider failure (rate limit, 5xx, network drop) would
-                # charge (and exhaust) the key's entire remaining budget even
-                # though the delivered response cost ~0. The remaining-charge
-                # rule guards against a client suppressing the usage frame —
-                # not a factor in a server-side error the client cannot steer.
-                # Client disconnects never reach this branch (GeneratorExit is
-                # not an Exception); they unwind with usage_seen unchanged, so
-                # a hang-up before the usage frame still fails closed.
+                # in full (terminal [DONE] sent), so charge the recorded cost
+                # rather than the full remaining allowance. Otherwise every
+                # transient mid-stream provider failure (rate limit, 5xx,
+                # network drop) would charge (and exhaust) the key's entire
+                # remaining budget. What the provider never measured is priced
+                # from what actually reached the client, so an unmeasured
+                # partial stream still costs something proportional to the
+                # delivery instead of nothing — a capped key cannot stream for
+                # free behind a flaky provider. Client disconnects never reach
+                # this branch (GeneratorExit is not an Exception); they unwind
+                # with usage_seen unchanged and keep failing closed.
+                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
                 usage_seen = True
             finally:
                 # Same shielding reason as the cancel branch: ensure the
