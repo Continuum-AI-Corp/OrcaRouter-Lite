@@ -1039,8 +1039,16 @@ async def execute_chat(
                 # so settle against the actual cost only — not the full remaining
                 # allowance. Without this, every mid-stream provider failure would
                 # charge (and exhaust) the key's entire remaining budget even
-                # though the delivered response cost ~0.
+                # though the delivered response cost ~0. usage_seen is also set:
+                # the settlement here is *known* (the log row records the ~0 cost
+                # of the failed request), so the completed-stream-without-usage
+                # fail-closed rule does not apply — that rule guards against a
+                # client suppressing the usage frame, which is not a factor in a
+                # server-side provider error the client cannot steer. Client
+                # disconnects still take the GeneratorExit path above and keep
+                # charging the full remaining allowance.
                 stream_completed = True
+                usage_seen = True
             finally:
                 # Same shielding reason as the cancel branch: ensure the
                 # log write actually completes before we unwind, even if
@@ -1135,6 +1143,22 @@ async def execute_chat(
         # double-charging.
         from sqlalchemy import select
 
+        settle_amount = log.cost_microcents
+        # Fail-closed mirror of the streaming path's cost-unknown rule: a
+        # budgeted key whose successful response carries no usage (provider
+        # ignored the forced include_usage) has an unknown cost — charge the
+        # full remaining allowance so a delivered completion can never cost
+        # nothing. Error responses keep charging the recorded (≈0) cost.
+        if (
+            getattr(kc, "_budget_cap", None) is not None
+            and status_code < 400
+            and not (isinstance(response, dict) and response.get("usage"))
+        ):
+            settle_amount = max(
+                log.cost_microcents or 0,
+                kc._budget_cap - (getattr(kc, "_budget_spent", 0) or 0),
+            )
+
         max_attempts = len(_LOG_COMMIT_BACKOFF_S) + 1
         for attempt in range(1, max_attempts + 1):
             try:
@@ -1145,7 +1169,7 @@ async def execute_chat(
                 ) is not None:
                     break  # already durable (log + charge committed)
                 db.add(log)
-                await _settle_budget(db, log.cost_microcents, commit=False)
+                await _settle_budget(db, settle_amount, commit=False)
                 await db.commit()
                 break
             except Exception as commit_err:

@@ -303,3 +303,137 @@ async def test_budgeted_blocking_forces_include_usage(budget_env):
 
     assert r.status_code == 200, r.text
     assert fake.acompletion.call_args.kwargs["stream_options"]["include_usage"] is True
+
+
+async def _get_spent(factory, key_id: str) -> int:
+    from sqlalchemy import select
+
+    from packages.db.models.api_key import ApiKey
+
+    async with factory() as s:
+        return (
+            await s.execute(select(ApiKey.spent_microcents).where(ApiKey.id == key_id))
+        ).scalar_one()
+
+
+async def test_budgeted_stream_midstream_error_charges_actual_only(budget_env):
+    # A mid-stream provider error is delivered as a complete error response
+    # (SSE error frame + terminal [DONE]); the log row records its ~0 cost, so
+    # settlement is KNOWN and must charge the actual cost only. Before the fix,
+    # usage_seen stayed False in that branch and every transient provider
+    # failure permanently exhausted the key (charged cap - spent).
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    def _failing_stream():
+        async def _gen():
+            yield {"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]}
+            raise RuntimeError("upstream exploded")
+        return _gen()
+
+    fake.acompletion = AsyncMock(return_value=_failing_stream())
+
+    async with await make_client(key) as c:
+        async with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        ) as r:
+            text = "\n".join([line async for line in r.aiter_lines()])
+
+    # The error response was delivered in full.
+    assert "Upstream provider error" in text
+    assert "[DONE]" in text
+    # Only the recorded (~0) cost is charged — not the 100_000-microcent cap.
+    assert await _get_spent(factory, key_id) == 0
+
+    # The key is NOT exhausted: a follow-up streaming request is still served.
+    fake.acompletion = AsyncMock(return_value=_ok_stream())
+    async with await make_client(key) as c:
+        async with c.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi again"}],
+            },
+        ) as r2:
+            assert r2.status_code == 200
+            async for _ in r2.aiter_lines():
+                pass
+
+
+def _ok_stream():
+    async def _gen():
+        yield {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}
+        yield {
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+        }
+    return _gen()
+
+
+async def test_budgeted_blocking_without_usage_charges_remaining(budget_env):
+    # A budgeted key whose provider ignores the forced include_usage and returns
+    # a usage-less completion has an unknown cost. Mirroring the streaming rule,
+    # the blocking path must fail closed and charge the full remaining allowance
+    # — otherwise the delivered completion costs nothing and the cap is bypassed.
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-no-usage",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello!"},
+            "finish_reason": "stop",
+        }],
+    })
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text
+    assert await _get_spent(factory, key_id) == 100_000  # 10 cents, fail-closed
+
+
+async def test_budgeted_blocking_with_usage_charges_actual(budget_env):
+    # Control for the test above: a blocking response WITH usage must charge only
+    # the recorded cost (never the remaining allowance) — no over-charging.
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text  # fixture response carries usage
+
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        row_cost = (
+            await s.execute(
+                select(RequestLog.cost_microcents).where(
+                    RequestLog.api_key_id == key_id
+                )
+            )
+        ).scalar_one()
+    assert await _get_spent(factory, key_id) == row_cost
