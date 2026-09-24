@@ -69,7 +69,11 @@ def cache_key(
         "response_format": response_format or None,
         "seed": seed,
         "max_tokens": max_tokens,
-        "stop": stop,
+        # Normalize stop to a list: "stop": "foo" and "stop": ["foo"]
+        # produce the same upstream behavior, so they must share a cache
+        # entry. Without this, a string-vs-list difference fragments the
+        # cache for semantically identical requests.
+        "stop": [stop] if isinstance(stop, str) else stop,
         "tool_choice": tool_choice,
         "top_p": top_p,
         "n": n,
