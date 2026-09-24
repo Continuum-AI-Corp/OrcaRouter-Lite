@@ -1033,6 +1033,14 @@ async def execute_chat(
                 logger.warning(
                     "chat_completion_stream_adapter_error", served_model=agg_model,
                 )
+                # Settle it like the provider-error branch below: an adapter
+                # fault is our bug, not a choice the caller made, so leaving
+                # the settlement unknown would charge a budgeted key its entire
+                # remaining lifetime budget for a failure it cannot steer. The
+                # delivery is priced from what reached the client; nothing
+                # delivered settles at the 0 the row already records.
+                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
+                usage_seen = True
                 aclose = getattr(stream_obj, "aclose", None)
                 with anyio.CancelScope(shield=True):
                     if aclose is not None:
