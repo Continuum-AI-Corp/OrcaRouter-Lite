@@ -214,6 +214,42 @@ async def test_chat_completion_validation_error_for_empty_messages(chat_client):
     assert r.json()["error"]["type"] == "validation_error"
 
 
+async def test_chat_completion_blocking_httpexception_logs_real_status(chat_client):
+    """The blocking path's `except HTTPException` arm records the raised status
+    instead of leaving the handler-local 200, so the finally cannot write a
+    success-shaped row for a failed request.
+
+    The exception is injected directly: the adapter translates every upstream
+    failure into UpstreamProviderError, so this shape is not reachable from real
+    traffic today. The test pins the handler's arm logic, not a live bug.
+    """
+    from fastapi import HTTPException
+
+    client, fake = chat_client
+    fake.acompletion = AsyncMock(
+        side_effect=HTTPException(status_code=429, detail="local key rate limited")
+    )
+
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 429
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        log = (await s.execute(select(RequestLog))).scalars().one()
+    assert log.status_code == 429
+    assert log.cost_microcents == 0
+
+
 async def test_chat_completion_logs_active_strategy(chat_client):
     """RequestLog.routing_strategy reflects the configured strategy, not a
     hardcoded value, and the same strategy is echoed in the response header."""

@@ -1017,7 +1017,16 @@ async def execute_chat(
         # be the resolved primary, or a cascaded fallback if the primary 404'd.
         if isinstance(response, dict):
             actual_resolved = response.get("model") or resolved_model
-    except HTTPException:
+    except HTTPException as exc:
+        # Defensive only: record the outcome so this arm can't leave the
+        # handler-local status_code at its initial 200, which would make the
+        # finally write a success-shaped row (cost ~0, no error_type) for a
+        # failed request. Unreachable today: the adapter blanket-translates
+        # every exception into UpstreamProviderError (packages/litellm_adapter/
+        # client.py, acompletion), so nothing in this try raises HTTPException.
+        # Kept because the sibling arms already record their status and this one
+        # would silently mis-log the first time that stops holding.
+        status_code = exc.status_code
         raise
     except UpstreamProviderError as exc:
         status_code = exc.http_status
