@@ -112,6 +112,61 @@ async def test_high_temperature_skips_cache(cached_client):
     assert calls["n"] == 2
 
 
+async def test_omitted_temperature_skips_cache(cached_client):
+    """Omitted temperature is the provider default (1.0), not deterministic."""
+    client, calls = cached_client
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}
+
+    r1 = await client.post("/v1/chat/completions", json=body)
+    r2 = await client.post("/v1/chat/completions", json=body)
+    assert r1.headers["x-orca-cache"] == "BYPASS"
+    assert r2.headers["x-orca-cache"] == "BYPASS"
+    assert calls["n"] == 2
+
+
+async def test_narrowed_top_p_skips_cache_without_seed(cached_client):
+    """top_p < 1 is non-deterministic even at temperature 0."""
+    client, calls = cached_client
+    body = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0,
+        "top_p": 0.5,
+    }
+
+    r1 = await client.post("/v1/chat/completions", json=body)
+    r2 = await client.post("/v1/chat/completions", json=body)
+    assert r1.headers["x-orca-cache"] == "BYPASS"
+    assert r2.headers["x-orca-cache"] == "BYPASS"
+    assert calls["n"] == 2
+
+
+async def test_different_max_tokens_do_not_share_cache(cached_client):
+    """Requests that differ only in max_tokens must not collide."""
+    client, calls = cached_client
+    msgs = [{"role": "user", "content": "hi"}]
+    r1 = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": msgs, "temperature": 0, "max_tokens": 16},
+    )
+    r2 = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": msgs, "temperature": 0, "max_tokens": 4000},
+    )
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.headers["x-orca-cache"] == "MISS"
+    assert r2.headers["x-orca-cache"] == "MISS"
+    assert calls["n"] == 2
+    # A repeat of the first request still hits its own entry.
+    r3 = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": msgs, "temperature": 0, "max_tokens": 16},
+    )
+    assert r3.headers["x-orca-cache"] == "HIT"
+    assert calls["n"] == 2
+
+
 async def test_streaming_is_not_cached(cached_client):
     """Streaming responses are skipped — caching SSE chunks isn't worth it for v1."""
     client, calls = cached_client
