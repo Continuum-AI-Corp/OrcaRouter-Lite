@@ -29,6 +29,12 @@ class ChatCompletionRequest(BaseModel):
     response_format: dict | None = None
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    # Pass-through for OpenAI's `parallel_tool_calls`. Without this field
+    # declared, Pydantic silently drops it and `false` never reaches the
+    # upstream — the model keeps returning multiple tool calls in one turn.
+    # `False` is falsy but not None, so `model_dump(exclude_none=True)`
+    # still forwards it through `completion_kwargs` to LiteLLM.
+    parallel_tool_calls: bool | None = None
     # Pass-through for OpenAI's `stream_options` block (e.g.
     # `{"include_usage": true}`). Without this field declared, Pydantic
     # silently drops it from the request and our own auto-inject in

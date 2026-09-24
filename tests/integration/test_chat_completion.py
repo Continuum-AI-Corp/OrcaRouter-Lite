@@ -117,6 +117,64 @@ async def test_chat_completion_invokes_router_with_normalized_request(chat_clien
     assert call.kwargs["messages"][0]["content"] == "hi"
 
 
+async def test_chat_completion_forwards_parallel_tool_calls_false(chat_client):
+    """Regression for #124: `parallel_tool_calls=false` must survive the
+    schema and `model_dump(exclude_none=True)` into the LiteLLM call.
+
+    The field is falsy, so a missing schema declaration (or an accidental
+    truthy filter) silently drops it and the upstream still returns
+    parallel tool calls. False is not None, so exclude_none must keep it.
+    """
+    client, fake = chat_client
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    ]
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "weather in Tokyo and the time?"}],
+            "tools": tools,
+            "parallel_tool_calls": False,
+        },
+    )
+    assert r.status_code == 200, r.text
+    fake.acompletion.assert_awaited_once()
+    call_kwargs = fake.acompletion.await_args.kwargs
+    assert "parallel_tool_calls" in call_kwargs, (
+        "parallel_tool_calls=False was stripped before the LiteLLM call"
+    )
+    assert call_kwargs["parallel_tool_calls"] is False
+    assert call_kwargs["tools"] == tools
+
+
+async def test_chat_completion_omits_parallel_tool_calls_when_unset(chat_client):
+    """Absent `parallel_tool_calls` must not be injected as None/False."""
+    client, fake = chat_client
+    await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    call_kwargs = fake.acompletion.await_args.kwargs
+    assert "parallel_tool_calls" not in call_kwargs
+
+
 async def test_chat_completion_writes_request_log(chat_client):
     client, _fake = chat_client
     await client.post(
