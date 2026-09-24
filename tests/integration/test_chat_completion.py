@@ -214,6 +214,37 @@ async def test_chat_completion_validation_error_for_empty_messages(chat_client):
     assert r.json()["error"]["type"] == "validation_error"
 
 
+async def test_chat_completion_blocking_httpexception_logs_real_status(chat_client):
+    """A blocking request whose upstream call raises HTTPException (e.g. the
+    hosted-fallback signal's 429) must log the real status, not the handler's
+    initial 200 — a success-shaped row poisons every status-filtered query."""
+    from fastapi import HTTPException
+
+    client, fake = chat_client
+    fake.acompletion = AsyncMock(
+        side_effect=HTTPException(status_code=429, detail="local key rate limited")
+    )
+
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 429
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        log = (await s.execute(select(RequestLog))).scalars().one()
+    assert log.status_code == 429
+    assert log.cost_microcents == 0
+
+
 async def test_chat_completion_logs_active_strategy(chat_client):
     """RequestLog.routing_strategy reflects the configured strategy, not a
     hardcoded value, and the same strategy is echoed in the response header."""

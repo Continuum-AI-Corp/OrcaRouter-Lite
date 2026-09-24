@@ -1017,7 +1017,14 @@ async def execute_chat(
         # be the resolved primary, or a cascaded fallback if the primary 404'd.
         if isinstance(response, dict):
             actual_resolved = response.get("model") or resolved_model
-    except HTTPException:
+    except HTTPException as exc:
+        # Record the real outcome before re-raising. Without this the handler
+        # keeps its initial status_code = 200 and the finally writes a
+        # request-log row that logs the failed request as a success (cost ~0,
+        # no error_type), poisoning every status-filtered analytics/spend
+        # query. Raised from inside the try today by the hosted-fallback
+        # signal (HTTPException(429)); the sibling arms already record theirs.
+        status_code = exc.status_code
         raise
     except UpstreamProviderError as exc:
         status_code = exc.http_status
