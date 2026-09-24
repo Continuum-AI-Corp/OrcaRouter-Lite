@@ -851,6 +851,7 @@ async def execute_chat(
                             pass
                         raise
 
+            last_d: dict = {}
             try:
                 async for chunk in _aiter(stream_obj):
                     d = _chunk_to_dict(chunk)
@@ -866,7 +867,34 @@ async def execute_chat(
                         agg_usage = d["usage"]
                     if d.get("model"):
                         agg_model = d["model"]
+                    last_d = d
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
+                # OpenAI's wire order is finish_reason → dedicated usage
+                # chunk (empty choices) → [DONE]. LiteLLM (and some
+                # provider compat layers) attach usage to the finish_reason
+                # frame instead, so clients that keep reading after
+                # finish_reason hit [DONE] and never see token counts.
+                # Synthesize the trailing usage frame when the stream did
+                # not already end with one (issue #127).
+                last_was_usage_only = bool(
+                    last_d.get("usage") and not (last_d.get("choices") or [])
+                )
+                if agg_usage and not last_was_usage_only:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "id": last_d.get("id", ""),
+                                "object": last_d.get("object", "chat.completion.chunk"),
+                                "created": last_d.get("created", int(time.time())),
+                                "model": agg_model or resolved_model,
+                                "choices": [],
+                                "usage": agg_usage,
+                            },
+                            separators=(',', ':'),
+                        )
+                        + "\n\n"
+                    )
                 yield "data: [DONE]\n\n"
             except (asyncio.CancelledError, GeneratorExit):
                 # Client closed the connection (Ctrl+C, tab closed, browser
