@@ -37,6 +37,7 @@ from packages.auth.spend import (
     is_exhausted,
     read_spent,
     record_unsettled_spend,
+    take_unsettled_spend,
 )
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
@@ -106,17 +107,13 @@ def _give_up_settlement(kc: KeyContext, amount: int, attempts: int, error: BaseE
     """Last resort for a settlement that is not durable and will not be retried.
 
     The log row dies with the charge (one transaction), so nothing anywhere
-    remembers this cost. Park it against the key's cap — the pre-check keeps
-    counting it and the next settlement that commits absorbs it (spend.py) —
-    rather than leaving the cap open for whoever reads the warning.
+    remembers this cost. Park it — along with any spend this settlement had
+    claimed from a previous give-up — against the key's cap, rather than leaving
+    the cap open for whoever reads the warning (see `packages.auth.spend`).
     """
     logger.warning("request_log_commit_failed", error=str(error), attempts=attempts)
     if getattr(kc, "_budget_cap", None) is not None:
-        record_unsettled_spend(
-            str(kc.key_id),
-            recorded_microcents=getattr(kc, "_budget_spent", 0) or 0,
-            microcents=amount,
-        )
+        record_unsettled_spend(str(kc.key_id), amount + getattr(kc, "_budget_carried", 0))
 
 
 def _chunk_to_dict(chunk) -> dict:
@@ -428,7 +425,9 @@ async def execute_chat(
             detail=f"Model '{body.model}' is not allowed for this API key",
         )
 
-    async def _settle_budget(session, actual_microcents: int, *, commit: bool = True) -> None:
+    async def _settle_budget(
+        session, actual_microcents: int, *, commit: bool = True, claim: bool = False
+    ) -> None:
         """Record `actual_microcents` of spend against the cap, if any.
 
         No-op when the key has no budget cap. When `commit` is False the UPDATE is
@@ -437,10 +436,18 @@ async def execute_chat(
         atomic unit. Idempotency across retries comes from the row's trace_id
         (a persisted trace_id proves the charge also landed), not from a
         process-local flag.
+
+        `claim` is for the settlement loops, which are the only exits with a
+        give-up path: they take ownership of spend an earlier give-up parked (one
+        synchronous pop, so no other in-flight settlement can bill it too) and
+        carry it into every attempt until it is either durable or parked back.
         """
         cap = getattr(kc, "_budget_cap", None)
         if cap is None:
             return
+        if claim:
+            kc._budget_carried += take_unsettled_spend(str(kc.key_id))
+            actual_microcents += kc._budget_carried
         await charge_budget(session, str(kc.key_id), cap, actual_microcents, commit=commit)
 
     client = await router_cache.get_router(db)
@@ -574,6 +581,7 @@ async def execute_chat(
             )
         kc._budget_cap = cap
         kc._budget_spent = await read_spent(db, str(kc.key_id))
+        kc._budget_carried = 0  # parked spend this request's settlement has claimed
 
     started_perf = time.perf_counter()
     completion_kwargs = body.model_dump(exclude_none=True)
@@ -887,7 +895,9 @@ async def execute_chat(
                     the row, a persisted trace_id proves the charge also landed — so a
                     retry returns without re-charging. The charge is therefore applied
                     exactly once per request: never doubled (on a commit-ack-loss
-                    retry) and never dropped.
+                    retry) and never dropped. Any parked spend claimed for this
+                    attempt travels with every attempt, so it is billed once and
+                    only leaves with a durable commit.
                     """
                     log = RequestLog(**row_values)
                     if session_mod._session_factory is None:
@@ -898,7 +908,9 @@ async def execute_chat(
                             return
                         db.add(log)
                         try:
-                            await _settle_budget(db, _settlement_amount(), commit=False)
+                            await _settle_budget(
+                                db, _settlement_amount(), commit=False, claim=True,
+                            )
                             await db.commit()
                         except Exception:
                             try:
@@ -912,7 +924,9 @@ async def execute_chat(
                         if retry and (await _already_persisted(s)):
                             return
                         s.add(log)
-                        await _settle_budget(s, _settlement_amount(), commit=False)
+                        await _settle_budget(
+                            s, _settlement_amount(), commit=False, claim=True,
+                        )
                         await s.commit()
                     finally:
                         try:
@@ -1254,7 +1268,7 @@ async def execute_chat(
                 ) is not None:
                     break  # already durable (log + charge committed)
                 db.add(RequestLog(**log_values))
-                await _settle_budget(db, settle_amount, commit=False)
+                await _settle_budget(db, settle_amount, commit=False, claim=True)
                 await db.commit()
                 break
             except Exception as commit_err:
@@ -1275,6 +1289,13 @@ async def execute_chat(
                     # row is given up on — say so, then propagate like the arm above.
                     _give_up_settlement(kc, settle_amount, attempt, commit_err)
                     raise
+            except BaseException as cancel_err:
+                # Cancelled while the write was in flight. Unlike the streaming
+                # path there is no detached task left to land it: the transaction
+                # dies with this coroutine. Park it, or this request's cost and
+                # the parked spend it had claimed would vanish together.
+                _give_up_settlement(kc, settle_amount, attempt, cancel_err)
+                raise
 
     hosted_fallback = _meta_hosted_fallback(response)
     if isinstance(response, dict) and "_orca_meta" in response:

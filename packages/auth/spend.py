@@ -35,32 +35,38 @@ MICROCENTS_PER_CENT = 10_000
 
 # A settlement that gives up after every retry leaves a delivered cost with no
 # record anywhere: the log row and the charge are one transaction, so both
-# rolled back and the counter never moved. The amount is parked here, keyed by
-# api key -> (counter value it is pending against, microcents), and keeps
-# counting against the cap until a settlement that absorbs it becomes durable.
-# Process-local by design: the failure it covers is a write outage, which the
-# same process is still living through.
-_unsettled: dict[str, tuple[int, int]] = {}
+# rolled back and the counter never moved. The amount is parked here and keeps
+# counting against the cap until some settlement claims it.
+#
+# A claim is exclusive: `take_unsettled_spend` is a single synchronous pop, so
+# two requests that both passed the pre-check cannot bill the same microcent
+# twice. The claimer either commits it (it is now durable) or gives up and
+# records it back together with its own cost. Process-local by design: the
+# failure it covers is a write outage, which the same process is still living
+# through.
+_unsettled: dict[str, int] = {}
 
 
-def record_unsettled_spend(
-    api_key_id: str, *, recorded_microcents: int, microcents: int
-) -> None:
-    """Keep a settlement that gave up counting against the key's cap."""
+def record_unsettled_spend(api_key_id: str, microcents: int) -> None:
+    """Keep a settlement that gave up counting against the key's cap.
+
+    Accumulates: replacing would let a second failed settlement shrink the total
+    and reopen the cap for the rest of the outage.
+    """
     if microcents <= 0:
         return
     key = str(api_key_id)
-    parked = _unsettled.get(key)
-    _unsettled[key] = (
-        min(recorded_microcents, parked[0]) if parked else recorded_microcents,
-        (parked[1] if parked else 0) + microcents,
-    )
+    _unsettled[key] = _unsettled.get(key, 0) + microcents
+
+
+def take_unsettled_spend(api_key_id: str) -> int:
+    """Claim this key's parked spend for one settlement; nobody else can claim it."""
+    return _unsettled.pop(str(api_key_id), 0)
 
 
 def unsettled_spend(api_key_id: str) -> int:
-    """Spend delivered for this key but not yet made durable."""
-    parked = _unsettled.get(str(api_key_id))
-    return parked[1] if parked else 0
+    """Parked spend awaiting a claim. Read-only — claiming is `take_*`'s job."""
+    return _unsettled.get(str(api_key_id), 0)
 
 
 async def read_spent(db: AsyncSession, api_key_id: str) -> int:
@@ -74,20 +80,10 @@ async def read_spent(db: AsyncSession, api_key_id: str) -> int:
 async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -> bool:
     """Fast pre-check: has the key already reached its lifetime cap?
 
-    Includes spend whose settlement gave up, so a write outage cannot be used as
-    a window of free requests. Parked amounts are dropped once the counter has
-    moved past where they were parked: ``charge_budget`` is the only writer, so
-    it moved with them inside it.
+    Includes parked spend, so a write outage is not a window of free requests.
     """
-    key = str(api_key_id)
-    spent = await read_spent(db, key)
-    parked = _unsettled.get(key)
-    if parked is None:
-        return spent >= cap_microcents
-    if spent > parked[0]:
-        del _unsettled[key]
-        return spent >= cap_microcents
-    return spent + parked[1] >= cap_microcents
+    spent = await read_spent(db, api_key_id)
+    return spent + unsettled_spend(api_key_id) >= cap_microcents
 
 
 async def charge_budget(
@@ -111,10 +107,11 @@ async def charge_budget(
     caller can commit them in the same transaction as the request-log write
     (atomic log + charge — no window where the log lands but the charge is lost).
 
-    Anything parked by a give-up settlement is added to this charge, so that
-    undeliverable cost becomes durable together with it.
+    ``actual_microcents`` is what this settlement decided to bill, which may
+    already include spend it claimed via ``take_unsettled_spend``; this function
+    never reads the park, so the same microcent cannot be billed twice.
     """
-    actual = (actual_microcents or 0) + unsettled_spend(api_key_id)
+    actual = actual_microcents or 0
     result = await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key_id, ApiKey.spent_microcents + actual <= cap_microcents)

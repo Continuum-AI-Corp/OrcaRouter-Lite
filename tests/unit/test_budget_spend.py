@@ -9,6 +9,9 @@ from packages.auth.spend import (
     charge_budget,
     is_exhausted,
     read_spent,
+    record_unsettled_spend,
+    take_unsettled_spend,
+    unsettled_spend,
 )
 
 
@@ -88,3 +91,19 @@ async def test_concurrent_charges_never_exceed_cap(db_session, key):
 
 def test_microcent_conversion_constant():
     assert MICROCENTS_PER_CENT == 10_000
+
+
+async def test_parked_spend_is_billed_by_exactly_one_settlement(db_session, key):
+    """Two settlements in flight at once must not both absorb the same park.
+
+    Both can pass the pre-check while the counter still reads the park's
+    baseline. The first one claims the park and bills it; the second must
+    claim nothing, or the same microcents land on the lifetime counter twice.
+    """
+    cap = 10_000
+    record_unsettled_spend(key.id, 3_000)
+    for own in (1_000, 1_000):  # B settles, then C
+        claimed = take_unsettled_spend(key.id)
+        await charge_budget(db_session, key.id, cap, own + claimed)
+    assert await read_spent(db_session, key.id) == 5_000  # not 8_000
+    assert unsettled_spend(key.id) == 0

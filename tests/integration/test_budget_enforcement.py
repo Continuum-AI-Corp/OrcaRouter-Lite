@@ -782,3 +782,53 @@ async def test_budgeted_stream_write_outage_still_blocks_the_next_request(budget
         )
     assert r.status_code == 429, r.text
     assert r.json()["error"]["type"] == "rate_limit_error"
+
+
+async def test_budgeted_concurrent_outage_bills_parked_spend_once(budget_env):
+    """Two settlements in flight over one park must not both absorb it.
+
+    A parked cost is only ever a debt against the key's cap; whoever claims it
+    pays for it or puts it back. Two requests that pass the pre-check while it
+    still counts can each fold it into their own charge, and then the lifetime
+    counter records a delivery that happened once twice — over-recording spend,
+    which is the other direction the cap has to be hard in.
+    """
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+    usage = {"prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000}
+    fake.acompletion = AsyncMock(side_effect=lambda **kw: _completion("hello", usage=usage))
+
+    async def _ask(i: int) -> None:
+        async with await make_client(key) as c:
+            r = await c.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": f"hi {i}"}]},
+            )
+        assert r.status_code == 200, r.text
+
+    blackout = _WriteBlackout(factory)
+    blackout.active = True
+    try:
+        await _ask(0)  # parks its own cost: nothing can record it
+        assert await _get_spent(factory, key_id) == 0
+        # Both see the park, both fail to settle. Exactly one of them may own it.
+        await asyncio.gather(_ask(1), _ask(2))
+        assert await _get_spent(factory, key_id) == 0
+        blackout.active = False
+        await _ask(3)  # durable: pays for itself and for everything still parked
+    finally:
+        blackout.close()
+
+    async with factory() as s:
+        rows = (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == key_id))
+        ).scalars().all()
+    assert len(rows) == 1
+    cost = rows[0].cost_microcents
+    assert cost > 0
+    assert await _get_spent(factory, key_id) == 4 * cost  # four deliveries, not five
