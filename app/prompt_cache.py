@@ -40,6 +40,7 @@ def cache_key(
     n: int | None = None,
     presence_penalty: float | None = None,
     frequency_penalty: float | None = None,
+    logit_bias: dict[int, float] | None = None,
 ) -> str:
     """Deterministic SHA-256 key over every input that shapes the output.
 
@@ -81,6 +82,7 @@ def cache_key(
         # even at temperature 0 — exactly when a request is cacheable.
         "presence_penalty": presence_penalty,
         "frequency_penalty": frequency_penalty,
+        "logit_bias": logit_bias,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()

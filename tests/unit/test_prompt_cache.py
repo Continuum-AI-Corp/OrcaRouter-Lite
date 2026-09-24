@@ -80,6 +80,7 @@ def test_cache_key_differs_on_model():
     # even at temperature 0 — the only case that is cacheable at all.
     ("presence_penalty", 1.5),
     ("frequency_penalty", 1.5),
+    ("logit_bias", {15339: -100.0, 31763: -100.0}),
 ])
 def test_cache_key_differs_on_every_output_shaping_parameter(field, other):
     """Regression: the key covered only model/messages/temperature/tools/
