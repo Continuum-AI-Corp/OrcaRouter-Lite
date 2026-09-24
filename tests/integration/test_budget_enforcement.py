@@ -9,6 +9,7 @@ is covered in the keys-authz PR.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock
 
@@ -463,3 +464,124 @@ async def test_budgeted_blocking_with_usage_charges_actual(budget_env):
             )
         ).scalar_one()
     assert await _get_spent(factory, key_id) == row_cost
+
+
+async def test_budgeted_stream_disconnect_after_usage_charges_actual(budget_env):
+    """Measured spend must not be re-opened by a later hang-up.
+
+    The usage frame arrives, then the client disconnects. Cost is therefore
+    KNOWN (the row records it), so settlement charges that cost. Keying the
+    fail-closed rule on stream completion instead charged the whole remaining
+    allowance for a request whose tokens were already accounted for.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    class _CancelAfterUsage:
+        def __init__(self):
+            self._n = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self._n += 1
+            if self._n == 1:
+                return {"choices": [{"delta": {"content": "hi"},
+                                     "finish_reason": None}]}
+            if self._n == 2:
+                return {
+                    "usage": {
+                        "prompt_tokens": 100_000,
+                        "completion_tokens": 50_000,
+                        "total_tokens": 150_000,
+                    },
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                }
+            # Mirrors Starlette cancelling the response task on http.disconnect.
+            raise asyncio.CancelledError()
+
+        async def aclose(self):
+            pass
+
+    fake.acompletion = AsyncMock(return_value=_CancelAfterUsage())
+
+    async with await make_client(key) as c:
+        try:
+            async with c.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o-mini",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            ) as r:
+                async for _ in r.aiter_lines():
+                    pass
+        except Exception:
+            pass  # the injected cancel may surface to the test transport
+
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        row = (
+            await s.execute(
+                select(RequestLog).where(RequestLog.api_key_id == key_id)
+            )
+        ).scalars().one()
+    assert row.status_code == 499
+    assert row.error_type == "client_disconnect"
+    assert row.cost_microcents > 0
+    spent = await _get_spent(factory, key_id)
+    assert spent == row.cost_microcents
+    # The disconnect is not a cost-unknown bail: it must not exhaust the key.
+    assert spent < 1_000_000  # cap is 100 cents = 1_000_000 microcents
+
+
+async def test_budgeted_blocking_commit_failure_persists_row_and_charge(budget_env):
+    """A transient write failure must drop neither the row nor the charge.
+
+    The blocking path retries with a FRESH ORM object (the failed attempt's
+    INSERT was rolled back) and skips the retry when the trace_id is already
+    durable, so the atomic row+charge unit lands exactly once.
+    """
+    from sqlalchemy import event, select
+
+    from packages.db.models.request_log import RequestLog
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    # Fail the log INSERT once, at the cursor: by the time commit runs, the
+    # row is already flushed (the budget UPDATE autoflushes it), so this is the
+    # only seam that reproduces a real "database is locked" mid-write.
+    sync_engine = factory.kw["bind"].sync_engine
+    failures = {"n": 0}
+
+    def _fail_first_log_insert(conn, cursor, statement, parameters, context, executemany):
+        if "INSERT INTO requests_log" in statement and failures["n"] == 0:
+            failures["n"] += 1
+            raise RuntimeError("database is locked")
+
+    event.listen(sync_engine, "before_cursor_execute", _fail_first_log_insert)
+    try:
+        async with await make_client(key) as c:
+            r = await c.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": "hi"}]},
+            )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _fail_first_log_insert)
+
+    assert r.status_code == 200, r.text
+    assert failures["n"] == 1  # the retry is what saved the write
+    async with factory() as s:
+        rows = (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == key_id))
+        ).scalars().all()
+    assert len(rows) == 1  # never doubled
+    assert await _get_spent(factory, key_id) == rows[0].cost_microcents

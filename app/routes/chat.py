@@ -688,16 +688,15 @@ async def execute_chat(
             status_code = 200
             error_type: str | None = None
             log_written = False
-            # True only once a terminal `data: [DONE]` has been emitted, i.e. the
-            # response was delivered in full. While False, the stream ended early
-            # (client disconnect / mid-stream upstream error) and the real cost is
-            # unknown, so the budget claim must be kept (fail-closed) rather than
-            # released — otherwise a client could stream tokens then hang up before
-            # the usage frame to bypass the cap.
-            stream_completed = False
-            # True once any usage frame has been observed in the stream. A completed
-            # stream with no usage frame means cost is unknown (client suppressed it
-            # or the provider omitted it), so the cap must still be enforced.
+            # The usage frame is the billing signal: True once one has been
+            # observed. A stream that ends without it — client hung up before
+            # the usage frame, suppressed it, or the provider omitted it — has
+            # an unknown cost and is settled fail-closed against the key's
+            # remaining allowance so the cap cannot be bypassed. With a usage
+            # frame delivered the cost is known even if the client then
+            # disconnects, and charging more would over-bill a quantity the
+            # row already accounts for (and break charged == row.cost, the
+            # invariant the trace-id idempotence relies on).
             usage_seen = False
 
             async def _finalize() -> None:
@@ -799,15 +798,16 @@ async def execute_chat(
                 def _settlement_amount() -> int:
                     """Budget charge for this request, in microcents.
 
-                    When the real cost is unknown — the stream ended without a
-                    terminal [DONE], or a completed stream never delivered a usage
-                    frame (e.g. a client forced include_usage=False or a provider
-                    omitted usage) — charge the full remaining allowance so a client
-                    cannot suppress the usage frame to bypass the cap.
+                    The usage frame is the billing signal. When no usage frame
+                    was ever observed — the stream ended early, the client
+                    suppressed the frame, or the provider omitted it — the real
+                    cost is unknown and the full remaining allowance is charged
+                    (fail-closed) so no client-side choice can bypass the cap.
+                    Once a usage frame was delivered the cost is known — even
+                    if the stream then died — and the recorded cost is charged.
                     """
                     actual = row_values.get("cost_microcents") or 0
-                    cost_unknown = (not stream_completed) or (not usage_seen)
-                    if cost_unknown:
+                    if not usage_seen:
                         actual = max(
                             actual,
                             (getattr(kc, "_budget_cap", 0) or 0)
@@ -934,7 +934,6 @@ async def execute_chat(
                         agg_model = d["model"]
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
                 yield "data: [DONE]\n\n"
-                stream_completed = True
             except (asyncio.CancelledError, GeneratorExit):
                 # Client closed the connection (Ctrl+C, tab closed, browser
                 # navigated away, proxy timeout, ...). Two distinct signals
@@ -1035,19 +1034,18 @@ async def execute_chat(
                 # is legal; clients reading until [DONE] still get it after
                 # an upstream error.
                 yield "data: [DONE]\n\n"
-                # The error response was delivered in full (terminal [DONE] sent),
-                # so settle against the actual cost only — not the full remaining
-                # allowance. Without this, every mid-stream provider failure would
+                # Mark the settlement known: the error response was delivered
+                # in full (terminal [DONE] sent) and its ~0 cost is recorded on
+                # the log row, so charge the actual cost only — not the full
+                # remaining allowance. Otherwise every transient mid-stream
+                # provider failure (rate limit, 5xx, network drop) would
                 # charge (and exhaust) the key's entire remaining budget even
-                # though the delivered response cost ~0. usage_seen is also set:
-                # the settlement here is *known* (the log row records the ~0 cost
-                # of the failed request), so the completed-stream-without-usage
-                # fail-closed rule does not apply — that rule guards against a
-                # client suppressing the usage frame, which is not a factor in a
-                # server-side provider error the client cannot steer. Client
-                # disconnects still take the GeneratorExit path above and keep
-                # charging the full remaining allowance.
-                stream_completed = True
+                # though the delivered response cost ~0. The remaining-charge
+                # rule guards against a client suppressing the usage frame —
+                # not a factor in a server-side error the client cannot steer.
+                # Client disconnects never reach this branch (GeneratorExit is
+                # not an Exception); they unwind with usage_seen unchanged, so
+                # a hang-up before the usage frame still fails closed.
                 usage_seen = True
             finally:
                 # Same shielding reason as the cancel branch: ensure the
@@ -1165,6 +1163,16 @@ async def execute_chat(
                 kc._budget_cap - (getattr(kc, "_budget_spent", 0) or 0),
             )
 
+        # Values are snapshotted once (latency is measured in _build_log_row,
+        # before any commit attempt, so retry backoff never inflates it) and
+        # each attempt inserts a fresh ORM object carrying the same id/trace_id
+        # — mirroring the streaming path, so a retry works regardless of what
+        # the rollback left the old object as.
+        log_values = {
+            c.key: getattr(log, c.key)
+            for c in RequestLog.__table__.columns
+            if getattr(log, c.key) is not None
+        }
         max_attempts = len(_LOG_COMMIT_BACKOFF_S) + 1
         for attempt in range(1, max_attempts + 1):
             try:
@@ -1174,7 +1182,7 @@ async def execute_chat(
                     )
                 ) is not None:
                     break  # already durable (log + charge committed)
-                db.add(log)
+                db.add(RequestLog(**log_values))
                 await _settle_budget(db, settle_amount, commit=False)
                 await db.commit()
                 break
@@ -1187,6 +1195,19 @@ async def execute_chat(
                     logger.warning(
                         "request_log_commit_failed", error=str(commit_err), attempts=attempt,
                     )
+                    break
+                logger.info(
+                    "request_log_commit_retry", error=str(commit_err), attempt=attempt,
+                )
+                try:
+                    await asyncio.sleep(_LOG_COMMIT_BACKOFF_S[attempt - 1])
+                except BaseException:
+                    # Cancelled during the backoff: nothing is in flight and the
+                    # row is given up on — say so, then propagate like the arm above.
+                    logger.warning(
+                        "request_log_commit_failed", error=str(commit_err), attempts=attempt,
+                    )
+                    raise
 
     hosted_fallback = _meta_hosted_fallback(response)
     if isinstance(response, dict) and "_orca_meta" in response:
