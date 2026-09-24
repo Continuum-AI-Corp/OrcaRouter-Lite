@@ -102,6 +102,23 @@ def _settle_unmeasured_stream(agg_usage: dict, agg_output_chars: int, body) -> d
     }
 
 
+def _give_up_settlement(kc: KeyContext, amount: int, attempts: int, error: BaseException) -> None:
+    """Last resort for a settlement that is not durable and will not be retried.
+
+    The log row dies with the charge (one transaction), so nothing anywhere
+    remembers this cost. Park it against the key's cap — the pre-check keeps
+    counting it and the next settlement that commits absorbs it (spend.py) —
+    rather than leaving the cap open for whoever reads the warning.
+    """
+    logger.warning("request_log_commit_failed", error=str(error), attempts=attempts)
+    if getattr(kc, "_budget_cap", None) is not None:
+        record_unsettled_spend(
+            str(kc.key_id),
+            recorded_microcents=getattr(kc, "_budget_spent", 0) or 0,
+            microcents=amount,
+        )
+
+
 def _chunk_to_dict(chunk) -> dict:
     """Normalize a litellm chunk (Pydantic model or dict) into a plain dict.
 
@@ -935,26 +952,12 @@ async def execute_chat(
                                 # Cancelled during the backoff: nothing is
                                 # in flight, the row is given up on — say
                                 # so, then propagate like the arm below.
-                                logger.warning(
-                                    "request_log_commit_failed",
-                                    error=str(commit_err), attempts=attempt,
+                                _give_up_settlement(
+                                    kc, _settlement_amount(), attempt, commit_err,
                                 )
                                 raise
                             continue
-                        logger.warning(
-                            "request_log_commit_failed",
-                            error=str(commit_err), attempts=attempt,
-                        )
-                        # Out of retries: this settlement will never be durable,
-                        # and the row that recorded its cost is gone with it. Park
-                        # the amount so the key's cap still counts it — otherwise a
-                        # write outage is a window of free requests (spend.py).
-                        if getattr(kc, "_budget_cap", None) is not None:
-                            record_unsettled_spend(
-                                str(kc.key_id),
-                                recorded_microcents=kc._budget_spent,
-                                microcents=_settlement_amount(),
-                            )
+                        _give_up_settlement(kc, _settlement_amount(), attempt, commit_err)
                     except BaseException:
                         # CancelledError aimed at us, not at the commit —
                         # wait the in-flight attempt out so a row about to
@@ -964,9 +967,8 @@ async def execute_chat(
                         try:
                             await commit_task
                         except Exception as commit_err:
-                            logger.warning(
-                                "request_log_commit_failed",
-                                error=str(commit_err), attempts=attempt,
+                            _give_up_settlement(
+                                kc, _settlement_amount(), attempt, commit_err,
                             )
                         except BaseException:
                             pass
@@ -1261,17 +1263,7 @@ async def execute_chat(
                 except Exception:
                     pass
                 if attempt == max_attempts:
-                    logger.warning(
-                        "request_log_commit_failed", error=str(commit_err), attempts=attempt,
-                    )
-                    # Same last resort as the streaming loop: undurable spend has
-                    # to keep counting against the cap or it is simply lost.
-                    if getattr(kc, "_budget_cap", None) is not None:
-                        record_unsettled_spend(
-                            str(kc.key_id),
-                            recorded_microcents=kc._budget_spent,
-                            microcents=settle_amount,
-                        )
+                    _give_up_settlement(kc, settle_amount, attempt, commit_err)
                     break
                 logger.info(
                     "request_log_commit_retry", error=str(commit_err), attempt=attempt,
@@ -1281,9 +1273,7 @@ async def execute_chat(
                 except BaseException:
                     # Cancelled during the backoff: nothing is in flight and the
                     # row is given up on — say so, then propagate like the arm above.
-                    logger.warning(
-                        "request_log_commit_failed", error=str(commit_err), attempts=attempt,
-                    )
+                    _give_up_settlement(kc, settle_amount, attempt, commit_err)
                     raise
 
     hosted_fallback = _meta_hosted_fallback(response)
