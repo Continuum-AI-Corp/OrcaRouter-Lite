@@ -99,3 +99,53 @@ async def test_orm_reads_work_after_upgrade(tmp_sqlite_url):
         assert row.budget_limit_cents == 100
     finally:
         await engine.dispose()
+
+
+async def test_ensure_budget_columns_survives_a_racing_boot(tmp_sqlite_url, monkeypatch):
+    """The loser of a concurrent-boot ALTER still boots, and still seeds.
+
+    Every worker runs this at startup, and the first boot after an upgrade
+    starts several of them at once against one database. Both inspect the
+    schema before either alters it, so the loser's ALTER meets a column that
+    appeared in between and the driver rejects it with "duplicate column
+    name" — which used to escape into the lifespan and keep that worker down.
+    """
+    import packages.db.migrate as migrate
+
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        # The other boot gets there first: the column is committed, so this
+        # process's inspection is now stale relative to the schema.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE api_keys ADD COLUMN spent_microcents BIGINT "
+                    "NOT NULL DEFAULT 0"
+                )
+            )
+        inspector = sa_inspect(engine.sync_engine)
+
+        class _StaleSchema:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def get_columns(self, table_name):
+                return [
+                    c for c in self._inner.get_columns(table_name)
+                    if c["name"] != "spent_microcents"
+                ]
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        monkeypatch.setattr(migrate, "inspect", lambda _sync: _StaleSchema(inspector))
+        await ensure_budget_columns(engine)
+
+        async with engine.connect() as conn:
+            # It went on to seed the column the winner added — before the fix
+            # the boot died on the ALTER and never reached this.
+            assert await conn.scalar(
+                text("SELECT spent_microcents FROM api_keys WHERE workspace_id = 'w1'")
+            ) == 2500
+    finally:
+        await engine.dispose()
