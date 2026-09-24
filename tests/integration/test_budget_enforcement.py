@@ -638,3 +638,147 @@ async def test_budgeted_blocking_commit_failure_persists_row_and_charge(budget_e
         ).scalars().all()
     assert len(rows) == 1  # never doubled
     assert await _get_spent(factory, key_id) == rows[0].cost_microcents
+
+
+class _WriteBlackout:
+    """Fail every settlement write at the cursor — a sustained "database is locked".
+
+    Reads still work, which is what makes this the dangerous shape: the key keeps
+    being served on its pre-check while nothing it spends can be recorded.
+    """
+
+    _MATCHES = ("INSERT INTO requests_log", "UPDATE api_keys SET spent_microcents")
+
+    def __init__(self, factory):
+        self.active = False
+        self._engine = factory.kw["bind"].sync_engine
+        from sqlalchemy import event
+
+        event.listen(self._engine, "before_cursor_execute", self._handle)
+
+    def _handle(self, conn, cursor, statement, parameters, context, executemany):
+        if self.active and any(m in statement for m in self._MATCHES):
+            raise RuntimeError("database is locked")
+
+    def close(self):
+        from sqlalchemy import event
+
+        event.remove(self._engine, "before_cursor_execute", self._handle)
+
+
+def _completion(text: str, *, usage: dict | None = None) -> dict:
+    response = {
+        "id": "chatcmpl-blackout",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "_orca_meta": {"provider": "openai", "litellm_model": "openai/gpt-4o-mini", "latency_ms": 42},
+    }
+    if usage:
+        response["usage"] = usage
+    return response
+
+
+async def test_budgeted_blocking_write_outage_still_bills_the_delivery(budget_env):
+    """Spend a write outage could not record must not simply disappear.
+
+    Three requests settle while every write fails, so no row and no charge
+    survives anywhere. When the DB recovers, the next settlement pays for what
+    was already delivered as well — otherwise the counter understates the key by
+    everything it spent during the outage and the hard cap is open for its
+    duration.
+    """
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+    usage = {"prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000}
+    fake.acompletion = AsyncMock(side_effect=lambda **kw: _completion("hello", usage=usage))
+
+    blackout = _WriteBlackout(factory)
+    blackout.active = True
+    try:
+        for i in range(3):
+            async with await make_client(key) as c:
+                r = await c.post(
+                    "/v1/chat/completions",
+                    json={"model": "gpt-4o-mini",
+                          "messages": [{"role": "user", "content": f"hi {i}"}]},
+                )
+            assert r.status_code == 200, r.text
+        assert await _get_spent(factory, key_id) == 0  # nothing was recordable
+        blackout.active = False
+
+        async with await make_client(key) as c:
+            r = await c.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": "hi 3"}]},
+            )
+        assert r.status_code == 200, r.text
+    finally:
+        blackout.close()
+
+    async with factory() as s:
+        rows = (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == key_id))
+        ).scalars().all()
+    assert len(rows) == 1  # the three lost settlements left no rows, no doubles
+    cost = rows[0].cost_microcents
+    assert cost > 0
+    assert await _get_spent(factory, key_id) == 4 * cost
+
+
+async def test_budgeted_stream_write_outage_still_blocks_the_next_request(budget_env):
+    """The streaming loop's give-up must clamp the next request too.
+
+    A budgeted stream with no usage frame settles fail-closed at the whole
+    remaining allowance; if that commit is impossible, the amount has to keep
+    counting, or the outage leaves the key uncapped and the very next request is
+    served for free.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    async def _no_usage():
+        yield {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+    fake.acompletion = AsyncMock(return_value=_no_usage())
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    blackout = _WriteBlackout(factory)
+    blackout.active = True
+    try:
+        async with await make_client(key) as c:
+            async with c.stream("POST", "/v1/chat/completions", json=payload) as r:
+                assert r.status_code == 200
+                async for _ in r.aiter_lines():
+                    pass
+        await asyncio.sleep(1.0)  # the bounded retries run out after the response
+    finally:
+        blackout.close()
+
+    assert await _get_spent(factory, key_id) == 0
+    fake.acompletion = AsyncMock(return_value=_completion(
+        "hello", usage={"prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000},
+    ))
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi again"}]},
+        )
+    assert r.status_code == 429, r.text
+    assert r.json()["error"]["type"] == "rate_limit_error"

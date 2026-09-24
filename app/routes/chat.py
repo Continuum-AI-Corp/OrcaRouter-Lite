@@ -31,7 +31,13 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import MICROCENTS_PER_CENT, charge_budget, is_exhausted, read_spent
+from packages.auth.spend import (
+    MICROCENTS_PER_CENT,
+    charge_budget,
+    is_exhausted,
+    read_spent,
+    record_unsettled_spend,
+)
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -939,6 +945,16 @@ async def execute_chat(
                             "request_log_commit_failed",
                             error=str(commit_err), attempts=attempt,
                         )
+                        # Out of retries: this settlement will never be durable,
+                        # and the row that recorded its cost is gone with it. Park
+                        # the amount so the key's cap still counts it — otherwise a
+                        # write outage is a window of free requests (spend.py).
+                        if getattr(kc, "_budget_cap", None) is not None:
+                            record_unsettled_spend(
+                                str(kc.key_id),
+                                recorded_microcents=kc._budget_spent,
+                                microcents=_settlement_amount(),
+                            )
                     except BaseException:
                         # CancelledError aimed at us, not at the commit —
                         # wait the in-flight attempt out so a row about to
@@ -1248,6 +1264,14 @@ async def execute_chat(
                     logger.warning(
                         "request_log_commit_failed", error=str(commit_err), attempts=attempt,
                     )
+                    # Same last resort as the streaming loop: undurable spend has
+                    # to keep counting against the cap or it is simply lost.
+                    if getattr(kc, "_budget_cap", None) is not None:
+                        record_unsettled_spend(
+                            str(kc.key_id),
+                            recorded_microcents=kc._budget_spent,
+                            microcents=settle_amount,
+                        )
                     break
                 logger.info(
                     "request_log_commit_retry", error=str(commit_err), attempt=attempt,
