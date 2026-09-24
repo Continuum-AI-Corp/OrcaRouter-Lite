@@ -162,6 +162,34 @@ async def _send_error(send, scope, status: int, message: str, error_type: str) -
     await send({"type": "http.response.body", "body": body})
 
 
+# Specificity of AuthError messages from validate_api_key. A later
+# candidate's "Invalid API key format" must not overwrite an earlier
+# "API key revoked" — last-wins hid the useful error when a second
+# header (proxy, extra SDK location) sent a non-sk-orca value.
+# Unknown messages sit with "Invalid API key" so a format error never
+# shadows them, and a revoked key still wins.
+_AUTH_ERROR_SPECIFICITY = {
+    "API key revoked": 3,
+    "Invalid API key": 2,
+    "Invalid API key format": 1,
+}
+
+
+def _prefer_auth_error(current: AuthError | None, candidate: AuthError) -> AuthError:
+    """Keep the more specific AuthError; on a tie keep the first."""
+    if current is None:
+        return candidate
+    current_rank = (
+        current.status_code,
+        _AUTH_ERROR_SPECIFICITY.get(current.message, 2),
+    )
+    candidate_rank = (
+        candidate.status_code,
+        _AUTH_ERROR_SPECIFICITY.get(candidate.message, 2),
+    )
+    return candidate if candidate_rank > current_rank else current
+
+
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -211,7 +239,7 @@ class AuthMiddleware:
                         key_context = await validate_api_key(raw_key, session)
                         break
                     except AuthError as e:
-                        auth_error = e
+                        auth_error = _prefer_auth_error(auth_error, e)
         except Exception:
             await _send_error(send, scope, 503, "Service temporarily unavailable", "server_error")
             return
