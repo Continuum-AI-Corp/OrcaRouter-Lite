@@ -16,10 +16,10 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage] = Field(min_length=1)
-    temperature: float | None = None
-    max_tokens: int | None = None
+    temperature: float | None = Field(default=None, ge=-2.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1)
     top_p: float | None = None
-    n: int | None = None
+    n: int | None = Field(default=None, ge=1)
     stream: bool = False
     stop: str | list[str] | None = None
     presence_penalty: float | None = None
