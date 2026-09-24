@@ -28,6 +28,8 @@ OpenAI対応。ビヨク。単一のワークスペース。ストリーミン�
 - [Tiếng Việt](./README.vi.md)
 - [हिन्दी](./README.hi.md)
 
+**関連プロダクト：**[すべてのモデル API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
+
 OrcaRouter Lite は、[OrcaRouter](https://www.orcarouter.ai) のオープンソースの単一ワークスペース エディションです。ラップトップで実行するか、製品に同梱するか、キーを管理したくないモデルのロングテールに対してホストされた「api.orcarouter.ai」を直接使用します。
 
 > **なぜ当社なのか?** LiteLLM はライブラリです。 OpenRouter はクローズドソースでホストされています。オラマは地元限定です。私たちは**管理されたフォールバックを備えた自己ホスト型サーバー**です。これは誰にも言えない言葉です。

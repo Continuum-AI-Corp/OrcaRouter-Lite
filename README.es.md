@@ -28,6 +28,8 @@ Compatible con OpenAI. BYOK. Workspace único. Streaming. `model="auto"`.
 - [Tiếng Việt](./README.vi.md)
 - [हिन्दी](./README.hi.md)
 
+**Encuéntranos:** [Todas las API de modelos](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
+
 OrcaRouter Lite es la edición open source de un solo workspace de [OrcaRouter](https://www.orcarouter.ai). Ejecútalo en tu portátil, intégralo en tu producto o usa directamente el `api.orcarouter.ai` alojado para la larga cola de modelos cuyas claves no quieres gestionar.
 
 > **¿Por qué nosotros?** LiteLLM es una librería; OpenRouter es de código cerrado y alojado; Ollama es solo local. Nosotros somos el **servidor autoalojado con respaldo gestionado** — una frase que ninguno de ellos puede decir.
