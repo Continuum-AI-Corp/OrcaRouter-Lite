@@ -78,6 +78,10 @@ def _translate_error(exc: Exception) -> UpstreamProviderError:
         return UpstreamProviderError(msg, http_status=503, error_type="upstream_auth_error")
     if isinstance(exc, litellm.Timeout):
         return UpstreamProviderError(msg, http_status=503, error_type="upstream_timeout")
+    if isinstance(exc, litellm.APIConnectionError):
+        return UpstreamProviderError(msg, http_status=503, error_type="upstream_connection_error")
+    if isinstance(exc, litellm.ServiceUnavailableError):
+        return UpstreamProviderError(msg, http_status=503, error_type="upstream_unavailable")
     return UpstreamProviderError(msg, http_status=503, error_type="upstream_error")
 
 
