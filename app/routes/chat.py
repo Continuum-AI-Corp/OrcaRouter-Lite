@@ -1018,12 +1018,14 @@ async def execute_chat(
         if isinstance(response, dict):
             actual_resolved = response.get("model") or resolved_model
     except HTTPException as exc:
-        # Record the real outcome before re-raising. Without this the handler
-        # keeps its initial status_code = 200 and the finally writes a
-        # request-log row that logs the failed request as a success (cost ~0,
-        # no error_type), poisoning every status-filtered analytics/spend
-        # query. Raised from inside the try today by the hosted-fallback
-        # signal (HTTPException(429)); the sibling arms already record theirs.
+        # Defensive only: record the outcome so this arm can't leave the
+        # handler-local status_code at its initial 200, which would make the
+        # finally write a success-shaped row (cost ~0, no error_type) for a
+        # failed request. Unreachable today: the adapter blanket-translates
+        # every exception into UpstreamProviderError (packages/litellm_adapter/
+        # client.py, acompletion), so nothing in this try raises HTTPException.
+        # Kept because the sibling arms already record their status and this one
+        # would silently mis-log the first time that stops holding.
         status_code = exc.status_code
         raise
     except UpstreamProviderError as exc:

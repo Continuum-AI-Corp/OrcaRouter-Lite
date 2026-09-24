@@ -215,9 +215,14 @@ async def test_chat_completion_validation_error_for_empty_messages(chat_client):
 
 
 async def test_chat_completion_blocking_httpexception_logs_real_status(chat_client):
-    """A blocking request whose upstream call raises HTTPException (e.g. the
-    hosted-fallback signal's 429) must log the real status, not the handler's
-    initial 200 — a success-shaped row poisons every status-filtered query."""
+    """The blocking path's `except HTTPException` arm records the raised status
+    instead of leaving the handler-local 200, so the finally cannot write a
+    success-shaped row for a failed request.
+
+    The exception is injected directly: the adapter translates every upstream
+    failure into UpstreamProviderError, so this shape is not reachable from real
+    traffic today. The test pins the handler's arm logic, not a live bug.
+    """
     from fastapi import HTTPException
 
     client, fake = chat_client
