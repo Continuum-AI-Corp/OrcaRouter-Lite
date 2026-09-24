@@ -149,8 +149,16 @@ async def _fetch_remote(url: str, timeout: float = _FETCH_TIMEOUT_SECONDS) -> li
     would silently flip the unreachable tile to the static fallback for
     a full TTL.
     """
+    from app.cli import _version
+
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as c:
-        r = await c.get(url, headers={"Accept": "application/json"})
+        r = await c.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": f"orcarouter-lite/{_version()}",
+            },
+        )
         r.raise_for_status()
         return _parse_response(r.headers.get("Content-Type", ""), r.text)
 
