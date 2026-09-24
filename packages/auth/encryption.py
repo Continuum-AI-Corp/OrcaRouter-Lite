@@ -128,7 +128,8 @@ def decrypt_credential(blob: bytes) -> str:
         except InvalidTag:
             # Could be a LEGACY blob whose first nonce byte happens to be
             # 0x01 (~0.4%). Fall through and try the unversioned layout
-            # before giving up.
+            # before giving up. False-positive fallback is covered by
+            # test_decrypt_recovers_legacy_blob_whose_nonce_starts_with_version_byte.
             pass
 
     # Legacy unversioned blob: nonce(12) || ciphertext+tag.
