@@ -14,6 +14,29 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from packages.db.models.request_log import RequestLog
+
+
+class _AckLossSession(AsyncSession):
+    """Commit for real, then report failure as if the ack never came back.
+
+    One-shot, and armed only by the write hook that lets an attempt land, so it
+    consumes exactly the settlement commit it follows: the row is durable while
+    its caller still sees an exception — the case the retry loops' trace_id
+    check exists for. Inert (an ordinary AsyncSession) otherwise.
+    """
+
+    drop_ack = False
+    drops = 0
+
+    async def commit(self):
+        await super().commit()
+        if _AckLossSession.drop_ack:
+            _AckLossSession.drop_ack = False
+            _AckLossSession.drops += 1
+            raise ConnectionError("connection dropped mid-ack")
 
 
 @pytest.fixture
@@ -38,7 +61,9 @@ async def budget_env(tmp_sqlite_url, monkeypatch):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from packages.db import session as session_mod
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = async_sessionmaker(
+        engine, expire_on_commit=False, class_=_AckLossSession,
+    )
     session_mod._session_factory = factory
 
     from app.seed import seed_initial_state
@@ -832,3 +857,150 @@ async def test_budgeted_concurrent_outage_bills_parked_spend_once(budget_env):
     cost = rows[0].cost_microcents
     assert cost > 0
     assert await _get_spent(factory, key_id) == 4 * cost  # four deliveries, not five
+
+
+class _LastAttemptThenAckLoss:
+    """Fail every settlement write but the last, and lose that one's ack.
+
+    Deriving the count from the retry budget is what makes this the *final*
+    attempt — the one with no retry left to run the trace_id check, which is
+    where a give-up has to decide on the exception alone.
+    """
+
+    def __init__(self, factory):
+        from app.routes.chat import _LOG_COMMIT_BACKOFF_S
+
+        self.last = len(_LOG_COMMIT_BACKOFF_S) + 1
+        self.n = 0
+        self.drops = 0
+        self._engine = factory.kw["bind"].sync_engine
+        from sqlalchemy import event
+
+        event.listen(self._engine, "before_cursor_execute", self._handle)
+
+    def _handle(self, conn, cursor, statement, parameters, context, executemany):
+        if "INSERT INTO requests_log" not in statement:
+            return
+        self.n += 1
+        if self.n < self.last:
+            raise RuntimeError("database is locked")
+        _AckLossSession.drop_ack = self.n == self.last
+
+    def close(self):
+        from sqlalchemy import event
+
+        event.remove(self._engine, "before_cursor_execute", self._handle)
+        _AckLossSession.drop_ack = False
+        self.drops = _AckLossSession.drops
+        _AckLossSession.drops = 0
+
+
+async def _ask_blocking(make_client, key: str, content: str) -> None:
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": content}]},
+        )
+    assert r.status_code == 200, r.text
+
+
+async def _logged_rows(factory, key_id: str):
+    from sqlalchemy import select
+
+    async with factory() as s:
+        return (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == key_id))
+        ).scalars().all()
+
+
+async def test_budgeted_blocking_commit_ack_loss_bills_the_delivery_once(budget_env):
+    """A settlement that is durable must not also be parked.
+
+    The loop's idempotence is the trace_id check at the START of an attempt, so
+    the final one has no follow-up: it gives up on the exception alone. If that
+    commit applied and only its ack was lost, parking its cost on top of the
+    charge already in `spent_microcents` bills one delivery twice, and the next
+    settlement happily claims the park.
+    """
+    from packages.auth.spend import unsettled_spend
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+    usage = {"prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000}
+    fake.acompletion = AsyncMock(side_effect=lambda **kw: _completion("hello", usage=usage))
+
+    hook = _LastAttemptThenAckLoss(factory)
+    try:
+        await _ask_blocking(make_client, key, "hi")
+    finally:
+        hook.close()
+    # The scenario really ran: every attempt but the last failed outright, and
+    # the last one raised on a commit the database had already applied.
+    assert (hook.n, hook.drops) == (hook.last, 1)
+
+    rows = await _logged_rows(factory, key_id)
+    assert len(rows) == 1  # the row landed, and the retries never doubled it
+    cost = rows[0].cost_microcents
+    assert cost > 0
+    assert await _get_spent(factory, key_id) == cost
+    assert unsettled_spend(key_id) == 0  # durable, so there is nothing to park
+
+    await _ask_blocking(make_client, key, "hi again")
+    assert await _get_spent(factory, key_id) == 2 * cost  # not three
+
+
+async def test_budgeted_stream_commit_ack_loss_bills_the_delivery_once(budget_env):
+    """Same guarantee on the streaming loop, which the give-up also serves."""
+    from packages.auth.spend import unsettled_spend
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    def _measured_stream():
+        async def _gen():
+            yield {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}
+            yield {
+                "usage": {
+                    "prompt_tokens": 10_000,
+                    "completion_tokens": 5_000,
+                    "total_tokens": 15_000,
+                },
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            }
+        return _gen()
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    fake.acompletion = AsyncMock(return_value=_measured_stream())
+
+    hook = _LastAttemptThenAckLoss(factory)
+    try:
+        async with await make_client(key) as c:
+            async with c.stream("POST", "/v1/chat/completions", json=payload) as r:
+                assert r.status_code == 200
+                async for _ in r.aiter_lines():
+                    pass
+        await asyncio.sleep(1.0)  # the bounded retries run out after the response
+    finally:
+        hook.close()
+    # The scenario really ran: every attempt but the last failed outright, and
+    # the last one raised on a commit the database had already applied.
+    assert (hook.n, hook.drops) == (hook.last, 1)
+
+    rows = await _logged_rows(factory, key_id)
+    assert len(rows) == 1
+    cost = rows[0].cost_microcents
+    assert cost > 0
+    assert await _get_spent(factory, key_id) == cost
+    assert unsettled_spend(key_id) == 0
+
+    fake.acompletion = AsyncMock(
+        return_value=_completion("hello", usage={
+            "prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000,
+        })
+    )
+    await _ask_blocking(make_client, key, "hi again")
+    assert await _get_spent(factory, key_id) == 2 * cost
