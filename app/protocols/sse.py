@@ -130,6 +130,11 @@ class OpenAIFrameStream:
             if isinstance(piece, bytes):
                 piece = piece.decode("utf-8")
             buffer += piece
+            # The SSE spec (W3C) allows \r\n, \r, or \n as line endings.
+            # Some upstream providers (notably Azure-hosted models) send
+            # \r\n\r\n as the frame delimiter instead of \n\n. Normalize
+            # to \n so the split below catches all three forms.
+            buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
             while "\n\n" in buffer:
                 frame, buffer = buffer.split("\n\n", 1)
                 for line in frame.splitlines():
