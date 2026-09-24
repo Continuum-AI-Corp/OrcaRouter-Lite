@@ -52,6 +52,14 @@ from packages.db.models.provider_key import ProviderKey
 
 router = APIRouter(prefix="/v1/providers", tags=["providers"])
 
+# Dashboard sends this literal when the operator saves the provider form
+# without retyping the secret (masked display value round-trips as "no change").
+DASHBOARD_KEY_PLACEHOLDER = "[REDACTED]"
+
+
+def _is_dashboard_key_placeholder(api_key: str) -> bool:
+    return api_key == DASHBOARD_KEY_PLACEHOLDER
+
 
 class SetProviderKey(BaseModel):
     api_key: str
@@ -126,6 +134,8 @@ def provider_key_format_warning(provider: str, api_key: str) -> str | None:
     known provider. `None` means "looks fine" or "provider is unknown —
     don't guess". The caller still stores the key either way."""
     key = api_key.strip()
+    if _is_dashboard_key_placeholder(key):
+        return None
     slug = provider.strip().lower()
     if slug == "google":
         if _google_key_matches(key):
@@ -244,6 +254,24 @@ async def set_provider_key(
             )
         )
     ).scalar_one_or_none()
+
+    if _is_dashboard_key_placeholder(api_key):
+        if existing is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "api_key cannot be the dashboard placeholder when no "
+                    "stored key exists for this provider"
+                ),
+            )
+        return _dump_provider_key(
+            ProviderKeyOut(
+                provider=existing.provider,
+                key_prefix=existing.key_prefix,
+                is_enabled=existing.is_enabled,
+                source="db",
+            )
+        )
 
     encrypted = encrypt_credential(api_key)
     prefix_visible = _mask_key(api_key)

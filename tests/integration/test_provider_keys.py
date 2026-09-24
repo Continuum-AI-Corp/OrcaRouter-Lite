@@ -110,6 +110,64 @@ async def test_put_matching_prefix_has_no_warnings(authed_client):
     assert "warnings" not in r.json()
 
 
+async def test_put_dashboard_placeholder_is_no_change_without_warning(
+    authed_client, tmp_sqlite_url,
+):
+    """Dashboard save-without-retype sends the literal [REDACTED] placeholder.
+    It must not warn (wrong prefix) or overwrite the stored credential."""
+    from app.routes.providers import DASHBOARD_KEY_PLACEHOLDER
+
+    real_key = "sk-proj-real-credential-value-abcdefgh"
+    first = await authed_client.put(
+        "/v1/providers/openai",
+        json={"api_key": real_key},
+    )
+    assert first.status_code == 200, first.text
+    expected_prefix = first.json()["key_prefix"]
+
+    second = await authed_client.put(
+        "/v1/providers/openai",
+        json={"api_key": DASHBOARD_KEY_PLACEHOLDER},
+    )
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert "warnings" not in body
+    assert body["key_prefix"] == expected_prefix
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.auth.encryption import decrypt_credential
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        row = (
+            await s.execute(
+                select(ProviderKey).where(ProviderKey.provider == "openai")
+            )
+        ).scalar_one()
+    await engine.dispose()
+
+    assert decrypt_credential(row.encrypted_key) == real_key
+    assert row.key_prefix == expected_prefix
+
+
+async def test_put_dashboard_placeholder_without_stored_key_is_rejected(
+    authed_client,
+):
+    from app.routes.providers import DASHBOARD_KEY_PLACEHOLDER
+
+    r = await authed_client.put(
+        "/v1/providers/openai",
+        json={"api_key": DASHBOARD_KEY_PLACEHOLDER},
+    )
+    assert r.status_code == 422, r.text
+    assert "placeholder" in r.text.lower()
+
+
 async def test_put_strips_whitespace_stores_stripped_key_without_warning(
     authed_client, tmp_sqlite_url,
 ):

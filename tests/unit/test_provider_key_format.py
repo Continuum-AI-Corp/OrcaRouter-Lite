@@ -6,7 +6,10 @@ must stay silent so unusual-but-valid BYOK keys still store.
 
 import pytest
 
-from app.routes.providers import provider_key_format_warning
+from app.routes.providers import (
+    DASHBOARD_KEY_PLACEHOLDER,
+    provider_key_format_warning,
+)
 
 
 @pytest.mark.parametrize(
@@ -57,6 +60,11 @@ def test_obvious_mismatch_returns_warning(provider, key, expected_fragment):
     assert key not in warning
     if len(key) <= 5:
         assert "<too-short>" in warning
+
+
+def test_dashboard_placeholder_never_warns():
+    assert provider_key_format_warning("openai", DASHBOARD_KEY_PLACEHOLDER) is None
+    assert provider_key_format_warning("groq", DASHBOARD_KEY_PLACEHOLDER) is None
 
 
 def test_warning_uses_short_prefix_not_full_key():
