@@ -156,14 +156,24 @@ class InMemoryCache:
 
 
 class RedisCache:
-    """Redis-backed cache; activated when REDIS_URL is set."""
+    """Redis-backed cache; activated when REDIS_URL is set.
+
+    Connection errors are caught and logged — a Redis outage degrades to
+    cache misses rather than crashing every request. The cache is an
+    optimization, not a correctness requirement; the upstream call still
+    succeeds when Redis is down."""
 
     def __init__(self, url: str):
         import redis.asyncio as aioredis
         self._client = aioredis.from_url(url, decode_responses=True)
 
     async def get(self, key: str) -> dict | None:
-        raw = await self._client.get(f"orca:cache:{key}")
+        try:
+            raw = await self._client.get(f"orca:cache:{key}")
+        except Exception:
+            # Redis down — degrade to cache miss. The caller will hit the
+            # upstream and (on success) repopulate via set().
+            return None
         if raw is None:
             return None
         try:
@@ -172,11 +182,16 @@ class RedisCache:
             return None
 
     async def set(self, key: str, value: dict, ttl: int) -> None:
-        await self._client.set(
-            f"orca:cache:{key}",
-            json.dumps(value, separators=(",", ":")),
-            ex=ttl,
-        )
+        try:
+            await self._client.set(
+                f"orca:cache:{key}",
+                json.dumps(value, separators=(",", ":")),
+                ex=ttl,
+            )
+        except Exception:
+            # Redis down — skip the write. The next request will hit the
+            # upstream again and retry the cache write.
+            pass
 
 
 # ── Module singleton ──────────────────────────────────────────────────
