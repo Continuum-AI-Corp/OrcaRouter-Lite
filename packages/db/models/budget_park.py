@@ -8,10 +8,10 @@ worker behind the same database.
 
 Rows are keyed by the settlement's `trace_id`, which makes every park write
 idempotent: a commit that applied but whose ack was lost retries into the same
-primary key instead of recording the obligation twice. A row is deleted in the
-same transaction that folds it into `spent_microcents`, so a crash between the
-two is impossible — the obligation is either still parked or already billed,
-never both and never neither.
+primary key instead of recording the obligation twice. A fold that bills a row
+either deletes it or shrinks it to what the cap could not absorb, in the same
+transaction that moves `spent_microcents`, so the obligation is never both
+parked and billed, and never neither.
 """
 
 from sqlalchemy import BigInteger, String
