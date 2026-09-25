@@ -516,6 +516,7 @@ async def execute_chat(
             response_format=completion_kwargs.get("response_format"),
             seed=completion_kwargs.get("seed"),
             max_tokens=completion_kwargs.get("max_tokens"),
+            max_completion_tokens=completion_kwargs.get("max_completion_tokens"),
             stop=completion_kwargs.get("stop"),
             tool_choice=completion_kwargs.get("tool_choice"),
             top_p=completion_kwargs.get("top_p"),

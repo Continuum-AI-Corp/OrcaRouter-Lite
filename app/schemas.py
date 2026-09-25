@@ -18,6 +18,11 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1)
     temperature: float | None = None
     max_tokens: int | None = None
+    # openai-python >=1.51 sends this instead of `max_tokens`. Without
+    # the field declared, Pydantic silently drops it and LiteLLM never
+    # sees an output cap. Forward as-is; do not collapse into max_tokens
+    # (o-series / gpt-5 reject max_tokens).
+    max_completion_tokens: int | None = None
     top_p: float | None = None
     n: int | None = None
     stream: bool = False
