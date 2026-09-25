@@ -8,7 +8,10 @@ from packages.auth.spend import (
     MICROCENTS_PER_CENT,
     charge_budget,
     is_exhausted,
+    pending_parked_spend,
     read_spent,
+    record_unsettled_spend,
+    settle_parked_spend,
 )
 
 
@@ -89,3 +92,147 @@ async def test_concurrent_charges_never_exceed_cap(tmp_sqlite_url):
 
 def test_microcent_conversion_constant():
     assert MICROCENTS_PER_CENT == 10_000
+
+
+@pytest.fixture
+async def parked_env(tmp_sqlite_url):
+    """Engine + global session factory, so the park ledger is durable here."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db import session as session_mod
+    from packages.db.engine import build_engine
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    old, session_mod._session_factory = session_mod._session_factory, factory
+    try:
+        yield factory
+    finally:
+        session_mod._session_factory = old
+        await engine.dispose()
+
+
+async def _parked_key(factory, *, spent: int = 0):
+    from packages.db.models.api_key import ApiKey
+
+    async with factory() as s:
+        k = ApiKey(
+            workspace_id="default", name="p", key_hash="h-p", key_prefix="p-p",
+        )
+        s.add(k)
+        await s.commit()
+        await s.refresh(k)
+        if spent:
+            await charge_budget(s, k.id, 10_000_000, spent)
+        return k.id
+
+
+async def test_recorded_park_folds_exactly_once(parked_env):
+    """A lost settlement is billed once, by the next pre-check — never twice."""
+    from packages.auth import spend as spend_mod
+
+    key_id = await _parked_key(parked_env, spent=4_000)
+    cap = 10_000
+    await record_unsettled_spend(trace_id="t-fold", api_key_id=key_id, microcents=3_000)
+    assert await pending_parked_spend(key_id) == 3_000  # durable, not just memory
+
+    spend_mod._unsettled.clear()  # the machine stopped and cold-started
+
+    async with parked_env() as s:
+        assert await is_exhausted(s, key_id, cap) is False  # 7_000 of 10_000
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 7_000
+        assert await pending_parked_spend(key_id) == 0
+
+    # A second pre-check must not move the same microcents a second time.
+    async with parked_env() as s:
+        assert await is_exhausted(s, key_id, cap) is False
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 7_000
+
+
+async def test_duplicate_park_record_is_idempotent(parked_env):
+    """Retrying a park write after an ack loss must not record it twice."""
+    key_id = await _parked_key(parked_env)
+    await record_unsettled_spend(trace_id="t-dup", api_key_id=key_id, microcents=900)
+    # The ack never came back, so the caller retries the identical record.
+    await record_unsettled_spend(trace_id="t-dup", api_key_id=key_id, microcents=900)
+    assert await pending_parked_spend(key_id) == 900
+
+
+async def test_park_beyond_the_remainder_stays_parked_and_exhausted(parked_env):
+    """A park larger than the remainder cannot move without over-recording.
+
+    Moving the whole 2_000 row would push the counter past the cap, and
+    clamping the counter without consuming the row would record spend that was
+    never billed. So the row stays parked — visible, not written off — and the
+    key is exhausted by the obligation it still owes.
+    """
+    key_id = await _parked_key(parked_env, spent=9_000)
+    cap = 10_000
+    await record_unsettled_spend(trace_id="t-big", api_key_id=key_id, microcents=2_000)
+
+    async with parked_env() as s:
+        assert await is_exhausted(s, key_id, cap) is True
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 9_000  # untouched, never overshot
+    assert await pending_parked_spend(key_id) == 2_000  # the debt stays visible
+
+
+async def test_concurrent_folds_bill_the_park_once(parked_env):
+    """Two workers folding the same park move it exactly once."""
+    key_id = await _parked_key(parked_env)
+    await record_unsettled_spend(trace_id="t-race", api_key_id=key_id, microcents=3_000)
+
+    moved = await asyncio.gather(
+        settle_parked_spend(key_id, 10_000), settle_parked_spend(key_id, 10_000),
+    )
+    assert sorted(moved) == [0, 3_000]
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 3_000
+    assert await pending_parked_spend(key_id) == 0
+
+
+async def test_memory_fallback_refiles_once_the_database_recovers(parked_env):
+    """An amount held in memory during an outage becomes exactly one park."""
+    from packages.db import session as session_mod
+
+    key_id = await _parked_key(parked_env)
+    old = session_mod._session_factory
+    session_mod._session_factory = None
+    try:
+        # No session factory: the database might as well be down.
+        await record_unsettled_spend(trace_id="t-mem", api_key_id=key_id, microcents=700)
+        assert await pending_parked_spend(key_id) == 700
+    finally:
+        session_mod._session_factory = old
+
+    async with parked_env() as s:
+        assert await is_exhausted(s, key_id, 10_000) is False
+    assert await pending_parked_spend(key_id) == 0
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 700
+
+
+async def test_cancelled_refile_keeps_the_memory_copy(parked_env, monkeypatch):
+    """Cancelling a memory-to-database refile must not drop the obligation."""
+    from packages.auth import spend as spend_mod
+
+    key_id = await _parked_key(parked_env)
+    spend_mod._unsettled[(key_id, "t-cancel")] = 500
+
+    async def _cancelled(**kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(spend_mod, "_insert_park", _cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await settle_parked_spend(key_id, 10_000)
+    assert spend_mod._unsettled[(key_id, "t-cancel")] == 500
+
+    monkeypatch.undo()
+    assert await settle_parked_spend(key_id, 10_000) == 500
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 500

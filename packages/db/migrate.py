@@ -17,6 +17,8 @@ from __future__ import annotations
 from sqlalchemy import BigInteger, inspect, text
 from sqlalchemy.exc import DBAPIError
 
+from packages.db.models.budget_park import BudgetPark
+
 
 def _already_applied(err: DBAPIError) -> bool:
     """Whether a DDL failure means someone else applied the change first."""
@@ -50,17 +52,29 @@ async def ensure_budget_columns(engine) -> None:
     from historical request logs on every boot so the `ALTER` is never mistaken
     for proof that the seed ran. Also widens `budget_limit_cents` to BIGINT on
     Postgres (the column is scaled into microcents for every comparison against
-    spend, and an int4 ceiling is about 214,748 dollars of lifetime budget) and
+    spend, and an int4 ceiling is about 214,748 dollars of lifetime budget),
     creates the `ix_requests_log_api_key_spend` index that create_all only builds
-    on fresh databases. Each step costs nothing on a database that needs none of
-    it — there the seed is a single indexed UPDATE that matches no row.
+    on fresh databases, and creates `budget_parks` for deployments that predate
+    the durable-recovery release — a lost settlement needs somewhere every
+    worker, and every reboot, can see it. Each step costs nothing on a database
+    that needs none of it; there the seed is a single indexed UPDATE that matches
+    no row.
     """
     async with engine.begin() as conn:
+        tables = set(
+            await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+        )
         cols = {
             c["name"]: c["type"]
             for c in await conn.run_sync(lambda sync: inspect(sync).get_columns("api_keys"))
         }
         is_postgres = engine.dialect.name == "postgresql"
+
+        if BudgetPark.__tablename__ not in tables:
+            # `create_all` covers fresh databases; this covers upgrades whose
+            # schema predates the table. `checkfirst` keeps a racing boot from
+            # failing when the winner creates it first.
+            await conn.run_sync(BudgetPark.__table__.create, checkfirst=True)
 
         # The model declares ix_requests_log_api_key_spend (api_key_id,
         # is_deleted); create_all only builds it on fresh databases, so an

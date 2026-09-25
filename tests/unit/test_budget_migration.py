@@ -20,6 +20,7 @@ from packages.db.engine import build_engine
 from packages.db.migrate import ensure_budget_columns
 from packages.db.models.api_key import ApiKey
 from packages.db.models.base import Base
+from packages.db.models.budget_park import BudgetPark
 from packages.db.models.request_log import RequestLog
 
 
@@ -232,5 +233,43 @@ async def test_ensure_budget_columns_survives_a_racing_boot(tmp_sqlite_url, monk
             assert await conn.scalar(
                 text("SELECT spent_microcents FROM api_keys WHERE workspace_id = 'w1'")
             ) == 2500
+    finally:
+        await engine.dispose()
+
+
+async def test_ensure_budget_columns_creates_budget_parks_table(tmp_sqlite_url):
+    """A deployment that predates durable recovery gets the park table.
+
+    `create_all` covers fresh databases, but an upgraded SQLite volume keeps
+    its old schema — without this step the first give-up would have nowhere
+    durable to park, and the cap would silently reopen after every restart.
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS budget_parks"))
+        await ensure_budget_columns(engine)
+
+        async with engine.connect() as conn:
+            tables = await conn.run_sync(
+                lambda sync: sa_inspect(sync).get_table_names()
+            )
+            assert "budget_parks" in tables
+
+        # The table the migration created actually holds a parked obligation.
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as s:
+            s.add(BudgetPark(trace_id="park-t1", api_key_id="k1", microcents=900))
+            await s.commit()
+        async with factory() as s:
+            row = (
+                await s.execute(
+                    select(BudgetPark).where(BudgetPark.trace_id == "park-t1")
+                )
+            ).scalar_one()
+            assert row.microcents == 900
+
+        # Idempotent across restarts: a second boot changes nothing.
+        await ensure_budget_columns(engine)
     finally:
         await engine.dispose()
