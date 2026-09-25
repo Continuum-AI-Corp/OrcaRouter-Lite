@@ -44,16 +44,16 @@ MICROCENTS_PER_CENT = 10_000
 
 # A settlement that gives up after every retry leaves a delivered cost with no
 # record anywhere: the log row and the charge are one transaction, so both roll
-# back and the counter never moves. The obligation is parked here — one row per
+# back and the counter never moves. The obligation is parked — one row per
 # settlement, keyed by its `trace_id` — and keeps counting against the cap until
 # a budget pre-check folds it into `spent_microcents`.
 #
 # The park is a database table, not process memory, because the deployment
 # stops its machine whenever it goes idle: an in-memory obligation is lost on
 # the next cold start, which reopens the cap for exactly the key the failure
-# was about to protect. `_unsettled` below only holds an amount while the
-# database itself is unreachable — the same outage that caused the park — and a
-# later pre-check re-files it once a write goes through again.
+# was about to protect. `_unsettled` below is the hold for when even that write
+# cannot be made — it maps `(api_key_id, trace_id)` to the amount, and a later
+# pre-check re-files it once a write goes through again.
 _unsettled: dict[tuple[str, str], int] = {}
 
 
@@ -61,14 +61,42 @@ class _FoldConflict(Exception):
     """A concurrent worker folded the same park first; the loser retries later."""
 
 
+async def _park_is_durable(trace_id: str) -> bool:
+    """Whether a park row for this `trace_id` is committed.
+
+    A commit that applied but whose ack never came back raises exactly like a
+    failure, and holding a memory copy beside the durable row puts one
+    obligation in both ledgers — the double-bill the `trace_id` key exists to
+    absorb. It reads on a fresh session because the failed one is closed by the
+    time this runs, and answers False when it cannot read at all: with the
+    database truly unreachable the memory hold is all that keeps the cap honest.
+    """
+    from packages.db import session as session_mod
+
+    factory = session_mod._session_factory
+    if factory is None:
+        return False
+    try:
+        async with factory() as s:
+            return (
+                await s.scalar(
+                    select(BudgetPark.trace_id).where(BudgetPark.trace_id == trace_id)
+                )
+            ) is not None
+    except Exception:
+        return False
+
+
 async def _insert_park(*, trace_id: str, api_key_id: str, microcents: int) -> bool:
     """Persist one parked obligation. Returns True when it is durable.
 
     Idempotent on `trace_id`: a commit that applied but whose ack was lost
     retries into the same primary key instead of recording the obligation a
-    second time. Returns False when the database is unavailable (or this is a
-    unit test with no session factory), leaving the caller to hold the amount
-    in memory. A cancellation propagates with the memory copy still held.
+    second time — and when the retry does not reach the server to be told that,
+    the probe below asks the database directly rather than reporting a write that
+    landed as one that did not. Returns False only when the obligation is
+    genuinely not durable, leaving the caller to hold the amount in memory. A
+    cancellation propagates with the memory copy still held.
     """
     from packages.db import session as session_mod
 
@@ -92,7 +120,7 @@ async def _insert_park(*, trace_id: str, api_key_id: str, microcents: int) -> bo
     except asyncio.CancelledError:
         raise
     except Exception:
-        return False
+        return await _park_is_durable(trace_id)
 
 
 async def record_unsettled_spend(
@@ -121,8 +149,16 @@ async def record_unsettled_spend(
     _unsettled[key] = microcents
 
 
-async def pending_parked_spend(api_key_id: str) -> int:
-    """The outstanding park for a key: durable rows plus whatever is memory-only."""
+async def pending_parked_spend(api_key_id: str) -> int | None:
+    """The outstanding park for a key: durable rows plus whatever is memory-only.
+
+    ``None`` means the durable ledger could not be read, which is a different
+    answer from ``0``: the table is the only record of a park written by another
+    worker, or by this one before it stopped, so folding a failed read into the
+    total reopens the cap for exactly the key the park exists to hold shut. The
+    memory half still counts on the way to a real durable read failing, because
+    that half is what an outage is expected to lose and what recovers after it.
+    """
     from packages.db import session as session_mod
 
     key = str(api_key_id)
@@ -141,10 +177,9 @@ async def pending_parked_spend(api_key_id: str) -> int:
                     )
                 )
             ).scalar()
-        total += int(stored or 0)
     except Exception:
-        pass
-    return total
+        return None
+    return total + int(stored or 0)
 
 
 async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
@@ -184,6 +219,9 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
             trace_id=trace_id, api_key_id=key, microcents=amount
         ):
             _unsettled.pop((held_key, trace_id), None)
+    move = 0
+    settling: list[str] = []
+    trim: tuple[str, int, int] | None = None
     try:
         async with factory() as s:
             async with s.begin():
@@ -199,18 +237,15 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     await s.execute(
                         select(BudgetPark.trace_id, BudgetPark.microcents)
                         .where(BudgetPark.api_key_id == key)
-                        # Oldest debt first. `created_at` alone is not a total
-                        # order — it is second-resolution on SQLite and ties on
-                        # Postgres — and two workers computing the same fold
-                        # have to agree on which row is the partial one, so
-                        # `trace_id` breaks the tie.
+                        # Oldest debt first. `created_at` is stamped
+                        # Python-side with sub-second resolution, but two
+                        # workers computing the same fold still have to agree on
+                        # which row is the partial one, so `trace_id` breaks any
+                        # tie rather than letting the order depend on a race.
                         .order_by(BudgetPark.created_at, BudgetPark.trace_id)
                     )
                 ).all()
-                move = 0
                 room = cap_microcents - spent
-                settling: list[str] = []
-                trim: tuple[str, int, int] | None = None
                 for trace_id, microcents in rows:
                     microcents = int(microcents)
                     if microcents <= room:
@@ -249,9 +284,17 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     )
                     if trimmed.rowcount != 1:
                         raise _FoldConflict
-                return move
     except _FoldConflict:
         return 0
+    # Past the commit, so everything in `settling` is billed and gone from the
+    # table. A memory hold for one of those rows is now worse than stale: the
+    # next pre-check re-files it as a brand-new park — the `trace_id` no longer
+    # collides, this transaction deleted the row — and the same delivery is
+    # charged twice against a cap that has no idea it moved. Only `settling`:
+    # a trimmed row is still owed, and the hold on it has to stay.
+    for _settled in settling:
+        _unsettled.pop((key, _settled), None)
+    return move
 
 
 async def read_spent(db: AsyncSession, api_key_id: str) -> int:
@@ -271,7 +314,8 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
     outage is neither a window of free requests nor a park that can never clear,
     and the result adds whatever is still pending rather than reading only the
     counter: when the fold could not commit, the obligation still has to block
-    dispatch.
+    dispatch. A park ledger that cannot be read at all is answered as the cap
+    rather than as no debt.
 
     ``cap_microcents`` is ``ApiKey.budget_limit_cents`` scaled by
     ``MICROCENTS_PER_CENT``, not the column itself — passing the raw cents value
@@ -280,6 +324,12 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
     key = str(api_key_id)
     spent = await read_spent(db, key)
     pending = await pending_parked_spend(key)
+    if pending is None:
+        # Unknown debt is answered as full debt, the way the durability probe
+        # that wrote the park reads an unreadable database as "not settled".
+        # The alternative is a key whose cap is held shut only by parked rows
+        # dispatching freely while the ledger is down.
+        return cap_microcents
     if pending:
         try:
             await settle_parked_spend(key, cap_microcents)
@@ -289,6 +339,8 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
             pass
         spent = await read_spent(db, key)
         pending = await pending_parked_spend(key)
+        if pending is None:
+            return cap_microcents
     return spent + pending
 
 
