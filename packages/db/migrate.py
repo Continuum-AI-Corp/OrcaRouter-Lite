@@ -57,6 +57,27 @@ async def ensure_budget_columns(engine) -> None:
         }
         is_postgres = engine.dialect.name == "postgresql"
 
+        # The model declares ix_requests_log_api_key_spend (api_key_id,
+        # is_deleted); create_all only builds it on fresh databases, so an
+        # upgraded deployment would drift. Built before the seed below, which is
+        # a correlated aggregate over requests_log and otherwise full-scans the
+        # one table that grows without bound here — once per key, inside the
+        # transaction that already holds the api_keys lock. is_deleted has
+        # existed since the first release (SoftDeleteMixin), so the index is
+        # always creatable.
+        idx = {
+            i["name"]
+            for i in await conn.run_sync(
+                lambda sync: inspect(sync).get_indexes("requests_log")
+            )
+        }
+        if "ix_requests_log_api_key_spend" not in idx:
+            await _apply_ddl(
+                conn,
+                "CREATE INDEX IF NOT EXISTS ix_requests_log_api_key_spend "
+                "ON requests_log (api_key_id, is_deleted)",
+            )
+
         if "spent_microcents" not in cols:
             await _apply_ddl(
                 conn,
@@ -65,7 +86,11 @@ async def ensure_budget_columns(engine) -> None:
             )
             # Seed lifetime spend from historical request logs so an existing key's
             # cap is not silently reset to zero (which would re-grant a leaked key
-            # a full new budget).
+            # a full new budget). Deliberately unfiltered by is_deleted, unlike the
+            # analytics reads over the same table: this restores an accrued total,
+            # so counting a row a retention job has hidden can only ever make the
+            # cap tighter, while honouring the filter would hand a capped key
+            # back the spend it was capped for.
             await conn.execute(
                 text(
                     "UPDATE api_keys SET spent_microcents = ("
@@ -78,21 +103,4 @@ async def ensure_budget_columns(engine) -> None:
         if is_postgres and "budget_limit_cents" in cols:
             await _apply_ddl(
                 conn, "ALTER TABLE api_keys ALTER COLUMN budget_limit_cents TYPE BIGINT"
-            )
-
-        # The model declares ix_requests_log_api_key_spend (api_key_id,
-        # is_deleted); create_all only builds it on fresh databases, so an
-        # upgraded deployment would drift. is_deleted has existed since the
-        # first release (SoftDeleteMixin), so the index is always creatable.
-        idx = {
-            i["name"]
-            for i in await conn.run_sync(
-                lambda sync: inspect(sync).get_indexes("requests_log")
-            )
-        }
-        if "ix_requests_log_api_key_spend" not in idx:
-            await _apply_ddl(
-                conn,
-                "CREATE INDEX IF NOT EXISTS ix_requests_log_api_key_spend "
-                "ON requests_log (api_key_id, is_deleted)",
             )

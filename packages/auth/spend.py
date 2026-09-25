@@ -2,7 +2,8 @@
 
 The cap is a hard lifetime limit on the key's total spend, in microcents
 (1 cent = 10_000 microcents; 1 USD = 1_000_000 microcents, matching chat.py's
-cost math).
+cost math). `ApiKey.budget_limit_cents` is stored in cents, so every
+`cap_microcents` argument below is that column scaled by MICROCENTS_PER_CENT.
 
 Actual cost is only known after the upstream call returns, so enforcement is a
 single atomic ``UPDATE`` that adds the real cost and refuses to let the counter
@@ -43,7 +44,12 @@ async def read_spent(db: AsyncSession, api_key_id: str) -> int:
 
 
 async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -> bool:
-    """Fast pre-check: has the key already reached its lifetime cap?"""
+    """Fast pre-check: has the key already reached its lifetime cap?
+
+    ``cap_microcents`` is ``ApiKey.budget_limit_cents`` scaled by
+    ``MICROCENTS_PER_CENT``, not the column itself — passing the raw cents value
+    asks whether the key has spent a ten-thousandth of its budget.
+    """
     spent = await read_spent(db, api_key_id)
     return spent >= cap_microcents
 
