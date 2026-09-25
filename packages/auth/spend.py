@@ -337,6 +337,12 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
             # The fold runs on sessions of its own, so there is nothing to
             # roll back here — and the re-read below still counts the park.
             pass
+        # End db's read transaction so its SQLite/Postgres snapshot doesn't stay
+        # pinned to the pre-fold spend counter, then re-read on a fresh snapshot.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         spent = await read_spent(db, key)
         pending = await pending_parked_spend(key)
         if pending is None:
