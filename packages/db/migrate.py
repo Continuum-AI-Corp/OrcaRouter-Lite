@@ -111,7 +111,7 @@ async def ensure_budget_columns(engine) -> None:
         await conn.execute(
             text(
                 "UPDATE api_keys SET spent_microcents = ("
-                "  SELECT COALESCE(SUM(cost_microcents), 0) FROM requests_log "
+                "  SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
                 "  WHERE requests_log.api_key_id = api_keys.id"
                 ") WHERE spent_microcents = 0 AND budget_limit_cents IS NOT NULL"
             )
