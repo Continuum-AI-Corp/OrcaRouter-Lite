@@ -45,45 +45,46 @@ async def test_is_exhausted_false_below_cap(db_session, key):
     assert await is_exhausted(db_session, key.id, cap) is True
 
 
-async def test_concurrent_charges_never_exceed_cap(db_session, key):
+async def test_concurrent_charges_never_exceed_cap(tmp_sqlite_url):
     """Two simultaneous charges that together would exceed the cap are bounded.
 
-    Build two independent sessions against the same engine so the atomic
-    `UPDATE ... WHERE spent + actual <= cap` guard is exercised for real.
-    Exactly one fits; the other is clamped. The counter ends at `cap`, never
-    above it.
+    A file-backed URL, because `:memory:` hands back a `StaticPool`: both
+    sessions would then share one DBAPI connection, the statements would
+    serialise inside it, and the atomic `UPDATE ... WHERE spent + actual <= cap`
+    guard would never meet a concurrent writer. Over a file each session gets
+    its own connection, and SQLite's single writer plus the pool's busy timeout
+    still makes the outcome deterministic — one charge fits, the other's guard
+    matches no row and its clamp fills the counter to exactly `cap`.
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from packages.db.engine import build_engine
+    from packages.db.models.api_key import ApiKey
     from packages.db.models.base import Base
 
-    engine = build_engine("sqlite+aiosqlite:///:memory:")
+    engine = build_engine(tmp_sqlite_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as s:
-        from packages.db.models.api_key import ApiKey
-
         k = ApiKey(workspace_id="default", name="race", key_hash="h-race", key_prefix="p-race")
         s.add(k)
         await s.commit()
         await s.refresh(k)
 
     cap = 10_000
-    # Each request costs 6_000; both cannot fit under a 10_000 cap. Use two
-    # independent sessions so the atomic `UPDATE ... WHERE spent + actual <= cap`
-    # guard is exercised for real.
     async with factory() as s1, factory() as s2:
         r1, r2 = await asyncio.gather(
             charge_budget(s1, k.id, cap, 6_000),
             charge_budget(s2, k.id, cap, 6_000),
         )
-        final = (await read_spent(s1, k.id)) or (await read_spent(s2, k.id))
+    # Read the winner's outcome from a session that took part in neither charge.
+    async with factory() as reader:
+        final = await read_spent(reader, k.id)
     await engine.dispose()
-    # One succeeds, the other is clamped — but the counter never exceeds cap.
-    assert (r1 is True) ^ (r2 is True) or (r1 is False and r2 is False)
-    assert final <= cap
+
+    assert (r1 is True) + (r2 is True) == 1
+    assert final == cap
 
 
 def test_microcent_conversion_constant():
