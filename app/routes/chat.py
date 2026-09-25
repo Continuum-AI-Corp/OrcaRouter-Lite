@@ -535,6 +535,8 @@ async def execute_chat(
             return
         await charge_budget(session, str(kc.key_id), cap, actual_microcents, commit=commit)
 
+    from packages.db import session as session_mod
+
     client = await router_cache.get_router(db)
     raw_strategy = getattr(client, "strategy", None)
     strategy = raw_strategy if isinstance(raw_strategy, str) and raw_strategy else "balanced"
@@ -736,12 +738,26 @@ async def execute_chat(
             actual_resolved=cached_model,
         )
         log.cost_microcents = 0
-        db.add(log)
-        try:
-            await _settle_budget(db, 0, commit=False)
-            await db.commit()
-        except Exception as commit_err:
-            logger.warning("request_log_commit_failed", error=str(commit_err))
+        if session_mod._session_factory is None:
+            db.add(log)
+            try:
+                await _settle_budget(db, 0, commit=False)
+                await db.commit()
+            except Exception as commit_err:
+                logger.warning("request_log_commit_failed", error=str(commit_err))
+        else:
+            s = session_mod._session_factory()
+            try:
+                s.add(log)
+                await _settle_budget(s, 0, commit=False)
+                await s.commit()
+            except Exception as commit_err:
+                logger.warning("request_log_commit_failed", error=str(commit_err))
+            finally:
+                try:
+                    await s.close()
+                except Exception as close_err:
+                    logger.debug("request_log_session_close_failed", error=str(close_err))
         return JSONResponse(
             content=cache_hit_response,
             headers=_orca_response_headers(
@@ -788,21 +804,34 @@ async def execute_chat(
                 requested_model=requested_model,
                 actual_resolved=resolved_model,
             )
-            db.add(log)
-            try:
-                await _settle_budget(db, 0, commit=False)
-                await db.commit()
-            except Exception as commit_err:
-                # Roll back so the request-scoped session is not left in a
-                # dirty state. Without this, the next DB operation on the
-                # same session (e.g. the streaming _finalize or the
-                # blocking path's own commit) fails with InvalidRequestError
-                # because the pending INSERT is still attached.
+            if session_mod._session_factory is None:
+                db.add(log)
                 try:
-                    await db.rollback()
-                except Exception:
-                    pass
-                logger.warning("request_log_commit_failed", error=str(commit_err))
+                    await _settle_budget(db, 0, commit=False)
+                    await db.commit()
+                except Exception as commit_err:
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
+                    logger.warning("request_log_commit_failed", error=str(commit_err))
+            else:
+                s = session_mod._session_factory()
+                try:
+                    s.add(log)
+                    await _settle_budget(s, 0, commit=False)
+                    await s.commit()
+                except Exception as commit_err:
+                    try:
+                        await s.rollback()
+                    except Exception:
+                        pass
+                    logger.warning("request_log_commit_failed", error=str(commit_err))
+                finally:
+                    try:
+                        await s.close()
+                    except Exception as close_err:
+                        logger.debug("request_log_session_close_failed", error=str(close_err))
 
         try:
             stream_obj = await client.acompletion(
@@ -1379,6 +1408,8 @@ async def execute_chat(
                     )
                 )
             )
+            and not (response.get("_orca_meta") or {}).get("cost_usd")
+            and not (log.cost_microcents or 0)
         ):
             settle_amount = max(
                 log.cost_microcents or 0,
@@ -1404,20 +1435,22 @@ async def execute_chat(
             return await _settlement_is_durable(db, log_values["trace_id"])
 
         for attempt in range(1, max_attempts + 1):
+            use_factory = session_mod._session_factory is not None
+            s = session_mod._session_factory() if use_factory else db
             try:
                 if attempt > 1 and (
-                    await db.scalar(
-                        select(RequestLog.id).where(RequestLog.trace_id == log.trace_id)
+                    await s.scalar(
+                        select(RequestLog.id).where(RequestLog.trace_id == log_values["trace_id"])
                     )
                 ) is not None:
                     break  # already durable (log + charge committed)
-                db.add(RequestLog(**log_values))
-                await _settle_budget(db, settle_amount, commit=False)
-                await db.commit()
+                s.add(RequestLog(**log_values))
+                await _settle_budget(s, settle_amount, commit=False)
+                await s.commit()
                 break
             except Exception as commit_err:
                 try:
-                    await db.rollback()
+                    await s.rollback()
                 except BaseException:
                     # A cancellation here must not escape the handler: the
                     # give-ups below are the only thing that keeps this cost
@@ -1454,7 +1487,7 @@ async def execute_chat(
                 # past — then park unless it did commit, or this request's
                 # delivered cost would vanish with the coroutine.
                 try:
-                    await db.rollback()
+                    await s.rollback()
                 except BaseException:
                     # A second cancellation here must not skip the park: the
                     # give-up below propagates the original either way.
@@ -1464,6 +1497,14 @@ async def execute_chat(
                     attempt, cancel_err, _durable,
                 )
                 raise
+            finally:
+                if use_factory:
+                    try:
+                        await s.close()
+                    except Exception as close_err:
+                        logger.debug(
+                            "request_log_session_close_failed", error=str(close_err),
+                        )
 
     hosted_fallback = _meta_hosted_fallback(response)
     if isinstance(response, dict) and "_orca_meta" in response:
