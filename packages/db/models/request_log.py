@@ -12,6 +12,7 @@ class RequestLog(Base, UUIDMixin, SoftDeleteMixin):
     __tablename__ = "requests_log"
     __table_args__ = (
         Index("ix_requests_log_ws_created", "workspace_id", "created_at"),
+        Index("ix_requests_log_api_key_spend", "api_key_id", "is_deleted"),
     )
 
     workspace_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
