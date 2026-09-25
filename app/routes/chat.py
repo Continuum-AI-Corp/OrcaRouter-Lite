@@ -1104,6 +1104,14 @@ async def execute_chat(
                     "chat_completion_stream_error",
                     error=str(exc), error_type=error_type,
                 )
+                # Mark the settlement known: compute the delivery estimate
+                # and mark usage_seen BEFORE yielding the error frame and sentinel.
+                # If the client disconnects during yield, GeneratorExit unwinds
+                # directly through finally without executing lines below the yield;
+                # settling first ensures _finalize never charges the key's full
+                # remaining allowance for a client disconnect during error delivery.
+                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
+                usage_seen = True
                 err_body = {
                     "error": {
                         "message": f"Upstream provider error: {exc}",
@@ -1115,20 +1123,6 @@ async def execute_chat(
                 # is legal; clients reading until [DONE] still get it after
                 # an upstream error.
                 yield "data: [DONE]\n\n"
-                # Mark the settlement known: the error response was delivered
-                # in full (terminal [DONE] sent), so charge the recorded cost
-                # rather than the full remaining allowance. Otherwise every
-                # transient mid-stream provider failure (rate limit, 5xx,
-                # network drop) would charge (and exhaust) the key's entire
-                # remaining budget. What the provider never measured is priced
-                # from what actually reached the client, so an unmeasured
-                # partial stream still costs something proportional to the
-                # delivery instead of nothing — a capped key cannot stream for
-                # free behind a flaky provider. Client disconnects never reach
-                # this branch (GeneratorExit is not an Exception); the cancel
-                # branch prices them from the same delivery estimate.
-                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
-                usage_seen = True
             finally:
                 # Same shielding reason as the cancel branch: ensure the
                 # log write actually completes before we unwind, even if
