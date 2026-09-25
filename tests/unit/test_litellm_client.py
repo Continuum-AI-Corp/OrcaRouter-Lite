@@ -114,6 +114,69 @@ async def test_acompletion_forwards_parallel_tool_calls_false(fake_router_with_s
     assert call.kwargs["parallel_tool_calls"] is False
 
 
+async def test_acompletion_forwards_json_schema_response_format(fake_router_with_stream):
+    """Issue #132: LangChain json_schema `response_format` must reach the
+    LiteLLM Router kwargs intact (strict + nested schema)."""
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "MovieReview",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+    }
+    await fake_router_with_stream.acompletion(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        response_format=response_format,
+    )
+    call = fake_router_with_stream._router.acompletion.await_args
+    assert call.kwargs["response_format"] == response_format
+
+
+async def test_openai_deployments_advertise_response_schema(monkeypatch):
+    """LiteLLM uses model_info.supports_response_schema to decide whether
+    to pass json_schema through or re-wrap it. OpenAI-compatible
+    deployments must advertise support so LangChain structured output
+    is not rewritten into an invalid schema."""
+    import litellm
+
+    from packages.litellm_adapter.client import OrcaLiteLLMClient
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    captured: dict = {}
+
+    def _router(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(litellm, "Router", _router)
+
+    OrcaLiteLLMClient(
+        deployments=[
+            ProviderDeployment(
+                model_name="gpt-4o-mini",
+                litellm_model="openai/gpt-4o-mini",
+                api_key="sk-test",
+                provider="openai",
+            ),
+            ProviderDeployment(
+                model_name="claude-3-5-sonnet-latest",
+                litellm_model="anthropic/claude-3-5-sonnet-latest",
+                api_key="sk-test",
+                provider="anthropic",
+            ),
+        ]
+    )
+    by_name = {e["model_name"]: e for e in captured["model_list"]}
+    assert by_name["gpt-4o-mini"]["model_info"]["supports_response_schema"] is True
+    assert "supports_response_schema" not in (by_name["claude-3-5-sonnet-latest"].get("model_info") or {})
+
+
 async def test_acompletion_non_stream_returns_dict_with_orca_meta(fake_router_with_stream):
     """Non-stream path must keep returning a dict with the _orca_meta
     injection — that's the contract the existing chat.py blocking path

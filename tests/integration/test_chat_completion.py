@@ -175,6 +175,75 @@ async def test_chat_completion_omits_parallel_tool_calls_when_unset(chat_client)
     assert "parallel_tool_calls" not in call_kwargs
 
 
+async def test_chat_completion_forwards_langchain_json_schema(chat_client):
+    """Regression for #132: LangChain `method="json_schema"` must reach LiteLLM
+    as a well-formed OpenAI structured-outputs block, not a shape that
+    upstream rejects as `Invalid schema for response_format`.
+    """
+    client, fake = chat_client
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "MovieReview",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "rating": {"type": "number"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["title", "rating", "summary"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Review the movie Dune 2"}],
+            "response_format": response_format,
+        },
+    )
+    assert r.status_code == 200, r.text
+    fake.acompletion.assert_awaited_once()
+    rf = fake.acompletion.await_args.kwargs["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "MovieReview"
+    assert rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"]["additionalProperties"] is False
+    assert rf["json_schema"]["schema"]["required"] == ["title", "rating", "summary"]
+
+
+async def test_chat_completion_normalizes_misplaced_json_schema_strict(chat_client):
+    """`strict` beside `type` is the LiteLLM-docs spelling; OpenAI 400s it."""
+    client, fake = chat_client
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Review the movie Dune 2"}],
+            "response_format": {
+                "type": "json_schema",
+                "strict": True,
+                "json_schema": {
+                    "name": "MovieReview",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}},
+                    },
+                },
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    rf = fake.acompletion.await_args.kwargs["response_format"]
+    assert "strict" not in rf
+    assert rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"]["additionalProperties"] is False
+
+
 async def test_chat_completion_writes_request_log(chat_client):
     client, _fake = chat_client
     await client.post(
