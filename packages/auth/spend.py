@@ -47,6 +47,20 @@ async def read_spent(db: AsyncSession, api_key_id: str) -> int:
     return int(spent or 0)
 
 
+async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int) -> int:
+    """The key's spend as of this pre-check, in microcents.
+
+    One read behind both halves of the caller's decision: whether to reject the
+    request, and what allowance is left for a cost that is not known yet.
+    ``cap_microcents`` is ``ApiKey.budget_limit_cents`` scaled by
+    ``MICROCENTS_PER_CENT``, not the column itself. It is unused here and
+    becomes load-bearing the moment this function has a parked obligation to
+    fold before it answers; keeping it in the signature is what lets the caller
+    hold on to a single pre-check call instead of reading the counter twice.
+    """
+    return await read_spent(db, api_key_id)
+
+
 async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -> bool:
     """Fast pre-check: has the key already reached its lifetime cap?
 
@@ -54,8 +68,7 @@ async def is_exhausted(db: AsyncSession, api_key_id: str, cap_microcents: int) -
     ``MICROCENTS_PER_CENT``, not the column itself — passing the raw cents value
     asks whether the key has spent a ten-thousandth of its budget.
     """
-    spent = await read_spent(db, api_key_id)
-    return spent >= cap_microcents
+    return await budget_precheck(db, api_key_id, cap_microcents) >= cap_microcents
 
 
 async def charge_budget(
