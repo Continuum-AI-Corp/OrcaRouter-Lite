@@ -1,11 +1,15 @@
-"""Per-key lifetime spend tracking that enforces ``ApiKey.budget_limit_cents``.
+"""Per-key lifetime spend tracking schema and accounting primitives for ``ApiKey.budget_limit_cents``.
+
+This module provides the accounting schema foundation and atomic charge primitives
+(part 1 of the 4-part budget subsystem; request-path enforcement is wired in #161).
 
 The cap is a hard lifetime limit on the key's total spend, in microcents
 (1 cent = 10_000 microcents; 1 USD = 1_000_000 microcents, matching chat.py's
 cost math). `ApiKey.budget_limit_cents` is stored in cents, so every
-`cap_microcents` argument below is that column scaled by MICROCENTS_PER_CENT.
+`cap_microcents` argument below must be that column scaled by MICROCENTS_PER_CENT
+(passing raw cents asks whether the key has spent a ten-thousandth of its budget).
 
-Actual cost is only known after the upstream call returns, so enforcement is a
+Actual cost is only known after the upstream call returns, so accounting is a
 single atomic ``UPDATE`` that adds the real cost and refuses to let the counter
 exceed the cap::
 

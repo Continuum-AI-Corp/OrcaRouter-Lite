@@ -22,12 +22,10 @@ class ApiKey(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     # into microcents for every comparison against `spent_microcents` below, and
     # a 32-bit int4 would ceiling a lifetime budget near 214,748 dollars.
     budget_limit_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # Running lifetime spend in microcents. `spend.charge_budget` is the only
-    # writer: a single atomic UPDATE adds the actual cost and refuses to let the
-    # counter exceed budget_limit_cents, so the cap holds even under concurrent
-    # requests for the same key. This column is the state that protocol needs —
-    # a caller enforces by checking `is_exhausted` before dispatch and charging
-    # after, so the cap is only as live as the paths that route through it.
+    # Running lifetime spend in microcents. Schema foundation for the budget subsystem
+    # (part 1/4; request-path enforcement wired in #161). `spend.charge_budget`
+    # records actual cost atomically and ensures the counter never exceeds
+    # the scaled budget_limit_cents.
     spent_microcents: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default="0", default=0
     )
