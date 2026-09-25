@@ -8,6 +8,7 @@ def test_settings_load_with_defaults(isolated_env):
 
     s = Settings(_env_file=None)
 
+    assert s.credential_encryption_previous_key == ""
     assert s.database_url == "sqlite+aiosqlite:///./orca.db"
     assert s.redis_url is None
     assert s.host == "0.0.0.0"
@@ -81,6 +82,14 @@ def test_settings_xai_and_groq_are_separate_providers(isolated_env, monkeypatch)
     keys = s.env_provider_keys()
     assert keys == {"xai": "xai-grok-key", "groq": "gsk_groq-key"}
     assert s.xai_api_key != s.groq_api_key
+
+
+def test_settings_reads_previous_encryption_key(isolated_env, monkeypatch):
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_PREVIOUS_KEY", "aa" * 32)
+    from app.config import Settings
+
+    s = Settings(_env_file=None)
+    assert s.credential_encryption_previous_key == "aa" * 32
 
 
 def test_settings_database_url_override(isolated_env, monkeypatch):

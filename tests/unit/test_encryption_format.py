@@ -96,3 +96,30 @@ def test_truncated_blob_raises_rather_than_returning_garbage(hex_key):
     blob = encrypt_credential("x")
     with pytest.raises(InvalidTag):
         decrypt_credential(blob[:8])
+
+
+def test_credential_is_decryptable_reports_current_key_only(hex_key, monkeypatch):
+    from app import config as cfg
+    from packages.auth.encryption import (
+        credential_is_decryptable,
+        decrypt_credential,
+        encrypt_credential,
+        materialize_encryption_key,
+    )
+
+    blob = encrypt_credential("sk-secret")
+    assert credential_is_decryptable(blob) is True
+
+    other = cfg.Settings(_env_file=None, credential_encryption_key="cd" * 32)
+    monkeypatch.setattr(cfg, "get_settings", lambda: other)
+    assert credential_is_decryptable(blob) is False
+    # Explicit previous key still opens the blob (migrate path).
+    assert decrypt_credential(blob, key=materialize_encryption_key("ab" * 32)) == "sk-secret"
+
+
+def test_materialize_encryption_key_accepts_hex_and_passphrase():
+    from packages.auth.encryption import materialize_encryption_key
+
+    hex_key = materialize_encryption_key("ab" * 32)
+    assert hex_key == bytes.fromhex("ab" * 32)
+    assert len(materialize_encryption_key("not-hex-passphrase")) == 32

@@ -46,7 +46,7 @@ from app import cache_invalidation_bus
 from app.config import get_settings
 from app.deps import get_db, get_key_context
 from app.router_cache import usable_providers_from_db
-from packages.auth.encryption import encrypt_credential
+from packages.auth.encryption import credential_is_decryptable, encrypt_credential
 from packages.auth.types import KeyContext
 from packages.db.models.provider_key import ProviderKey
 
@@ -64,6 +64,10 @@ class ProviderKeyOut(BaseModel):
     # "db" = stored in provider_keys table (editable + deletable from dashboard)
     # "env" = loaded from .env / process env (read-only here; edit .env to change)
     source: str = "db"
+    # False when the stored ciphertext does not open with the current
+    # CREDENTIAL_ENCRYPTION_KEY (typical after a key rotation). Env rows
+    # are always decryptable — they are not sealed.
+    decryptable: bool = True
 
 
 def _mask_key(api_key: str) -> str:
@@ -112,6 +116,7 @@ async def list_providers(
                 key_prefix=r.key_prefix,
                 is_enabled=r.is_enabled,
                 source="db",
+                decryptable=credential_is_decryptable(r.encrypted_key),
             ).model_dump()
         )
 
@@ -130,6 +135,7 @@ async def list_providers(
                 key_prefix=_mask_key(raw_key),
                 is_enabled=True,
                 source="env",
+                decryptable=True,
             ).model_dump()
         )
 
@@ -191,6 +197,7 @@ async def set_provider_key(
         key_prefix=existing.key_prefix,
         is_enabled=existing.is_enabled,
         source="db",
+        decryptable=True,
     ).model_dump()
 
 

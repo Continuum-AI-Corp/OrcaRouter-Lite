@@ -73,16 +73,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # provider credentials are (or would be) sealed with the publicly-known
     # dev encryption key. Runs after create_all so a fresh database's empty
     # provider_keys table counts as "no credentials at risk".
-    from packages.db.guards import assert_credential_encryption_ready
+    from packages.db.guards import (
+        assert_credential_encryption_ready,
+        audit_stored_provider_credentials,
+    )
 
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
     await assert_credential_encryption_ready(
-        make_session=async_sessionmaker(engine, expire_on_commit=False),
+        make_session=session_factory,
         database_url=settings.database_url,
         allow_insecure_dev_key=settings.allow_insecure_dev_key,
         engine=engine,
     )
 
-    session_mod._session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    # Surface rotated/corrupt ciphertext instead of letting the router
+    # silently drop those rows. Re-encrypts when the previous key is set.
+    audit = await audit_stored_provider_credentials(
+        make_session=session_factory,
+        previous_key=settings.credential_encryption_previous_key,
+    )
+    if audit.reencrypted:
+        log.warning("reencrypted_provider_keys", providers=list(audit.reencrypted))
+    if audit.undecryptable:
+        log.error(
+            "undecryptable_provider_keys",
+            providers=list(audit.undecryptable),
+        )
+
+    session_mod._session_factory = session_factory
 
     from app.seed import seed_initial_state
 
