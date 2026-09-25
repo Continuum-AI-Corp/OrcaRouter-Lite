@@ -1,4 +1,4 @@
-"""Tests for /v1/models, /v1/keys (rotate), /v1/routing (strategy)."""
+"""Tests for /v1/models, /v1/keys (rotate / allowlist), /v1/routing (strategy)."""
 
 from __future__ import annotations
 
@@ -98,6 +98,8 @@ async def test_list_keys_shows_seeded_key(lite_client):
     assert len(body["keys"]) == 1
     assert body["keys"][0]["name"] == "default"
     assert "key_hash" not in body["keys"][0]
+    # Seeded key is unrestricted — null, not [].
+    assert body["keys"][0]["model_allowlist"] is None
 
 
 async def test_create_new_key_returns_plaintext_once(lite_client):
@@ -107,10 +109,411 @@ async def test_create_new_key_returns_plaintext_once(lite_client):
     body = r.json()
     assert body["api_key"].startswith("sk-orca-")
     assert body["name"] == "ci-runner"
+    assert body["model_allowlist"] is None
 
     listing = await client.get("/v1/keys")
     names = {k["name"] for k in listing.json()["keys"]}
     assert names == {"default", "ci-runner"}
+
+
+async def test_create_key_with_allowlist(lite_client):
+    client, _ = lite_client
+    r = await client.post(
+        "/v1/keys",
+        json={"name": "scoped", "model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["model_allowlist"] == ["gpt-4o-mini"]
+
+    listing = await client.get("/v1/keys")
+    scoped = next(k for k in listing.json()["keys"] if k["name"] == "scoped")
+    assert scoped["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_create_key_empty_allowlist_is_deny_all(lite_client):
+    """[] is stored as [] (deny everything), not coerced to null."""
+    client, _ = lite_client
+    r = await client.post("/v1/keys", json={"name": "locked", "model_allowlist": []})
+    assert r.status_code == 201, r.text
+    assert r.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    locked = next(k for k in listing.json()["keys"] if k["name"] == "locked")
+    assert locked["model_allowlist"] == []
+
+
+async def test_create_key_rejects_unknown_model_ids(lite_client):
+    client, _ = lite_client
+    r = await client.post(
+        "/v1/keys",
+        json={
+            "name": "typo",
+            "model_allowlist": ["gpt-4o-mni", "also-fake", "gpt-4o-mini"],
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "gpt-4o-mni" in r.text
+    assert "also-fake" in r.text
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "typo" not in names
+
+
+async def test_put_key_updates_allowlist(lite_client):
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "mutable"})).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] == ["gpt-4o-mini"]
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_put_key_empty_allowlist_is_deny_all(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "lockable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(f"/v1/keys/{created['id']}", json={"model_allowlist": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] == []
+
+
+async def test_put_key_null_allowlist_clears_restriction(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "clearable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": None},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["model_allowlist"] is None
+
+
+async def test_restricted_key_can_update_own_allowlist(lite_client):
+    """A restricted key may PUT /v1/keys/{own_id} only to a subset of its
+    current allowlist, including [] (deny-everything). Existing schema:
+    [] is not coerced to null."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={
+                "name": "self-update",
+                "model_allowlist": ["gpt-4o-mini", "gpt-4o"],
+            },
+        )
+    ).json()
+    restricted_id = created["id"]
+    headers = {"Authorization": f"Bearer {created['api_key']}"}
+
+    async with AsyncClient(
+        transport=client._transport, base_url="http://t", headers=headers
+    ) as restricted:
+        same = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        assert same.status_code == 200, same.text
+        assert same.json()["model_allowlist"] == ["gpt-4o-mini", "gpt-4o"]
+
+        narrowed = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": ["gpt-4o-mini"]},
+        )
+        assert narrowed.status_code == 200, narrowed.text
+        assert narrowed.json()["model_allowlist"] == ["gpt-4o-mini"]
+
+        empty = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": []},
+        )
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
+    assert row["model_allowlist"] == []
+
+
+async def test_restricted_key_cannot_widen_own_allowlist(lite_client):
+    """A restricted key must not add models outside its current list —
+    including when the caller itself is locked to []."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-widen", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    locked = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "deny-all-self", "model_allowlist": []},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        extra = await restricted.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        other = await restricted.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o"]},
+        )
+    assert extra.status_code == 403, extra.text
+    assert other.status_code == 403, other.text
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {locked['api_key']}"},
+    ) as deny_all:
+        r = await deny_all.put(
+            f"/v1/keys/{locked['id']}",
+            json={"model_allowlist": ["gpt-4o-mini"]},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    scoped = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    empty = next(k for k in listing.json()["keys"] if k["id"] == locked["id"])
+    assert scoped["model_allowlist"] == ["gpt-4o-mini"]
+    assert empty["model_allowlist"] == []
+
+
+async def test_restricted_key_cannot_clear_own_allowlist_to_unrestricted(lite_client):
+    """JSON null stores None = unrestricted. A restricted key must not
+    lift the operator-imposed allowlist on itself."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-clear", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    restricted_id = created["id"]
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        cleared = await restricted.put(
+            f"/v1/keys/{restricted_id}",
+            json={"model_allowlist": None},
+        )
+    assert cleared.status_code == 403, cleared.text
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == restricted_id)
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_restricted_key_cannot_create_unrestricted_key(lite_client):
+    """Omitting model_allowlist (or sending JSON null) would mint an
+    unrestricted key. A restricted caller must not escalate that way."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        omitted = await restricted.post("/v1/keys", json={"name": "escape"})
+        explicit_null = await restricted.post(
+            "/v1/keys", json={"name": "escape-null", "model_allowlist": None}
+        )
+    assert omitted.status_code == 403, omitted.text
+    assert explicit_null.status_code == 403, explicit_null.text
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "escape" not in names
+    assert "escape-null" not in names
+
+
+async def test_restricted_key_cannot_create_broader_allowlist(lite_client):
+    """A restricted key may not mint a sibling with models outside its
+    own allowlist — including when the caller itself is locked to []."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    locked = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "deny-all-creator", "model_allowlist": []},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        wider = await restricted.post(
+            "/v1/keys",
+            json={"name": "wider", "model_allowlist": ["gpt-4o-mini", "gpt-4o"]},
+        )
+        other = await restricted.post(
+            "/v1/keys",
+            json={"name": "other-model", "model_allowlist": ["gpt-4o"]},
+        )
+    assert wider.status_code == 403, wider.text
+    assert other.status_code == 403, other.text
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {locked['api_key']}"},
+    ) as deny_all:
+        r = await deny_all.post(
+            "/v1/keys",
+            json={"name": "from-empty", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert "wider" not in names
+    assert "other-model" not in names
+    assert "from-empty" not in names
+
+
+async def test_restricted_key_can_create_subset_allowlist(lite_client):
+    """A restricted key may create a key whose allowlist is a non-null
+    subset of its own, including [] (deny-everything)."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-creator", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        same = await restricted.post(
+            "/v1/keys",
+            json={"name": "same-scope", "model_allowlist": ["gpt-4o-mini"]},
+        )
+        empty = await restricted.post(
+            "/v1/keys",
+            json={"name": "locked-child", "model_allowlist": []},
+        )
+    assert same.status_code == 201, same.text
+    assert same.json()["model_allowlist"] == ["gpt-4o-mini"]
+    assert empty.status_code == 201, empty.text
+    assert empty.json()["model_allowlist"] == []
+
+    listing = await client.get("/v1/keys")
+    names = {k["name"] for k in listing.json()["keys"]}
+    assert {"same-scope", "locked-child"} <= names
+
+
+async def test_restricted_key_cannot_update_other_key_allowlist(lite_client):
+    """A restricted key may not rewrite a sibling key's allowlist."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    restricted = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-caller", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    other = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "sibling", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {restricted['api_key']}"},
+    ) as caller:
+        r = await caller.put(
+            f"/v1/keys/{other['id']}",
+            json={"model_allowlist": None},
+        )
+    assert r.status_code == 403, r.text
+
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == other["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_put_key_rejects_unknown_model_ids(lite_client):
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "stable", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    r = await client.put(
+        f"/v1/keys/{created['id']}",
+        json={"model_allowlist": ["not-a-real-model"]},
+    )
+    assert r.status_code == 422, r.text
+    assert "not-a-real-model" in r.text
+    listing = await client.get("/v1/keys")
+    row = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert row["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_put_key_missing_returns_404(lite_client):
+    client, _ = lite_client
+    r = await client.put(
+        "/v1/keys/does-not-exist",
+        json={"model_allowlist": ["gpt-4o-mini"]},
+    )
+    assert r.status_code == 404
 
 
 async def test_revoke_key_blocks_reauth(lite_client):
@@ -128,6 +531,169 @@ async def test_revoke_key_blocks_reauth(lite_client):
                            headers={"Authorization": f"Bearer {new_key}"}) as fresh:
         r2 = await fresh.get("/v1/keys")
     assert r2.status_code == 401
+
+
+async def test_restricted_key_cannot_revoke_other_keys(lite_client):
+    """A restricted key may not revoke a sibling or the operator key."""
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    listing = await client.get("/v1/keys")
+    operator_id = next(k["id"] for k in listing.json()["keys"] if k["name"] == "default")
+    restricted = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "scoped-revoker", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+    sibling = (await client.post("/v1/keys", json={"name": "sibling"})).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {restricted['api_key']}"},
+    ) as caller:
+        against_sibling = await caller.delete(f"/v1/keys/{sibling['id']}")
+        against_operator = await caller.delete(f"/v1/keys/{operator_id}")
+    assert against_sibling.status_code == 403, against_sibling.text
+    assert against_operator.status_code == 403, against_operator.text
+
+    listing = await client.get("/v1/keys")
+    by_id = {k["id"]: k for k in listing.json()["keys"]}
+    assert by_id[sibling["id"]]["is_active"] is True
+    assert by_id[sibling["id"]]["revoked_at"] is None
+    assert by_id[operator_id]["is_active"] is True
+    assert by_id[operator_id]["revoked_at"] is None
+
+
+async def test_restricted_key_can_revoke_itself(lite_client):
+    from httpx import AsyncClient
+
+    client, _ = lite_client
+    created = (
+        await client.post(
+            "/v1/keys",
+            json={"name": "self-revoke", "model_allowlist": ["gpt-4o-mini"]},
+        )
+    ).json()
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as restricted:
+        r = await restricted.delete(f"/v1/keys/{created['id']}")
+    assert r.status_code == 204
+
+    async with AsyncClient(
+        transport=client._transport,
+        base_url="http://t",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+    ) as revoked:
+        r2 = await revoked.get("/v1/keys")
+    assert r2.status_code == 401
+
+
+async def test_update_key_rechecks_restriction_at_write_time(lite_client):
+    """kc.model_allowlist is captured at auth. A concurrent restrict must
+    still be honored: re-read the caller with FOR UPDATE and reject a
+    stale self-clear to null."""
+    from sqlalchemy import select
+
+    from app.deps import get_key_context
+    from packages.auth.types import KeyContext
+    from packages.db import session as session_mod
+    from packages.db.models.api_key import ApiKey
+
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "racy"})).json()
+
+    async with session_mod._session_factory() as s:
+        row = (
+            await s.execute(select(ApiKey).where(ApiKey.id == created["id"]))
+        ).scalar_one()
+        row.model_allowlist = ["gpt-4o-mini"]
+        workspace_id = row.workspace_id
+        await s.commit()
+
+    stale = KeyContext(
+        key_id=created["id"],
+        workspace_id=workspace_id,
+        name="racy",
+        model_allowlist=None,
+    )
+    app = client._transport.app
+    app.dependency_overrides[get_key_context] = lambda: stale
+    try:
+        r = await client.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": None},
+        )
+    finally:
+        app.dependency_overrides.pop(get_key_context, None)
+
+    assert r.status_code == 403, r.text
+    listing = await client.get("/v1/keys")
+    stored = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    assert stored["model_allowlist"] == ["gpt-4o-mini"]
+
+
+async def test_sqlite_write_lock_blocks_allowlist_change_during_update(lite_client, monkeypatch):
+    """SQLite drops FOR UPDATE. BEGIN IMMEDIATE must hold the write lock
+    from the caller re-read through commit, so a concurrent restrict cannot
+    land in that window and then be overwritten."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.routes import keys as keys_mod
+    from packages.db import session as session_mod
+    from packages.db.models.api_key import ApiKey
+
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "racy-lock"})).json()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = keys_mod._lock_caller
+
+    async def _pause_after_lock(db, key_id):
+        caller = await original(db, key_id)
+        started.set()
+        await release.wait()
+        return caller
+
+    monkeypatch.setattr(keys_mod, "_lock_caller", _pause_after_lock)
+
+    async def _restrict() -> None:
+        async with session_mod._session_factory() as other:
+            row = (
+                await other.execute(select(ApiKey).where(ApiKey.id == created["id"]))
+            ).scalar_one()
+            row.model_allowlist = ["gpt-4o-mini"]
+            await other.commit()
+
+    put_task = asyncio.create_task(
+        client.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o"]},
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    restrict_task = asyncio.create_task(_restrict())
+    done, _pending = await asyncio.wait({restrict_task}, timeout=0.4)
+    assert restrict_task not in done, "restrict committed while the update held the write lock"
+
+    release.set()
+    response = await asyncio.wait_for(put_task, timeout=5)
+    await asyncio.wait_for(restrict_task, timeout=5)
+
+    assert response.status_code == 200, response.text
+    listing = await client.get("/v1/keys")
+    stored = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    # Restrict ran after the in-flight write, so it is the value that sticks.
+    assert stored["model_allowlist"] == ["gpt-4o-mini"]
 
 
 # ── /v1/routing ───────────────────────────────────────────────────────
