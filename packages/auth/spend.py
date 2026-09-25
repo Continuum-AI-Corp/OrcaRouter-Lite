@@ -152,16 +152,21 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
 
     The park exists because a charge could not be recorded; leaving it parked
     forever would mean a key at its cap is rejected by an amount that never
-    settles and never clears, so every pre-dispatch check tries to move it.
-    Only whole obligations that fit under the remaining allowance move, so the
-    counter still cannot overshoot the cap; a park larger than the remainder
-    stays parked in full — that over-claim is the fail-closed policy, and it
-    stays visible as a row rather than being written off.
+    settles and never clears, so every pre-check tries to move it. The
+    remaining allowance is applied oldest-obligation-first and a park larger
+    than it bills what fits and is rewritten to its remainder, rather than
+    staying parked whole. That keeps the invariant the fold exists to hold:
+    either the queue is empty, or the counter sits exactly on the cap. Without
+    it a key can be refused at a lifetime spend below its limit with a row that
+    nothing will ever shrink, which is the state this function is supposed to
+    drain. The remainder is still a real debt — the over-claim is the
+    fail-closed policy — so it stays visible and keeps `is_exhausted` blocking;
+    it is never written off, and it folds for free the moment the cap is raised.
 
-    The charge and the row deletions share one transaction with
-    compare-and-swap guards: two workers folding the same park cannot
-    double-bill it, because the loser's UPDATE or DELETE matches nothing and
-    its next request folds what the winner left.
+    The charge and the row writes share one transaction with compare-and-swap
+    guards on each: two workers folding the same park cannot double-bill it,
+    because the loser's UPDATE or DELETE matches nothing and its next request
+    folds what the winner left.
     """
     from packages.db import session as session_mod
 
@@ -194,18 +199,29 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     await s.execute(
                         select(BudgetPark.trace_id, BudgetPark.microcents)
                         .where(BudgetPark.api_key_id == key)
-                        .order_by(BudgetPark.created_at)
+                        # Oldest debt first. `created_at` alone is not a total
+                        # order — it is second-resolution on SQLite and ties on
+                        # Postgres — and two workers computing the same fold
+                        # have to agree on which row is the partial one, so
+                        # `trace_id` breaks the tie.
+                        .order_by(BudgetPark.created_at, BudgetPark.trace_id)
                     )
                 ).all()
                 move = 0
+                room = cap_microcents - spent
                 settling: list[str] = []
+                trim: tuple[str, int, int] | None = None
                 for trace_id, microcents in rows:
                     microcents = int(microcents)
-                    if spent + move + microcents <= cap_microcents:
+                    if microcents <= room:
+                        room -= microcents
                         move += microcents
                         settling.append(trace_id)
-                    else:
-                        break
+                        continue
+                    if room > 0:
+                        trim = (trace_id, microcents, microcents - room)
+                        move += room
+                    break
                 if move <= 0:
                     return 0
                 charged = await s.execute(
@@ -215,11 +231,24 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                 )
                 if charged.rowcount != 1:
                     raise _FoldConflict
-                cleared = await s.execute(
-                    delete(BudgetPark).where(BudgetPark.trace_id.in_(settling))
-                )
-                if cleared.rowcount != len(settling):
-                    raise _FoldConflict
+                if settling:
+                    cleared = await s.execute(
+                        delete(BudgetPark).where(BudgetPark.trace_id.in_(settling))
+                    )
+                    if cleared.rowcount != len(settling):
+                        raise _FoldConflict
+                if trim is not None:
+                    trace_id, whole, remainder = trim
+                    trimmed = await s.execute(
+                        update(BudgetPark)
+                        .where(
+                            BudgetPark.trace_id == trace_id,
+                            BudgetPark.microcents == whole,
+                        )
+                        .values(microcents=remainder)
+                    )
+                    if trimmed.rowcount != 1:
+                        raise _FoldConflict
                 return move
     except _FoldConflict:
         return 0

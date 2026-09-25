@@ -163,13 +163,14 @@ async def test_duplicate_park_record_is_idempotent(parked_env):
     assert await pending_parked_spend(key_id) == 900
 
 
-async def test_park_beyond_the_remainder_stays_parked_and_exhausted(parked_env):
-    """A park larger than the remainder cannot move without over-recording.
+async def test_park_beyond_the_remainder_bills_what_fits(parked_env):
+    """An oversized park converges the counter on the cap instead of freezing.
 
-    Moving the whole 2_000 row would push the counter past the cap, and
-    clamping the counter without consuming the row would record spend that was
-    never billed. So the row stays parked — visible, not written off — and the
-    key is exhausted by the obligation it still owes.
+    Moving the whole 2_000 row would push the counter past the cap, and leaving
+    it parked whole would refuse the key at a lifetime spend below its limit on
+    the strength of a row nothing ever shrinks. So the 1_000 the cap can absorb
+    bills and the row keeps the rest: the over-claim stays visible and still
+    blocks, and with a park outstanding the counter is now exactly on the cap.
     """
     key_id = await _parked_key(parked_env, spent=9_000)
     cap = 10_000
@@ -178,8 +179,39 @@ async def test_park_beyond_the_remainder_stays_parked_and_exhausted(parked_env):
     async with parked_env() as s:
         assert await is_exhausted(s, key_id, cap) is True
     async with parked_env() as s:
-        assert await read_spent(s, key_id) == 9_000  # untouched, never overshot
-    assert await pending_parked_spend(key_id) == 2_000  # the debt stays visible
+        assert await read_spent(s, key_id) == 10_000  # the cap, never past it
+    assert await pending_parked_spend(key_id) == 1_000  # the debt stays visible
+
+    # A second pre-check must not bill the microcents the first one moved, and
+    # the remainder must not clear on its own.
+    async with parked_env() as s:
+        assert await is_exhausted(s, key_id, cap) is True
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 10_000
+    assert await pending_parked_spend(key_id) == 1_000
+
+
+async def test_parked_queue_drains_oldest_first_as_the_cap_opens(parked_env):
+    """What the cap could not absorb waits, and folds the moment it can.
+
+    The oversized head takes the whole allowance, so the younger park behind it
+    waits — not lost, just queued. Raising the cap reopens room, and the fold
+    keeps its promise that the counter reaches `min(cap, spent + debt)`.
+    """
+    key_id = await _parked_key(parked_env, spent=9_000)
+    await record_unsettled_spend(trace_id="t-old", api_key_id=key_id, microcents=2_000)
+    await record_unsettled_spend(trace_id="t-new", api_key_id=key_id, microcents=500)
+
+    assert await settle_parked_spend(key_id, 10_000) == 1_000
+    assert await settle_parked_spend(key_id, 10_000) == 0  # no room left
+    assert await pending_parked_spend(key_id) == 1_500
+
+    assert await settle_parked_spend(key_id, 11_000) == 1_000
+    assert await pending_parked_spend(key_id) == 500
+    assert await settle_parked_spend(key_id, 12_000) == 500
+    assert await pending_parked_spend(key_id) == 0
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 11_500
 
 
 async def test_concurrent_folds_bill_the_park_once(parked_env):
