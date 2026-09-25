@@ -31,7 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import MICROCENTS_PER_CENT, charge_budget, is_exhausted, read_spent
+from packages.auth.spend import MICROCENTS_PER_CENT, budget_precheck, charge_budget
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -556,13 +556,14 @@ async def execute_chat(
     # exceed the cap (fail-closed, never over-recorded).
     if kc.budget_limit_cents is not None:
         cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
-        if await is_exhausted(db, str(kc.key_id), cap):
+        spent = await budget_precheck(db, str(kc.key_id), cap)
+        if spent >= cap:
             raise HTTPException(
                 status_code=429,
                 detail=f"API key budget exhausted ({cap} microcents lifetime cap reached).",
             )
         kc._budget_cap = cap
-        kc._budget_spent = await read_spent(db, str(kc.key_id))
+        kc._budget_spent = spent
 
     started_perf = time.perf_counter()
     completion_kwargs = body.model_dump(exclude_none=True)
