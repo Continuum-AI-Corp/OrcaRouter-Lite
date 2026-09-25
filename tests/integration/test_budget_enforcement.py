@@ -286,9 +286,16 @@ async def test_budgeted_stream_with_usage_frame_charges_actual(budget_env):
     assert 0 <= spent < 100_000
 
 
-async def test_budgeted_blocking_forces_include_usage(budget_env):
-    # Non-streaming budgeted request also forces include_usage on, even when the
-    # client omits it.
+async def test_budgeted_blocking_request_sends_no_stream_options(budget_env):
+    """A cap must not put a streaming-only parameter on a blocking request.
+
+    `include_usage` only decides whether the last frame of a *stream* reports
+    usage — a non-streaming completion always carries it. LiteLLM forwards the
+    parameter without looking at `stream`, and OpenAI rejects it on a request
+    where stream is false, so forcing it here turned every request for a
+    budgeted key into an upstream 400: the cap made the endpoint unusable
+    instead of enforced.
+    """
     make_client, fake, factory, _root = budget_env
     key, _key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
 
@@ -298,12 +305,37 @@ async def test_budgeted_blocking_forces_include_usage(budget_env):
             json={
                 "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "hi"}],
-                "stream_options": {"include_usage": False},
             },
         )
 
     assert r.status_code == 200, r.text
-    assert fake.acompletion.call_args.kwargs["stream_options"]["include_usage"] is True
+    assert "stream_options" not in fake.acompletion.call_args.kwargs
+
+
+async def test_fail_closed_charge_is_recorded_on_the_row_it_charges(budget_env):
+    """The counter and the request history are one quantity and may not diverge.
+
+    `spent_microcents` is seeded from, and reconciled against, the sum of
+    `cost_microcents`, so a fail-closed charge that only the counter saw leaves
+    a key exhausted by an amount no query over its requests can reproduce.
+    """
+    spent, _call_args = await _budgeted_stream(
+        budget_env,
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ],
+    )
+    assert spent == 100_000  # the full remaining allowance
+
+    _make_client, _fake, factory, _root = budget_env
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        rows = (await s.execute(select(RequestLog.cost_microcents))).scalars().all()
+    assert rows == [spent]
 
 
 async def _get_spent(factory, key_id: str) -> int:

@@ -857,6 +857,11 @@ async def execute_chat(
                     (fail-closed) so no client-side choice can bypass the cap.
                     Once a usage frame was delivered the cost is known — even
                     if the stream then died — and the recorded cost is charged.
+
+                    The raised amount is written back into the row, not just
+                    into the counter: a charge only the counter saw would leave
+                    a key exhausted by an amount nothing in its own request
+                    history accounts for.
                     """
                     actual = row_values.get("cost_microcents") or 0
                     if not usage_seen:
@@ -865,6 +870,7 @@ async def execute_chat(
                             (getattr(kc, "_budget_cap", 0) or 0)
                             - (getattr(kc, "_budget_spent", 0) or 0),
                         )
+                        row_values["cost_microcents"] = actual
                     return actual
 
                 async def _commit_row(*, retry: bool) -> None:
@@ -878,6 +884,10 @@ async def execute_chat(
                     exactly once per request: never doubled (on a commit-ack-loss
                     retry) and never dropped.
                     """
+                    # Resolved before the row is built: a fail-closed charge
+                    # raises `row_values["cost_microcents"]`, and the object
+                    # inserted must carry the amount the counter will move by.
+                    settlement = _settlement_amount()
                     log = RequestLog(**row_values)
                     if session_mod._session_factory is None:
                         # Test-only fallback (the app always installs a
@@ -887,7 +897,7 @@ async def execute_chat(
                             return
                         db.add(log)
                         try:
-                            await _settle_budget(db, _settlement_amount(), commit=False)
+                            await _settle_budget(db, settlement, commit=False)
                             await db.commit()
                         except Exception:
                             try:
@@ -901,7 +911,7 @@ async def execute_chat(
                         if retry and (await _already_persisted(s)):
                             return
                         s.add(log)
-                        await _settle_budget(s, _settlement_amount(), commit=False)
+                        await _settle_budget(s, settlement, commit=False)
                         await s.commit()
                     finally:
                         try:
@@ -1158,12 +1168,6 @@ async def execute_chat(
     response: dict = {}
     actual_resolved: str | None = None
     try:
-        # A budgeted key must receive usage so its spend is measured. Force
-        # include_usage on for budgeted keys even if the client omitted it.
-        if getattr(kc, "_budget_cap", None) is not None:
-            existing_so = completion_kwargs.get("stream_options") or {}
-            if existing_so.get("include_usage") is not True:
-                completion_kwargs["stream_options"] = {**existing_so, "include_usage": True}
         response = await client.acompletion(
             **completion_kwargs,
             fallbacks=fallbacks_arg,
@@ -1223,14 +1227,16 @@ async def execute_chat(
 
         settle_amount = log.cost_microcents
         # Fail-closed mirror of the streaming path's cost-unknown rule: a
-        # budgeted key whose successful response carries no usage (provider
-        # ignored the forced include_usage) has an unknown cost — charge the
-        # full remaining allowance so a delivered completion can never cost
-        # nothing. Gated on having actually received a completion dict: a
-        # request that failed before the upstream answered (response == {},
-        # e.g. the re-raised HTTPException above, whose status_code never
-        # left 200) charges its recorded ~0 cost instead — mirroring the
-        # cache-hit and pre-stream-failure paths.
+        # budgeted key whose successful response carries no usage (a provider
+        # that answered without the field at all) has an unknown cost — charge
+        # the full remaining allowance so a delivered completion can never cost
+        # nothing, and record that amount on the row: a charge only the counter
+        # saw would leave a key exhausted by an amount nothing in its own
+        # request history accounts for. Gated on having actually received a
+        # completion dict: a request that failed before the upstream answered
+        # (response == {}, e.g. the re-raised HTTPException above, whose
+        # status_code never left 200) charges its recorded ~0 cost instead —
+        # mirroring the cache-hit and pre-stream-failure paths.
         if (
             getattr(kc, "_budget_cap", None) is not None
             and status_code < 400
@@ -1242,6 +1248,7 @@ async def execute_chat(
                 log.cost_microcents or 0,
                 kc._budget_cap - (getattr(kc, "_budget_spent", 0) or 0),
             )
+            log.cost_microcents = settle_amount
 
         # Values are snapshotted once (latency is measured in _build_log_row,
         # before any commit attempt, so retry backoff never inflates it) and
