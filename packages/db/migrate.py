@@ -14,6 +14,9 @@ earlier boot applied only halfway.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from sqlalchemy import BigInteger, inspect, text
 from sqlalchemy.exc import DBAPIError
 
@@ -23,10 +26,16 @@ from packages.db.models.budget_park import BudgetPark
 def _already_applied(err: DBAPIError) -> bool:
     """Whether a DDL failure means someone else applied the change first."""
     msg = str(err).lower()
-    return "already exists" in msg or "duplicate column" in msg
+    if "already exists" in msg or "duplicate column" in msg:
+        return True
+    # Two concurrent CREATE TABLE are serialised by the catalog rather than by
+    # the wording of a complaint, so the loser gets a unique violation on
+    # pg_class/pg_type (`*_relname_nsp_index`, `*_typname_nsp_index`) instead of
+    # "already exists". Same meaning: the object is there now.
+    return "duplicate key value" in msg and "nsp_index" in msg
 
 
-async def _apply_ddl(conn, statement: str) -> None:
+async def _apply_ddl(conn, statement: str | Callable[..., Any]) -> None:
     """Run one startup DDL statement, tolerating a boot that raced us to it.
 
     Every worker runs this in its lifespan, so the first boot after an upgrade
@@ -36,10 +45,16 @@ async def _apply_ddl(conn, statement: str) -> None:
     from here, not a reason to keep the worker from booting. The failure is
     caught inside a SAVEPOINT because on Postgres an error would otherwise abort
     the whole transaction and take the rest of the startup with it.
+
+    `statement` is raw SQL, or a callable handed to `run_sync` for DDL that only
+    the dialect's own generator can emit (a `Table.create`).
     """
     try:
         async with conn.begin_nested():
-            await conn.execute(text(statement))
+            if callable(statement):
+                await conn.run_sync(statement)
+            else:
+                await conn.execute(text(statement))
     except DBAPIError as err:
         if not _already_applied(err):
             raise
@@ -72,9 +87,16 @@ async def ensure_budget_columns(engine) -> None:
 
         if BudgetPark.__tablename__ not in tables:
             # `create_all` covers fresh databases; this covers upgrades whose
-            # schema predates the table. `checkfirst` keeps a racing boot from
-            # failing when the winner creates it first.
-            await conn.run_sync(BudgetPark.__table__.create, checkfirst=True)
+            # schema predates the table. `checkfirst` re-reads the catalog, and
+            # that read cannot see another boot's uncommitted CREATE — so two
+            # workers both get here and one loses anyway. It goes through
+            # `_apply_ddl` for the same reason the ALTER does: losing that race
+            # has to count as having won, and the savepoint is what keeps the
+            # error from aborting the transaction the rest of startup runs in.
+            await _apply_ddl(
+                conn,
+                lambda sync: BudgetPark.__table__.create(sync, checkfirst=True),
+            )
 
         # The model declares ix_requests_log_api_key_spend (api_key_id,
         # is_deleted); create_all only builds it on fresh databases, so an

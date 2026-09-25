@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from packages.db.engine import build_engine
@@ -273,3 +274,60 @@ async def test_ensure_budget_columns_creates_budget_parks_table(tmp_sqlite_url):
         await ensure_budget_columns(engine)
     finally:
         await engine.dispose()
+
+
+async def test_losing_the_park_table_race_still_boots(tmp_sqlite_url, monkeypatch):
+    """The one startup DDL a racing boot used to die on.
+
+    `checkfirst` asks the catalog and then creates, so two workers inspecting an
+    un-migrated schema both hear "no" and one is rejected anyway — and Postgres
+    reports that collision as a catalog unique violation rather than an
+    "already exists" message. The create has to land in the same
+    tolerate-and-continue path as the ALTER, because a worker that dies here
+    never gets far enough to fold the obligation this table holds.
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS budget_parks"))
+
+    attempts: list[str] = []
+
+    def _lose_the_race(*args, **kwargs):
+        attempts.append("create")
+        raise OperationalError(
+            "CREATE TABLE budget_parks (...)",
+            {},
+            Exception(
+                'duplicate key value violates unique constraint '
+                '"pg_class_relname_nsp_index"'
+            ),
+        )
+
+    monkeypatch.setattr(BudgetPark.__table__, "create", _lose_the_race)
+    try:
+        await ensure_budget_columns(engine)
+
+        assert attempts == ["create"]  # it really did take the race
+        async with engine.connect() as conn:
+            # and it went on to do the rest of startup.
+            assert await conn.scalar(
+                text("SELECT spent_microcents FROM api_keys WHERE workspace_id = 'w1'")
+            ) == 2500
+    finally:
+        await engine.dispose()
+
+
+def test_catalog_collision_reads_as_already_applied():
+    """Only a collision on the object's own name counts as someone winning."""
+    from packages.db.migrate import _already_applied
+
+    def _err(msg: str) -> OperationalError:
+        return OperationalError("CREATE TABLE budget_parks (...)", {}, Exception(msg))
+
+    assert _already_applied(
+        _err('duplicate key value violates unique constraint "pg_class_relname_nsp_index"')
+    )
+    assert _already_applied(_err("table budget_parks already exists"))
+    assert _already_applied(_err("duplicate column name: spent_microcents"))
+    assert not _already_applied(_err("permission denied to create relation"))
+    assert not _already_applied(_err('near "TABL": syntax error'))
