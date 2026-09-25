@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.db.models.api_key import ApiKey
 from packages.db.models.budget_park import BudgetPark
+from packages.db.models.request_log import RequestLog
 
 MICROCENTS_PER_CENT = 10_000
 
@@ -245,6 +246,31 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         .order_by(BudgetPark.created_at, BudgetPark.trace_id)
                     )
                 ).all()
+                # A log row and its budget charge are committed atomically.
+                # If a commit acknowledgement was lost and the durability
+                # probe also failed, the matching park is only a fallback
+                # record; the request-log row proves the charge already landed.
+                logged = set(
+                    (
+                        await s.scalars(
+                            select(RequestLog.trace_id).where(
+                                RequestLog.trace_id.in_(
+                                    [trace_id for trace_id, _amount in rows]
+                                )
+                            )
+                        )
+                    ).all()
+                ) if rows else set()
+                already_charged = [trace_id for trace_id, _amount in rows if trace_id in logged]
+                if already_charged:
+                    cleared = await s.execute(
+                        delete(BudgetPark).where(
+                            BudgetPark.trace_id.in_(already_charged)
+                        )
+                    )
+                    if cleared.rowcount != len(already_charged):
+                        raise _FoldConflict
+                    rows = [row for row in rows if row[0] not in logged]
                 room = cap_microcents - spent
                 for trace_id, microcents in rows:
                     microcents = int(microcents)
@@ -294,6 +320,8 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
     # a trimmed row is still owed, and the hold on it has to stay.
     for _settled in settling:
         _unsettled.pop((key, _settled), None)
+    for _already_charged in already_charged:
+        _unsettled.pop((key, _already_charged), None)
     return move
 
 
