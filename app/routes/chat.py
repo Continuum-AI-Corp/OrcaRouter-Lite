@@ -1361,7 +1361,11 @@ async def execute_chat(
             except Exception as commit_err:
                 try:
                     await db.rollback()
-                except Exception:
+                except BaseException:
+                    # A cancellation here must not escape the handler: the
+                    # give-ups below are the only thing that keeps this cost
+                    # counting, and an exception raised from inside a handler is
+                    # not caught by this `try`'s other arms.
                     pass
                 if attempt == max_attempts:
                     await _give_up_settlement(
@@ -1376,7 +1380,10 @@ async def execute_chat(
                     await asyncio.sleep(_LOG_COMMIT_BACKOFF_S[attempt - 1])
                 except BaseException:
                     # Cancelled during the backoff: nothing is in flight and the
-                    # row is given up on — say so, then propagate like the arm above.
+                    # row is given up on — say so, then propagate. An exception
+                    # raised from a handler is not caught by this `try`'s other
+                    # arms, so the give-up below does not run a second time for
+                    # this settlement.
                     await _give_up_settlement(
                         kc, log_values["trace_id"], settle_amount,
                         attempt, commit_err, _durable,

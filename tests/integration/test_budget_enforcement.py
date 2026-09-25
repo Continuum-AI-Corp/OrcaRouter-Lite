@@ -832,6 +832,171 @@ async def test_budgeted_blocking_commit_failure_persists_row_and_charge(budget_e
     assert await _get_spent(factory, key_id) == rows[0].cost_microcents
 
 
+async def test_cancelled_during_backoff_gives_up_exactly_once(
+    budget_env, monkeypatch
+):
+    """A request torn down between retries parks its cost once.
+
+    The write failed, the backoff is cancelled, and the transaction is abandoned
+    with the completion already delivered: the obligation has to be parked, and
+    parked exactly once. The `raise` out of the give-up is what keeps the
+    write-in-flight arm from running a second give-up for the same settlement —
+    two warnings for one abandoned row, and a second durability probe while the
+    process is going away.
+
+    The row is a usage-less completion for a 10-cent key, so the obligation is
+    the fail-closed 100_000 microcents.
+    """
+    from sqlalchemy import event, select
+
+    import app.routes.chat as chat
+    from packages.auth.spend import pending_parked_spend
+    from packages.db.models.request_log import RequestLog
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+    fake.acompletion = AsyncMock(return_value=_completion("Hello!"))
+
+    give_ups: list[int] = []
+    real_give_up = chat._give_up_settlement
+
+    async def _count_give_ups(*args, **kwargs):
+        give_ups.append(1)
+        return await real_give_up(*args, **kwargs)
+
+    monkeypatch.setattr(chat, "_give_up_settlement", _count_give_ups)
+
+    # Aim the cancellation at the backoff and nowhere earlier: a task is
+    # cancelled at its next suspension, and the handler's rollback is one, so
+    # make that call a coroutine that never yields. The sleep is then the only
+    # place the cancellation can land.
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async def _suspendless_rollback(self, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(AsyncSession, "rollback", _suspendless_rollback)
+
+    in_retry = asyncio.Event()
+    failures = {"n": 0}
+
+    def _fail_the_write(conn, cursor, statement, parameters, context, executemany):
+        if "INSERT INTO requests_log" in statement and failures["n"] == 0:
+            failures["n"] += 1
+            in_retry.set()
+            raise RuntimeError("database is locked")
+
+    sync_engine = factory.kw["bind"].sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _fail_the_write)
+
+    async def _request():
+        async with await make_client(key) as c:
+            return await c.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+    try:
+        task = asyncio.ensure_future(_request())
+        await in_retry.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _fail_the_write)
+
+    assert failures["n"] == 1  # the write really did fail and start backing off
+    assert give_ups == [1]  # abandoned once, not twice and not never
+    async with factory() as s:
+        assert not (
+            await s.execute(select(RequestLog.id).where(RequestLog.api_key_id == key_id))
+        ).all()
+    assert await pending_parked_spend(key_id) == 100_000
+
+
+async def test_cancelled_rollback_does_not_skip_the_give_up(
+    budget_env, monkeypatch
+):
+    """A cancellation inside the retry handler still accounts for the cost.
+
+    Same teardown, other delivery point: the rollback that opens the handler is
+    itself an await, so it can be where the cancellation lands. An exception
+    raised from inside a handler is not caught by this `try`'s other arms, so it
+    used to escape straight past the give-up below — the write lost, the
+    obligation unparked, and the cap reopened for exactly the key whose write
+    had just failed.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    import app.routes.chat as chat
+    from packages.auth.spend import pending_parked_spend
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+    fake.acompletion = AsyncMock(return_value=_completion("Hello!"))
+
+    give_ups: list[int] = []
+    real_give_up = chat._give_up_settlement
+
+    async def _count_give_ups(*args, **kwargs):
+        give_ups.append(1)
+        return await real_give_up(*args, **kwargs)
+
+    rollbacks = {"n": 0}
+    real_rollback = AsyncSession.rollback
+
+    async def _cancel_the_first_rollback(self, *args, **kwargs):
+        rollbacks["n"] += 1
+        if rollbacks["n"] == 1:
+            raise asyncio.CancelledError
+        return await real_rollback(self, *args, **kwargs)
+
+    failures = {"n": 0}
+
+    def _fail_the_write(conn, cursor, statement, parameters, context, executemany):
+        if "INSERT INTO requests_log" in statement and failures["n"] == 0:
+            failures["n"] += 1
+            raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(chat, "_give_up_settlement", _count_give_ups)
+    monkeypatch.setattr(AsyncSession, "rollback", _cancel_the_first_rollback)
+    sync_engine = factory.kw["bind"].sync_engine
+    from sqlalchemy import event
+
+    event.listen(sync_engine, "before_cursor_execute", _fail_the_write)
+    try:
+        async with await make_client(key) as c:
+            await c.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini",
+                      "messages": [{"role": "user", "content": "hi"}]},
+            )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _fail_the_write)
+
+    assert rollbacks["n"] >= 1  # the cancellation really did land there
+    assert failures["n"] == 1
+    # The cancellation is swallowed rather than escaping, so the loop keeps
+    # going: the next attempt still finds the session poisoned (the failed flush
+    # was never rolled back), and the real rollback at the head of that handler
+    # clears it, so a later attempt lands the row and its charge. Pinned: the
+    # cost is accounted for once, and no give-up was needed to do it — before
+    # this the request died here with nothing billed and nothing parked.
+    assert give_ups == []
+    assert await _get_spent(factory, key_id) == 100_000
+    assert await pending_parked_spend(key_id) == 0
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        rows = (
+            await s.execute(select(RequestLog.id).where(RequestLog.api_key_id == key_id))
+        ).all()
+    assert len(rows) == 1
+
+
 # ── Durable recovery: the park outlives the process that lost it ──────
 
 class _AckLossSession(AsyncSession):
