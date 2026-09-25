@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable
 
 import anyio
 import structlog
@@ -31,7 +31,12 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import MICROCENTS_PER_CENT, charge_budget, read_spent
+from packages.auth.spend import (
+    MICROCENTS_PER_CENT,
+    charge_budget,
+    read_spent,
+    record_unsettled_spend,
+)
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -254,6 +259,107 @@ def _unmeasured_charge(
         )),
         estimate,
     )
+
+
+def _blocking_delivery_has_content(response: dict) -> bool:
+    """Whether a blocking ChatCompletion response carried delivered content."""
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        text = choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return True
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return True
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str) and part.strip():
+                        return True
+                    if isinstance(part, dict):
+                        t = part.get("text")
+                        if isinstance(t, str) and t.strip():
+                            return True
+    return False
+async def _give_up_settlement(
+    kc: KeyContext,
+    trace_id: str,
+    amount: int,
+    attempts: int,
+    error: BaseException,
+    persisted: Callable[[], Awaitable[bool]],
+) -> None:
+    """Last resort for a settlement that is not durable and will not be retried.
+
+    The log row dies with the charge (one transaction), so nothing anywhere
+    remembers this cost. Park it — one idempotent row keyed by this
+    settlement's `trace_id` — against the key's cap, rather than leaving the
+    cap open for whoever reads the warning (see `packages.auth.spend`).
+
+    `persisted()` is asked first, because the last attempt has no retry left to
+    run the trace_id check: a commit that applied but whose ack was lost (or a
+    cancellation that landed after it) leaves the charge already in
+    `spent_microcents`, and parking on top of it would bill one delivery twice.
+    """
+    logger.warning("request_log_commit_failed", error=str(error), attempts=attempts)
+    if getattr(kc, "_budget_cap", None) is None:
+        return
+    try:
+        durable = await persisted()
+    except asyncio.CancelledError:
+        # Torn down mid-probe, so the outcome is still unknown: park before
+        # propagating rather than letting this cost vanish with the coroutine.
+        await record_unsettled_spend(
+            trace_id=trace_id, api_key_id=str(kc.key_id), microcents=amount
+        )
+        raise
+    if not durable:
+        await record_unsettled_spend(
+            trace_id=trace_id, api_key_id=str(kc.key_id), microcents=amount
+        )
+
+
+async def _trace_is_persisted(session: AsyncSession, trace_id: str) -> bool:
+    from sqlalchemy import select
+
+    return (
+        await session.scalar(
+            select(RequestLog.id).where(RequestLog.trace_id == trace_id)
+        )
+    ) is not None
+
+
+async def _settlement_is_durable(db: AsyncSession, trace_id: str) -> bool:
+    """Whether the request-log row for this trace_id is committed.
+
+    The row and the budget charge are one transaction, so the row is proof the
+    spend is already counted. It reads on its own session because the failed
+    attempt's session is closed or rolled back by the time the give-up runs, and
+    answers False when it cannot read at all: during a real outage parking is the
+    only thing keeping the cap honest, so an unreadable DB must look
+    not-durable rather than durable.
+    """
+    from packages.db import session as session_mod
+
+    try:
+        if session_mod._session_factory is None:
+            # Test-only fallback (the app always installs a factory).
+            return await _trace_is_persisted(db, trace_id)
+        s = session_mod._session_factory()
+        try:
+            return await _trace_is_persisted(s, trace_id)
+        finally:
+            try:
+                await s.close()
+            except Exception as close_err:
+                logger.debug("request_log_session_close_failed", error=str(close_err))
+    except Exception:
+        return False
 
 
 def _chunk_to_dict(chunk) -> dict:
@@ -1011,6 +1117,9 @@ async def execute_chat(
                         select(RequestLog.id).where(RequestLog.trace_id == row_values["trace_id"])
                     )) is not None
 
+                async def _durable() -> bool:
+                    return await _settlement_is_durable(db, row_values["trace_id"])
+
                 def _settlement_amount() -> int:
                     """Budget charge for this request, in microcents.
 
@@ -1143,15 +1252,15 @@ async def execute_chat(
                                 # Cancelled during the backoff: nothing is
                                 # in flight, the row is given up on — say
                                 # so, then propagate like the arm below.
-                                logger.warning(
-                                    "request_log_commit_failed",
-                                    error=str(commit_err), attempts=attempt,
+                                await _give_up_settlement(
+                                    kc, row_values["trace_id"], _settlement_amount(),
+                                    attempt, commit_err, _durable,
                                 )
                                 raise
                             continue
-                        logger.warning(
-                            "request_log_commit_failed",
-                            error=str(commit_err), attempts=attempt,
+                        await _give_up_settlement(
+                            kc, row_values["trace_id"], _settlement_amount(),
+                            attempt, commit_err, _durable,
                         )
                     except BaseException:
                         # CancelledError aimed at us, not at the commit —
@@ -1162,9 +1271,9 @@ async def execute_chat(
                             await commit_task
                             return
                         except Exception as commit_err:
-                            logger.warning(
-                                "request_log_commit_failed",
-                                error=str(commit_err), attempts=attempt,
+                            await _give_up_settlement(
+                                kc, row_values["trace_id"], _settlement_amount(),
+                                attempt, commit_err, _durable,
                             )
                         except BaseException:
                             # The detached task itself was cancelled, so its
@@ -1538,6 +1647,12 @@ async def execute_chat(
             if getattr(log, c.key) is not None
         }
         max_attempts = len(_LOG_COMMIT_BACKOFF_S) + 1
+
+        async def _durable() -> bool:
+            # The snapshot, not `log`: the give-up can run after a rollback has
+            # expired the session's state.
+            return await _settlement_is_durable(db, log_values["trace_id"])
+
         for attempt in range(1, max_attempts + 1):
             try:
                 if attempt > 1 and (
@@ -1556,17 +1671,14 @@ async def execute_chat(
                 except Exception:
                     pass
                 if attempt == max_attempts:
-                    # Row and charge die together here, so this request's spend
-                    # is not counted against the cap — stated plainly because a
-                    # reader of the log has to know the counter under-reports
-                    # until the next boot repair reconciles it. Parking the
-                    # obligation durably is #162's work; until it lands this
-                    # path is observably lossy under a sustained DB outage.
-                    logger.warning(
-                        "request_log_commit_failed",
-                        error=str(commit_err),
-                        attempts=attempt,
-                        budget_charge_lost=settle_amount,
+                    # Last attempt: probe whether the write landed and, if it
+                    # did not, park the obligation. Nothing anywhere else
+                    # remembers this cost — the row dies with the charge in one
+                    # transaction — so a silent drop here would reopen the cap
+                    # for exactly the key whose settlement failed.
+                    await _give_up_settlement(
+                        kc, log_values["trace_id"], settle_amount,
+                        attempt, commit_err, _durable,
                     )
                     break
                 logger.info(
@@ -1577,10 +1689,29 @@ async def execute_chat(
                 except BaseException:
                     # Cancelled during the backoff: nothing is in flight and the
                     # row is given up on — say so, then propagate like the arm above.
-                    logger.warning(
-                        "request_log_commit_failed", error=str(commit_err), attempts=attempt,
+                    await _give_up_settlement(
+                        kc, log_values["trace_id"], settle_amount,
+                        attempt, commit_err, _durable,
                     )
                     raise
+            except BaseException as cancel_err:
+                # Cancelled while the write was in flight. Unlike the streaming
+                # path there is no detached task left to land it: the transaction
+                # dies with this coroutine. Release it first — it holds the
+                # pending write's locks, which the durability read below needs
+                # past — then park unless it did commit, or this request's
+                # delivered cost would vanish with the coroutine.
+                try:
+                    await db.rollback()
+                except BaseException:
+                    # A second cancellation here must not skip the park: the
+                    # give-up below propagates the original either way.
+                    pass
+                await _give_up_settlement(
+                    kc, log_values["trace_id"], settle_amount,
+                    attempt, cancel_err, _durable,
+                )
+                raise
 
     hosted_fallback = _meta_hosted_fallback(response)
     if isinstance(response, dict) and "_orca_meta" in response:
