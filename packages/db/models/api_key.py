@@ -18,8 +18,9 @@ class ApiKey(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(20), nullable=False)
     model_allowlist: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    # BIGINT (not Integer): a client-supplied value up to the microcent scale
-    # can exceed a 32-bit int4 on Postgres, which would otherwise 500 on insert.
+    # BIGINT (not Integer): this is the cap input, scaled by MICROCENTS_PER_CENT
+    # into microcents for every comparison against `spent_microcents` below, and
+    # a 32-bit int4 would ceiling a lifetime budget near 214,748 dollars.
     budget_limit_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Running lifetime spend in microcents. `spend.charge_budget` is the only
     # writer: a single atomic UPDATE adds the actual cost and refuses to let the
