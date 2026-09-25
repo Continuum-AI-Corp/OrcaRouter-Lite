@@ -638,6 +638,64 @@ async def test_update_key_rechecks_restriction_at_write_time(lite_client):
     assert stored["model_allowlist"] == ["gpt-4o-mini"]
 
 
+async def test_sqlite_write_lock_blocks_allowlist_change_during_update(lite_client, monkeypatch):
+    """SQLite drops FOR UPDATE. BEGIN IMMEDIATE must hold the write lock
+    from the caller re-read through commit, so a concurrent restrict cannot
+    land in that window and then be overwritten."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.routes import keys as keys_mod
+    from packages.db import session as session_mod
+    from packages.db.models.api_key import ApiKey
+
+    client, _ = lite_client
+    created = (await client.post("/v1/keys", json={"name": "racy-lock"})).json()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = keys_mod._lock_caller
+
+    async def _pause_after_lock(db, key_id):
+        caller = await original(db, key_id)
+        started.set()
+        await release.wait()
+        return caller
+
+    monkeypatch.setattr(keys_mod, "_lock_caller", _pause_after_lock)
+
+    async def _restrict() -> None:
+        async with session_mod._session_factory() as other:
+            row = (
+                await other.execute(select(ApiKey).where(ApiKey.id == created["id"]))
+            ).scalar_one()
+            row.model_allowlist = ["gpt-4o-mini"]
+            await other.commit()
+
+    put_task = asyncio.create_task(
+        client.put(
+            f"/v1/keys/{created['id']}",
+            json={"model_allowlist": ["gpt-4o"]},
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    restrict_task = asyncio.create_task(_restrict())
+    done, _pending = await asyncio.wait({restrict_task}, timeout=0.4)
+    assert restrict_task not in done, "restrict committed while the update held the write lock"
+
+    release.set()
+    response = await asyncio.wait_for(put_task, timeout=5)
+    await asyncio.wait_for(restrict_task, timeout=5)
+
+    assert response.status_code == 200, response.text
+    listing = await client.get("/v1/keys")
+    stored = next(k for k in listing.json()["keys"] if k["id"] == created["id"])
+    # Restrict ran after the in-flight write, so it is the value that sticks.
+    assert stored["model_allowlist"] == ["gpt-4o-mini"]
+
+
 # ── /v1/routing ───────────────────────────────────────────────────────
 
 async def test_get_routing_returns_default_strategy(lite_client):

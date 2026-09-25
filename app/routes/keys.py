@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time_util import iso_utc
@@ -64,6 +64,21 @@ def _key_public(r: ApiKey) -> dict:
     }
 
 
+async def _begin_sqlite_immediate(db: AsyncSession) -> None:
+    """Take SQLite's reserved lock before the authz read.
+
+    Postgres row locks (``FOR UPDATE``) already pin the caller until commit.
+    SQLite drops ``FOR UPDATE``, and WAL lets another connection commit a
+    restrict after this session has read the caller. ``BEGIN IMMEDIATE``
+    grabs the write lock first, so that restrict either lands before the
+    read or waits until this transaction commits.
+    """
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "sqlite":
+        return
+    await db.execute(text("BEGIN IMMEDIATE"))
+
+
 async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
     """Re-read a key and take a write lock (SELECT FOR UPDATE).
 
@@ -71,8 +86,8 @@ async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
     An operator may restrict the caller between authenticate and commit, so
     every write re-loads the caller (and the target, when different) under
     ``FOR UPDATE`` and re-runs the restriction check against that fresh
-    value. SQLite silently drops ``FOR UPDATE``; the re-read still sees a
-    committed restrict in this request's session.
+    value. On SQLite the caller lock is paired with ``BEGIN IMMEDIATE``
+    (see ``_lock_caller``) because ``FOR UPDATE`` is a no-op there.
     """
     return (
         await db.execute(
@@ -84,6 +99,7 @@ async def _lock_key(db: AsyncSession, key_id: str) -> ApiKey | None:
 
 
 async def _lock_caller(db: AsyncSession, key_id: str) -> ApiKey:
+    await _begin_sqlite_immediate(db)
     caller = await _lock_key(db, key_id)
     if caller is None:
         raise HTTPException(status_code=401, detail="Authentication required")
