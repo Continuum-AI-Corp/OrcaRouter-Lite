@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from packages.db.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
@@ -18,7 +18,17 @@ class ApiKey(Base, UUIDMixin, TimestampMixin, SoftDeleteMixin):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(20), nullable=False)
     model_allowlist: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    budget_limit_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # BIGINT (not Integer): this is the cap input, scaled by MICROCENTS_PER_CENT
+    # into microcents for every comparison against `spent_microcents` below, and
+    # a 32-bit int4 would ceiling a lifetime budget near 214,748 dollars.
+    budget_limit_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Running lifetime spend in microcents. Schema foundation for the budget subsystem
+    # (part 1/4; request-path enforcement wired in #161). `spend.charge_budget`
+    # records actual cost atomically and ensures the counter never exceeds
+    # the scaled budget_limit_cents.
+    spent_microcents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0", default=0
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default="true")
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
