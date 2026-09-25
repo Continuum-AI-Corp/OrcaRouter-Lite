@@ -106,15 +106,24 @@ def _resolve_key_material() -> tuple[bytes, str]:
     return hashlib.sha256(b"orcarouter-lite-dev-key").digest(), "dev-fallback"
 
 
+def resolve_encryption_key() -> tuple[bytes, str]:
+    """Return ``(key_bytes, source)`` for the current process.
+
+    ``source`` is ``"config"`` (Settings/.env), ``"env"`` (``os.environ``),
+    or ``"dev-fallback"`` (the publicly-known SHA-256 seed).
+    """
+    return _resolve_key_material()
+
+
 def is_using_insecure_dev_key() -> bool:
     try:
-        return _resolve_key_material()[1] == "dev-fallback"
+        return resolve_encryption_key()[1] == "dev-fallback"
     except Exception:
         return False
 
 
-def encrypt_credential(plaintext: str) -> bytes:
-    aes = AESGCM(_get_encryption_key())
+def encrypt_credential(plaintext: str, *, key: bytes | None = None) -> bytes:
+    aes = AESGCM(key if key is not None else _get_encryption_key())
     nonce = os.urandom(_NONCE_LEN)
     return VERSION_BYTE + nonce + aes.encrypt(nonce, plaintext.encode("utf-8"), None)
 

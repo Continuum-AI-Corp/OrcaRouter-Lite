@@ -165,10 +165,17 @@ async def _cas_reencrypt_provider_key(
 ) -> bool:
     """Write ``new_encrypted_key`` only if the row is still what we read.
 
-    The startup audit and ``PUT /v1/providers/{id}`` both write
+    The startup audit and ``PUT /v1/providers/{provider}`` both write
     ``provider_keys.encrypted_key``. A booting replica's re-encrypt of the
     previous-key plaintext must not land after an operator PUT of a new
     key (rolling restart): that would silently restore the old credential.
+
+    The ``SELECT ... FOR UPDATE`` and the conditional ``UPDATE`` share this
+    session's transaction, so on Postgres the row lock is held until the
+    caller commits and a concurrent PUT blocks for that whole write.
+    SQLite compiles ``FOR UPDATE`` away, which is why the ciphertext
+    predicate is the portable guard (it also covers the gap on Postgres
+    if a PUT committed before we took the lock).
 
     Version token is the observed ciphertext, not ``updated_at``: SQLite
     stores ``CURRENT_TIMESTAMP`` as ``YYYY-MM-DD HH:MM:SS`` while the
@@ -178,10 +185,19 @@ async def _cas_reencrypt_provider_key(
     """
     from packages.db.models.provider_key import ProviderKey
 
+    await session.execute(
+        select(ProviderKey.id)
+        .where(
+            ProviderKey.id == row_id,
+            ProviderKey.is_deleted == 0,
+        )
+        .with_for_update()
+    )
     result = await session.execute(
         update(ProviderKey)
         .where(
             ProviderKey.id == row_id,
+            ProviderKey.is_deleted == 0,
             ProviderKey.encrypted_key == observed_encrypted_key,
         )
         .values(encrypted_key=new_encrypted_key)
@@ -201,15 +217,17 @@ async def audit_stored_provider_credentials(
     re-save keys. Failures are logged at ERROR with the provider names.
 
     Re-encryption is a compare-and-swap in a fresh transaction per row,
-    not an ORM identity-map mutate + commit. Holding the original
-    snapshot across a later unconditional UPDATE would clobber a
-    concurrent provider-key PUT that landed after we SELECTed.
-    ``with_for_update`` on the snapshot read serializes a racing PUT on
-    dialects that honor row locks (Postgres); SQLite compiles it away,
-    so the CAS is the portable guard.
+    not an ORM identity-map mutate + commit. The snapshot read does not
+    hold locks: a provider-key PUT can commit after we copy the blob.
+    ``_cas_reencrypt_provider_key`` locks that row and updates it only
+    when ``encrypted_key`` is still the snapshot, then the caller
+    commits (which releases the lock). A PUT always wins, because its
+    ciphertext no longer matches.
 
-    Never reseals onto the publicly-known development fallback. When
-    ``is_using_insecure_dev_key()`` is true, rows that open with
+    Never reseals onto the publicly-known development fallback. The
+    destination key is resolved once up front and passed into
+    ``encrypt_credential`` explicitly. When that key is the dev
+    fallback (or resolution fails), rows that open with
     ``previous_key`` stay as they are and are reported as undecryptable.
     """
     from packages.auth.encryption import (
@@ -217,19 +235,24 @@ async def audit_stored_provider_credentials(
         decrypt_credential,
         encrypt_credential,
         materialize_encryption_key,
+        resolve_encryption_key,
     )
     from packages.db.models.provider_key import ProviderKey
 
     previous_bytes = (
         materialize_encryption_key(previous_key) if previous_key.strip() else None
     )
+    try:
+        dest_key, dest_source = resolve_encryption_key()
+    except Exception:
+        # Fail closed: an unknown destination must not be written.
+        dest_key, dest_source = b"", "dev-fallback"
+    insecure_dest = dest_source == "dev-fallback"
 
     async with make_session() as session:
         rows = (
             await session.execute(
-                select(ProviderKey)
-                .where(ProviderKey.is_deleted == 0)
-                .with_for_update()
+                select(ProviderKey).where(ProviderKey.is_deleted == 0)
             )
         ).scalars().all()
         snapshots = [
@@ -263,12 +286,13 @@ async def audit_stored_provider_credentials(
             )
             continue
 
-        # encrypt_credential uses _get_encryption_key(), which falls
-        # back to the SHA-256 of a source-constant seed. Resealing
-        # production ciphertext onto that key is irreversible from
-        # the operator's point of view: backups of the new blobs
-        # decrypt with a publicly-known key. Skip rather than migrate.
-        if is_using_insecure_dev_key():
+        # Resealing production ciphertext onto the SHA-256 of a
+        # source-constant seed is irreversible from the operator's
+        # point of view: backups of the new blobs decrypt with a
+        # publicly-known key. Skip rather than migrate. The check is
+        # the key we will actually pass in, not a later lookup inside
+        # encrypt_credential (that lookup falls back to the dev seed).
+        if insecure_dest:
             undecryptable.append(provider)
             logger.error(
                 "reencrypt_skipped_insecure_dev_key: stored key for %s "
@@ -282,7 +306,7 @@ async def audit_stored_provider_credentials(
             )
             continue
 
-        new_blob = encrypt_credential(plaintext)
+        new_blob = encrypt_credential(plaintext, key=dest_key)
         async with make_session() as session:
             wrote = await _cas_reencrypt_provider_key(
                 session,

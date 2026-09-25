@@ -256,6 +256,13 @@ async def test_audit_does_not_reencrypt_onto_insecure_dev_key(
     monkeypatch.setattr(cfg, "get_settings", lambda: s_dev)
     assert is_using_insecure_dev_key()
 
+    def _must_not_reseal(*_a, **_kw):
+        raise AssertionError("audit resealed onto the insecure dev key")
+
+    monkeypatch.setattr(
+        "packages.auth.encryption.encrypt_credential", _must_not_reseal,
+    )
+
     caplog.set_level(logging.ERROR, logger="orca.credentials")
     audit = await audit_stored_provider_credentials(
         make_session=factory, previous_key=key_a,
@@ -271,6 +278,65 @@ async def test_audit_does_not_reencrypt_onto_insecure_dev_key(
     assert decrypt_credential(
         stored.encrypted_key, key=materialize_encryption_key(key_a),
     ) == "sk-production-secret"
+
+
+async def test_audit_does_not_reencrypt_when_key_resolution_fails(
+    guarded_db, monkeypatch,
+):
+    """A failure while resolving the destination key must not reseal.
+
+    ``is_using_insecure_dev_key`` fails open (returns False) so the boot
+    guard keeps its existing contract. The audit fails closed instead:
+    unknown destination, ciphertext unchanged.
+    """
+    from sqlalchemy import select
+
+    from app import config as cfg
+    from packages.auth.encryption import encrypt_credential
+    from packages.db.guards import audit_stored_provider_credentials
+    from packages.db.models.provider_key import ProviderKey
+
+    key_a = "aa" * 32
+    key_b = "bb" * 32
+    cfg.get_settings.cache_clear()
+    monkeypatch.setattr(
+        cfg, "get_settings",
+        lambda: cfg.Settings(_env_file=None, credential_encryption_key=key_a),
+    )
+    blob_a = encrypt_credential("sk-production-secret")
+
+    _url, factory = guarded_db
+    async with factory() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=blob_a,
+            key_prefix="sk-prod...xxxx",
+        ))
+        await s.commit()
+
+    # Current key is a real key B, so the row is not "already current".
+    # Destination resolution then fails and must not fall through to reseal.
+    monkeypatch.setattr(
+        cfg, "get_settings",
+        lambda: cfg.Settings(_env_file=None, credential_encryption_key=key_b),
+    )
+
+    def _boom():
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(
+        "packages.auth.encryption.resolve_encryption_key", _boom,
+    )
+
+    audit = await audit_stored_provider_credentials(
+        make_session=factory, previous_key=key_a,
+    )
+    assert audit.reencrypted == ()
+    assert audit.undecryptable == ("openai",)
+
+    async with factory() as s:
+        stored = (await s.execute(select(ProviderKey))).scalar_one()
+    assert stored.encrypted_key == blob_a
 
 
 async def test_audit_skips_deleted_rows(guarded_db):
