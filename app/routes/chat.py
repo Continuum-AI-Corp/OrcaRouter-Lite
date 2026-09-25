@@ -88,12 +88,12 @@ def _settle_unmeasured_stream(
     """Token counts for a stream that delivered content but reported no usage.
 
     Reached when the stream ends without a usage frame after content had
-    already been forwarded — a provider failing mid-generation or a client
-    hanging up. The prompt was billed upstream and the delivered text is real,
-    so settling such a stream at zero would let a flaky provider be streamed
-    for free against a capped key. Character counts divided by 4 under-count
-    code and CJK on purpose — an estimate must not over-bill for a failure the
-    caller cannot steer.
+    already been forwarded — a provider failing mid-generation, an adapter
+    fault, or a client hanging up. The prompt was billed upstream and the
+    delivered text is real, so settling such a stream at zero would let a
+    flaky provider be streamed for free against a capped key. Character
+    counts divided by 4 under-count code and CJK on purpose — an estimate must
+    not over-bill for a failure the caller cannot steer.
 
     `caller_bailed` also prices a delivery that carried nothing. An empty
     delivery from a provider failure is evidence of an empty cost, so there the
