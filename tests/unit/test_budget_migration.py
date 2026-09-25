@@ -101,6 +101,37 @@ async def test_orm_reads_work_after_upgrade(tmp_sqlite_url):
         await engine.dispose()
 
 
+async def test_seed_runs_after_the_index_it_aggregates_through(tmp_sqlite_url):
+    """The first post-upgrade boot must not full-scan requests_log per key.
+
+    The seed is a correlated SUM over requests_log, and the only thing that
+    makes it cheap is ix_requests_log_api_key_spend. Building that index after
+    the seed means the one boot that runs the seed — this function's whole
+    reason to exist — is also the one that cannot use the index, and every
+    later boot skips both.
+    """
+    from sqlalchemy import event
+
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    order: list[str] = []
+    try:
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            if "ix_requests_log_api_key_spend" in statement:
+                order.append("index")
+            elif "UPDATE api_keys SET spent_microcents" in statement:
+                order.append("seed")
+
+        event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            await ensure_budget_columns(engine)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+        assert order == ["index", "seed"]
+    finally:
+        await engine.dispose()
+
+
 async def test_ensure_budget_columns_survives_a_racing_boot(tmp_sqlite_url, monkeypatch):
     """The loser of a concurrent-boot ALTER still boots, and still seeds.
 
