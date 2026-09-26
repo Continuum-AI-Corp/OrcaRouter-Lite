@@ -363,10 +363,13 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
     # pending — understating the spend by exactly the folded amount with no
     # evidence left to trigger the re-read. Parks-first keeps the evidence:
     # a fold racing these reads leaves `pending > 0`, which takes the
-    # re-read below.
+    # re-read below. The rollback ends whatever pending work the request
+    # session carries; a cancellation landing on it must not escape — the
+    # pre-check has no retry of its own and the caller's loop owns the
+    # session, so swallow it and keep reading on the (stale) snapshot.
     try:
         await db.rollback()
-    except Exception:
+    except BaseException:
         pass
     spent = await read_spent(db, key)
     if pending:
@@ -380,7 +383,7 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
         # pinned to the pre-fold spend counter, then re-read on a fresh snapshot.
         try:
             await db.rollback()
-        except Exception:
+        except BaseException:
             pass
         spent = await read_spent(db, key)
         pending = await pending_parked_spend(key)
