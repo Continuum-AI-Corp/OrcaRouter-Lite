@@ -623,6 +623,28 @@ def _lookup_priced_model(model_id: str | None):
     return None
 
 
+def _has_known_price(
+    *,
+    litellm_cost_usd: float | None,
+    model_id: str | None,
+    fallback_model: str | None = None,
+) -> bool:
+    """True when a delivered completion's cost is measurable, even if it is 0.
+
+    Mirrors `_compute_cost_microcents`' two tiers without computing: an
+    authoritative LiteLLM cost, or any catalog entry. A 0.0/0.0 entry is a
+    known-free model, not an unknown cost. Tokens with neither are
+    unpriceable — a custom upstream LiteLLM can't cost, or a model absent
+    from our catalog — and must not settle at 0 for a budgeted key, or the
+    lifetime cap would stand still while the upstream still bills us.
+    """
+    if litellm_cost_usd is not None and litellm_cost_usd > 0:
+        return True
+    return (
+        _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
+    ) is not None
+
+
 @router.post("/chat/completions")
 async def chat_completions(
     body: ChatCompletionRequest,
@@ -1123,10 +1145,20 @@ async def execute_chat(
                 def _settlement_amount() -> int:
                     """Budget charge for this request, in microcents.
 
-                    A usage frame carrying countable token totals is the billing
-                    signal: the cost is known, and charging more would
+                    A usage frame carrying countable token totals is the
+                    billing signal: the cost is known, and charging more would
                     over-bill a quantity the row already accounts for. A frame
                     without those keys is not a measurement at all.
+
+                    A frame that carries tokens but no price — a custom
+                    upstream LiteLLM cannot cost, or a model absent from our
+                    catalog — is unknown too: charging the recorded 0 would
+                    let the cap stand still while the upstream still bills us.
+                    That arm is gated on the stream having completed normally,
+                    because an error ending is already priced from its delivery
+                    and must keep that estimate. A catalog-listed free model,
+                    or an empty delivery, is known-zero and settles at the 0 the
+                    row records.
 
                     When nothing was measured, the charge comes from
                     `_unmeasured_charge` and the stream's recorded ending —
@@ -1172,6 +1204,25 @@ async def execute_chat(
                             # non-zero cost never sits on a zero-token row.
                             row_values["input_tokens"] = estimate["prompt_tokens"]
                             row_values["output_tokens"] = estimate["completion_tokens"]
+                    elif (
+                        stream_ending == _STREAM_COMPLETED
+                        and not actual
+                        and (
+                            row_values.get("input_tokens")
+                            or row_values.get("output_tokens")
+                        )
+                        and not _has_known_price(
+                            litellm_cost_usd=(agg_usage or {}).get("cost_usd"),
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
+                        )
+                    ):
+                        actual = max(
+                            actual,
+                            (getattr(kc, "_budget_cap", 0) or 0)
+                            - (getattr(kc, "_budget_spent", 0) or 0),
+                        )
+                        row_values["cost_microcents"] = actual
                     return actual
 
                 async def _commit_row(*, retry: bool) -> None:
@@ -1605,36 +1656,77 @@ async def execute_chat(
         # a successful but empty completion both charge their recorded ~0 cost,
         # mirroring the cache-hit and pre-stream-failure paths. A completion the
         # provider priced through _orca_meta keeps that authoritative cost.
+        # Fail-closed mirror of the streaming path's cost-unknown rule: a
+        # budgeted key whose successful response carries no usage (a provider
+        # that answered without the field at all) has an unknown cost — charge
+        # the full remaining allowance so a delivered completion can never cost
+        # nothing, and record that amount on the row: a charge only the counter
+        # saw would leave a key exhausted by an amount nothing in its own
+        # request history accounts for. Usage with tokens but no price is the
+        # same unknown (a custom upstream LiteLLM can't cost, or a model
+        # absent from our catalog); a catalog-listed free model is known-zero
+        # and keeps its 0. Gated on having actually received a
+        # completion dict: a request that failed before the upstream answered
+        # (response == {}, e.g. the re-raised HTTPException above, whose
+        # status_code never left 200) charges its recorded ~0 cost instead —
+        # mirroring the cache-hit and pre-stream-failure paths.
         if (
             getattr(kc, "_budget_cap", None) is not None
             and status_code < 400
             and isinstance(response, dict)
             and response
-            and not _countable_usage(response.get("usage"))
-        ):
-            delivered, completion_chars = _blocking_delivery_chars(response)
-            charge, estimate = _unmeasured_charge(
-                delivered=delivered,
-                ending=(
-                    _STREAM_COMPLETED if delivered else _STREAM_UPSTREAM_ERROR
-                ),
-                prompt_chars=sum(_text_chars(m.content) for m in body.messages),
-                completion_chars=completion_chars,
-                # A delivered blocking completion is priced from what it
-                # returned; `_REMAINING` is the streaming path's rule for a
-                # stream that completed without ever reporting usage.
-                policy=_ESTIMATE,
-                cap=kc._budget_cap,
-                spent=getattr(kc, "_budget_spent", 0) or 0,
-                model_id=log.model_resolved,
-                fallback_model=log.model_requested,
+            and (
+                # Unmeasured: no countable usage at all. Priced from what the
+                # response returned, which is in full here.
+                (
+                    not _countable_usage(response.get("usage"))
+                    and _blocking_delivery_has_content(response)
+                )
+                or (
+                    # Measured but unpriceable: tokens with no price we can
+                    # honour (a custom upstream cannot cost, or the model is
+                    # absent from the catalog). Fail closed — the counter must
+                    # not stand still while the upstream still bills us.
+                    (log.input_tokens or log.output_tokens)
+                    and not (log.cost_microcents or 0)
+                    and not _has_known_price(
+                        litellm_cost_usd=(response.get("usage") or {}).get("cost_usd")
+                        or (response.get("_orca_meta") or {}).get("cost_usd"),
+                        model_id=log.model_resolved,
+                        fallback_model=log.model_requested,
+                    )
+                )
             )
-            settle_amount = max(log.cost_microcents or 0, charge)
+        ):
+            if _countable_usage(response.get("usage")):
+                settle_amount = max(
+                    log.cost_microcents or 0,
+                    kc._budget_cap - (getattr(kc, "_budget_spent", 0) or 0),
+                )
+            else:
+                delivered, completion_chars = _blocking_delivery_chars(response)
+                charge, estimate = _unmeasured_charge(
+                    delivered=delivered,
+                    ending=(
+                        _STREAM_COMPLETED if delivered else _STREAM_UPSTREAM_ERROR
+                    ),
+                    prompt_chars=sum(_text_chars(m.content) for m in body.messages),
+                    completion_chars=completion_chars,
+                    # A delivered blocking completion is priced from what it
+                    # returned; `_REMAINING` is the streaming path's rule for a
+                    # stream that completed without ever reporting usage.
+                    policy=_ESTIMATE,
+                    cap=kc._budget_cap,
+                    spent=getattr(kc, "_budget_spent", 0) or 0,
+                    model_id=log.model_resolved,
+                    fallback_model=log.model_requested,
+                )
+                settle_amount = max(log.cost_microcents or 0, charge)
+                if estimate is not None:
+                    # The row accounts for its own cost, as on the streaming path.
+                    log.input_tokens = estimate["prompt_tokens"]
+                    log.output_tokens = estimate["completion_tokens"]
             log.cost_microcents = settle_amount
-            if estimate is not None:
-                # The row accounts for its own cost, as on the streaming path.
-                log.input_tokens = estimate["prompt_tokens"]
-                log.output_tokens = estimate["completion_tokens"]
 
         # Values are snapshotted once (latency is measured in _build_log_row,
         # before any commit attempt, so retry backoff never inflates it) and
