@@ -1474,11 +1474,6 @@ async def execute_chat(
                 # Re-raise so asyncio/Starlette see proper cancel propagation.
                 raise
             except AdapterError:
-                # The protocol adapter downstream of us failed and threw
-                # this in rather than closing us: our own fault, not the
-                # caller's. Without this branch the close would be
-                # indistinguishable from a disconnect and every adapter bug
-                # would be filed as 499/client_disconnect.
                 error_type = "adapter_error"
                 status_code = 500
                 logger.warning(
