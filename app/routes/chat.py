@@ -966,10 +966,14 @@ async def execute_chat(
                     if the stream then died — and the recorded cost is charged.
                     A frame that carries tokens but no price (a custom upstream
                     LiteLLM can't cost, or a model absent from our catalog) is
-                    unknown too: charging the recorded 0 would let the cap
-                    stand still while the upstream still bills us. A
-                    catalog-listed free model, or an empty delivery, is
-                    known-zero and still settles at the 0 the row records.
+                    unknown too — but only on a stream that completed
+                    normally: charging the recorded 0 would let the cap stand
+                    still while the upstream still bills us. An error ending
+                    (disconnect, upstream or adapter fault) is priced by its
+                    delivery estimate and keeps that estimate even at 0, so
+                    this arm is gated on status_code < 400. A catalog-listed
+                    free model, or an empty delivery, is known-zero and still
+                    settles at the 0 the row records.
 
                     The raised amount is written back into the row, not just
                     into the counter: a charge only the counter saw would leave
@@ -985,7 +989,8 @@ async def execute_chat(
                         )
                         row_values["cost_microcents"] = actual
                     elif (
-                        not actual
+                        status_code < 400
+                        and not actual
                         and (
                             row_values.get("input_tokens")
                             or row_values.get("output_tokens")

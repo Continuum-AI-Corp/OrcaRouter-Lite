@@ -350,7 +350,6 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
     asks whether the key has spent a ten-thousandth of its budget.
     """
     key = str(api_key_id)
-    spent = await read_spent(db, key)
     pending = await pending_parked_spend(key)
     if pending is None:
         # Unknown debt is answered as full debt, the way the durability probe
@@ -358,6 +357,18 @@ async def budget_precheck(db: AsyncSession, api_key_id: str, cap_microcents: int
         # The alternative is a key whose cap is held shut only by parked rows
         # dispatching freely while the ledger is down.
         return cap_microcents
+    # The park ledger is read before the counter, and the counter on a fresh
+    # snapshot: a fold both moves `spent_microcents` and empties the park
+    # queue, so a counter read first can pair a pre-fold spend with a zero
+    # pending — understating the spend by exactly the folded amount with no
+    # evidence left to trigger the re-read. Parks-first keeps the evidence:
+    # a fold racing these reads leaves `pending > 0`, which takes the
+    # re-read below.
+    try:
+        await db.rollback()
+    except Exception:
+        pass
+    spent = await read_spent(db, key)
     if pending:
         try:
             await settle_parked_spend(key, cap_microcents)
