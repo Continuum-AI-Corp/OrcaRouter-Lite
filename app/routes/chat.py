@@ -445,6 +445,28 @@ def _lookup_priced_model(model_id: str | None):
     return None
 
 
+def _has_known_price(
+    *,
+    litellm_cost_usd: float | None,
+    model_id: str | None,
+    fallback_model: str | None = None,
+) -> bool:
+    """True when a delivered completion's cost is measurable, even if it is 0.
+
+    Mirrors `_compute_cost_microcents`' two tiers without computing: an
+    authoritative LiteLLM cost, or any catalog entry. A 0.0/0.0 entry is a
+    known-free model, not an unknown cost. Tokens with neither are
+    unpriceable — a custom upstream LiteLLM can't cost, or a model absent
+    from our catalog — and must not settle at 0 for a budgeted key, or the
+    lifetime cap would stand still while the upstream still bills us.
+    """
+    if litellm_cost_usd is not None and litellm_cost_usd > 0:
+        return True
+    return (
+        _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
+    ) is not None
+
+
 @router.post("/chat/completions")
 async def chat_completions(
     body: ChatCompletionRequest,
@@ -942,6 +964,12 @@ async def execute_chat(
                     (fail-closed) so no client-side choice can bypass the cap.
                     Once a usage frame was delivered the cost is known — even
                     if the stream then died — and the recorded cost is charged.
+                    A frame that carries tokens but no price (a custom upstream
+                    LiteLLM can't cost, or a model absent from our catalog) is
+                    unknown too: charging the recorded 0 would let the cap
+                    stand still while the upstream still bills us. A
+                    catalog-listed free model, or an empty delivery, is
+                    known-zero and still settles at the 0 the row records.
 
                     The raised amount is written back into the row, not just
                     into the counter: a charge only the counter saw would leave
@@ -950,6 +978,24 @@ async def execute_chat(
                     """
                     actual = row_values.get("cost_microcents") or 0
                     if not usage_seen:
+                        actual = max(
+                            actual,
+                            (getattr(kc, "_budget_cap", 0) or 0)
+                            - (getattr(kc, "_budget_spent", 0) or 0),
+                        )
+                        row_values["cost_microcents"] = actual
+                    elif (
+                        not actual
+                        and (
+                            row_values.get("input_tokens")
+                            or row_values.get("output_tokens")
+                        )
+                        and not _has_known_price(
+                            litellm_cost_usd=(agg_usage or {}).get("cost_usd"),
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
+                        )
+                    ):
                         actual = max(
                             actual,
                             (getattr(kc, "_budget_cap", 0) or 0)
@@ -1318,7 +1364,10 @@ async def execute_chat(
         # the full remaining allowance so a delivered completion can never cost
         # nothing, and record that amount on the row: a charge only the counter
         # saw would leave a key exhausted by an amount nothing in its own
-        # request history accounts for. Gated on having actually received a
+        # request history accounts for. Usage with tokens but no price is the
+        # same unknown (a custom upstream LiteLLM can't cost, or a model
+        # absent from our catalog); a catalog-listed free model is known-zero
+        # and keeps its 0. Gated on having actually received a
         # completion dict: a request that failed before the upstream answered
         # (response == {}, e.g. the re-raised HTTPException above, whose
         # status_code never left 200) charges its recorded ~0 cost instead —
@@ -1328,7 +1377,18 @@ async def execute_chat(
             and status_code < 400
             and isinstance(response, dict)
             and response
-            and not response.get("usage")
+            and (
+                not response.get("usage")
+                or (
+                    not (log.cost_microcents or 0)
+                    and not _has_known_price(
+                        litellm_cost_usd=(response.get("usage") or {}).get("cost_usd")
+                        or (response.get("_orca_meta") or {}).get("cost_usd"),
+                        model_id=log.model_resolved,
+                        fallback_model=log.model_requested,
+                    )
+                )
+            )
         ):
             settle_amount = max(
                 log.cost_microcents or 0,
