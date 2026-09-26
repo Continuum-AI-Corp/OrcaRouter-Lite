@@ -1155,10 +1155,11 @@ async def execute_chat(
                     catalog — is unknown too: charging the recorded 0 would
                     let the cap stand still while the upstream still bills us.
                     That arm is gated on the stream having completed normally,
-                    because an error ending is already priced from its delivery
-                    and must keep that estimate. A catalog-listed free model,
-                    or an empty delivery, is known-zero and settles at the 0 the
-                    row records.
+                    because an error ending (disconnect, upstream or adapter
+                    fault) is already priced from its delivery and keeps that
+                    estimate. A catalog-listed free model, or an empty
+                    delivery, is known-zero and settles at the 0 the row
+                    records.
 
                     When nothing was measured, the charge comes from
                     `_unmeasured_charge` and the stream's recorded ending —
