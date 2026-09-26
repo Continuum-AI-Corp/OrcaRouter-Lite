@@ -135,6 +135,58 @@ async def test_seed_repairs_a_boot_that_died_before_it(tmp_sqlite_url):
         await engine.dispose()
 
 
+async def test_seed_repairs_a_key_racing_live_charges(tmp_sqlite_url):
+    """A racing request that moved spent_microcents before the seed ran is repaired.
+
+    If live traffic on another worker commits a charge before the seed statement
+    evaluates, `spent_microcents` leaves 0. Gating on `spent_microcents = 0` would
+    skip the key and permanently drop its pre-upgrade history. The monotonic
+    `spent_microcents < computed SUM` gate detects that the counter lags behind
+    the key's request-log total and restores the true sum.
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        # Simulate: column added, and worker A immediately committed a 300 charge
+        # with its request log row for w1 (which had 2500 historical spend).
+        # Counter is at 300, but request log total is 2500 + 300 = 2800.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "ALTER TABLE api_keys ADD COLUMN spent_microcents BIGINT "
+                    "NOT NULL DEFAULT 0"
+                )
+            )
+            await conn.execute(
+                text("UPDATE api_keys SET spent_microcents = 300 WHERE workspace_id = 'w1'")
+            )
+            # Add the 300 request log row that worker A committed with the charge
+            w1_id = await conn.scalar(
+                text("SELECT id FROM api_keys WHERE workspace_id = 'w1'")
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO requests_log (id, workspace_id, api_key_id, trace_id, "
+                    "model_requested, model_resolved, provider, routing_strategy, "
+                    "input_tokens, output_tokens, cost_microcents, latency_ms, status_code) "
+                    "VALUES ('r-race-1', 'w1', :k, 't-race-1', 'gpt-4o-mini', 'gpt-4o-mini', "
+                    "'openai', 'balanced', 1, 1, 300, 10, 200)"
+                ),
+                {"k": w1_id},
+            )
+
+        assert await _spent(engine, "w1") == 300
+
+        # Boot runs ensure_budget_columns
+        await ensure_budget_columns(engine)
+
+        # w1 counter is restored to the full cumulative total (2500 + 300 = 2800)
+        assert await _spent(engine, "w1") == 2800
+        assert await _spent(engine, "w2") == 700
+        assert await _spent(engine, "w3") == 0
+    finally:
+        await engine.dispose()
+
+
 async def test_orm_reads_work_after_upgrade(tmp_sqlite_url):
     # The original 503 failure mode: the ORM SELECTs every mapped column, so
     # without the migration every authenticated request broke on the upgraded

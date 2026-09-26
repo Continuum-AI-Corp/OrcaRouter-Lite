@@ -139,17 +139,26 @@ async def ensure_budget_columns(engine) -> None:
         # while this is DML in the transaction a kill — or the `database is
         # locked` this very aggregate provokes on an upgrade that overlaps the
         # old machine's writes — rolls back, and a gate keyed on the column
-        # would then never retry. It is idempotent because a log row and its
-        # charge are one commit, so this SUM *is* the lifetime counter and a key
-        # already holding spend has nothing to restore. Capped keys only: an
-        # uncapped key is never charged, so its counter stays at zero by design
-        # and nothing reads it.
+        # would then never retry.
+        #
+        # The repair is monotonic: it only updates a key whose recorded counter
+        # lags behind the sum of its request logs (`spent_microcents < computed SUM`).
+        # A live charge racing the boot moves `spent_microcents` and inserts its log
+        # row in one transaction; gating on `spent_microcents < SUM` rather than
+        # `spent_microcents = 0` guarantees that a key which took traffic before
+        # this seed ran is still brought up to its true historical total instead of
+        # permanently dropping pre-upgrade spend. Steady-state boots match zero
+        # rows. Capped keys only: an uncapped key is never charged, so its
+        # counter stays at zero by design and nothing reads it.
         await conn.execute(
             text(
                 "UPDATE api_keys SET spent_microcents = ("
                 "  SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
                 "  WHERE requests_log.api_key_id = api_keys.id"
-                ") WHERE spent_microcents = 0 AND budget_limit_cents IS NOT NULL"
+                ") WHERE budget_limit_cents IS NOT NULL AND spent_microcents < ("
+                "  SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
+                "  WHERE requests_log.api_key_id = api_keys.id"
+                ")"
             )
         )
 
