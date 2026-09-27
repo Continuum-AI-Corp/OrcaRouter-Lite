@@ -775,17 +775,18 @@ async def execute_chat(
                         agg_model = d["model"]
                     last_d = d
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
-                # OpenAI's wire order is finish_reason → dedicated usage
-                # chunk (empty choices) → [DONE]. LiteLLM (and some
-                # provider compat layers) attach usage to the finish_reason
-                # frame instead, so clients that keep reading after
-                # finish_reason hit [DONE] and never see token counts.
-                # Synthesize the trailing usage frame when the stream did
-                # not already end with one (issue #127).
-                last_was_usage_only = bool(
-                    last_d.get("usage") and not (last_d.get("choices") or [])
-                )
-                if agg_usage and not last_was_usage_only:
+                # A trailing frame that already carries `usage` is the usage
+                # frame, whether or not `choices` is empty. LiteLLM's
+                # include_usage chunk uses
+                # `choices: [{"index": 0, "delta": {}}]` rather than `[]`,
+                # and some providers attach usage to the finish_reason
+                # chunk. Requiring empty choices synthesized a second copy
+                # of that usage, and clients that sum `usage` across frames
+                # double-counted tokens. Synthesize only when usage was
+                # aggregated from an earlier chunk and the stream did not
+                # end with it.
+                last_had_usage = bool(last_d.get("usage"))
+                if agg_usage and not last_had_usage:
                     yield (
                         "data: "
                         + json.dumps(

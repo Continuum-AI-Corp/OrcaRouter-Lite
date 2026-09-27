@@ -186,8 +186,17 @@ async def test_streaming_emits_chunks_and_done_sentinel(stream_client):
     body = r.text
     assert "data: [DONE]" in body
     chunks = _chunks_from_sse(body)
-    # Content deltas + finish_reason + dedicated usage chunk (issue #127)
-    assert len(chunks) == 4
+    # Two content deltas + the finish_reason frame, which already carries
+    # usage. Do not append a second, empty-choices usage frame.
+    assert len(chunks) == 3
+    usage_frames = [c for c in chunks if c.get("usage")]
+    assert len(usage_frames) == 1
+    assert usage_frames[0]["usage"] == {
+        "prompt_tokens": 4,
+        "completion_tokens": 2,
+        "total_tokens": 6,
+    }
+    assert usage_frames[0]["choices"][0]["finish_reason"] == "stop"
     # Concatenated content matches non-streaming path
     deltas = []
     for c in chunks:
@@ -201,11 +210,10 @@ async def test_streaming_emits_chunks_and_done_sentinel(stream_client):
 
 
 async def test_streaming_emits_usage_chunk_before_done(stream_client):
-    """Issue #127: even when LiteLLM attaches usage to the finish_reason
-    frame, the wire must still be finish_reason → dedicated usage chunk
-    (empty choices) → [DONE]. Clients that keep reading after
-    finish_reason (OpenAI SDK, some agent frameworks) otherwise hit the
-    sentinel and never see token counts."""
+    """When the upstream stream already ends on a frame that carries
+    usage (here, LiteLLM's finish_reason chunk — choices are non-empty),
+    that frame is the usage frame. It must sit immediately before [DONE],
+    and we must not synthesize a second empty-choices copy."""
     client, _ = stream_client
     r = await client.post(
         "/v1/chat/completions",
@@ -219,9 +227,12 @@ async def test_streaming_emits_usage_chunk_before_done(stream_client):
     frames = _sse_payloads(r.text)
     assert frames, "expected SSE frames"
     assert frames[-1] == "[DONE]"
-    usage_frame = frames[-2]
-    assert isinstance(usage_frame, dict)
-    assert usage_frame.get("choices") == []
+    usage_frames = [
+        f for f in frames if isinstance(f, dict) and f.get("usage")
+    ]
+    assert len(usage_frames) == 1
+    usage_frame = usage_frames[0]
+    assert usage_frame is frames[-2]
     assert usage_frame.get("usage") == {
         "prompt_tokens": 4,
         "completion_tokens": 2,
@@ -230,14 +241,11 @@ async def test_streaming_emits_usage_chunk_before_done(stream_client):
     assert usage_frame.get("object") == "chat.completion.chunk"
     assert usage_frame.get("id") == "chatcmpl-1"
     assert usage_frame.get("model") == "gpt-4o-mini"
-    finish_idxs = [
-        i
-        for i, f in enumerate(frames[:-1])
-        if isinstance(f, dict)
-        and any((c or {}).get("finish_reason") for c in (f.get("choices") or []))
-    ]
-    assert finish_idxs, "expected a finish_reason chunk before usage"
-    assert finish_idxs[-1] < len(frames) - 2
+    assert usage_frame.get("choices") != []
+    assert not any(
+        isinstance(f, dict) and f.get("usage") and not (f.get("choices") or [])
+        for f in frames
+    )
 
 
 async def test_streaming_does_not_duplicate_upstream_usage_only_chunk(stream_client):
@@ -303,6 +311,137 @@ async def test_streaming_does_not_duplicate_upstream_usage_only_chunk(stream_cli
         "total_tokens": 5,
     }
     assert frames[-2] is usage_only[0]
+
+
+async def test_streaming_does_not_duplicate_litellm_placeholder_usage_frame(stream_client):
+    """LiteLLM's include_usage frame is not `choices: []`. It is a trailing
+    chunk shaped `choices: [{"index": 0, "delta": {}}]` that already carries
+    usage. That frame is the usage frame — do not emit a second copy."""
+    client, fake = stream_client
+    now = int(time.time())
+    usage = {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
+    chunks = [
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "created": now,
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "Hi"},
+                "finish_reason": None,
+            }],
+        },
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "created": now,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        },
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "created": now,
+            "choices": [{"index": 0, "delta": {}}],
+            "usage": usage,
+        },
+    ]
+
+    async def _acompletion(**kwargs):
+        if kwargs.get("stream"):
+            return _stream_iter(chunks)
+        raise AssertionError("test only exercises stream path")
+
+    fake.acompletion = AsyncMock(side_effect=_acompletion)
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert r.status_code == 200
+    frames = _sse_payloads(r.text)
+    assert frames[-1] == "[DONE]"
+    usage_frames = [
+        f for f in frames if isinstance(f, dict) and f.get("usage")
+    ]
+    assert usage_frames == [frames[-2]]
+    assert frames[-2]["usage"] == usage
+    assert frames[-2]["choices"] == [{"index": 0, "delta": {}}]
+
+
+async def test_streaming_synthesizes_usage_when_last_frame_omits_it(stream_client):
+    """Usage aggregated from an earlier chunk, but the stream ends on a
+    frame that has none. Append one empty-choices usage frame before
+    [DONE]. This is the only case that still synthesizes."""
+    client, fake = stream_client
+    now = int(time.time())
+    usage = {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+    chunks = [
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "created": now,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "Hi"},
+                "finish_reason": None,
+            }],
+            "usage": usage,
+        },
+        {
+            "id": "chatcmpl-1",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "created": now,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        },
+    ]
+
+    async def _acompletion(**kwargs):
+        if kwargs.get("stream"):
+            return _stream_iter(chunks)
+        raise AssertionError("test only exercises stream path")
+
+    fake.acompletion = AsyncMock(side_effect=_acompletion)
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert r.status_code == 200
+    frames = _sse_payloads(r.text)
+    assert frames[-1] == "[DONE]"
+    synthesized = frames[-2]
+    assert isinstance(synthesized, dict)
+    assert synthesized.get("choices") == []
+    assert synthesized.get("usage") == usage
+    assert synthesized.get("object") == "chat.completion.chunk"
+    assert synthesized.get("id") == "chatcmpl-1"
+    assert synthesized.get("model") == "gpt-4o-mini"
+    # The earlier upstream frame is still forwarded; the synthesized frame
+    # is the only empty-choices usage chunk, and it follows finish_reason.
+    upstream_usage = [
+        f for f in frames[:-2] if isinstance(f, dict) and f.get("usage")
+    ]
+    assert len(upstream_usage) == 1
+    assert upstream_usage[0]["choices"][0]["delta"]["content"] == "Hi"
+    finish_idxs = [
+        i
+        for i, f in enumerate(frames)
+        if isinstance(f, dict)
+        and any((c or {}).get("finish_reason") for c in (f.get("choices") or []))
+    ]
+    assert finish_idxs == [1]
+    assert finish_idxs[-1] < len(frames) - 2
 
 
 async def test_streaming_omits_usage_chunk_when_upstream_has_none(stream_client):
