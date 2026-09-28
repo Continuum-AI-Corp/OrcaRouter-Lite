@@ -161,10 +161,10 @@ async def test_put_dashboard_placeholder_keeps_undecryptable_flag(
 ):
     """Save-without-retype on a rotated/corrupt row must not overwrite the
     ciphertext and must not report decryptable=true."""
-    from app.routes.providers import DASHBOARD_KEY_PLACEHOLDER
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
+    from app.routes.providers import DASHBOARD_KEY_PLACEHOLDER
     from packages.db.engine import build_engine
     from packages.db.models.provider_key import ProviderKey
 
