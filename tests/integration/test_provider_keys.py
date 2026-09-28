@@ -133,6 +133,7 @@ async def test_put_dashboard_placeholder_is_no_change_without_warning(
     body = second.json()
     assert "warnings" not in body
     assert body["key_prefix"] == expected_prefix
+    assert body["decryptable"] is True
 
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -153,6 +154,53 @@ async def test_put_dashboard_placeholder_is_no_change_without_warning(
 
     assert decrypt_credential(row.encrypted_key) == real_key
     assert row.key_prefix == expected_prefix
+
+
+async def test_put_dashboard_placeholder_keeps_undecryptable_flag(
+    authed_client, tmp_sqlite_url,
+):
+    """Save-without-retype on a rotated/corrupt row must not overwrite the
+    ciphertext and must not report decryptable=true."""
+    from app.routes.providers import DASHBOARD_KEY_PLACEHOLDER
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db.engine import build_engine
+    from packages.db.models.provider_key import ProviderKey
+
+    garbage = b"this-is-not-a-valid-aesgcm-ciphertext"
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        s.add(ProviderKey(
+            provider="openai",
+            encrypted_key=garbage,
+            key_prefix="sk-broken...xxxx",
+            is_enabled=True,
+        ))
+        await s.commit()
+    await engine.dispose()
+
+    r = await authed_client.put(
+        "/v1/providers/openai",
+        json={"api_key": DASHBOARD_KEY_PLACEHOLDER},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["decryptable"] is False
+    assert body["key_prefix"] == "sk-broken...xxxx"
+    assert "warnings" not in body
+
+    engine = build_engine(tmp_sqlite_url)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as s:
+        row = (
+            await s.execute(
+                select(ProviderKey).where(ProviderKey.provider == "openai")
+            )
+        ).scalar_one()
+    await engine.dispose()
+    assert bytes(row.encrypted_key) == garbage
 
 
 async def test_put_dashboard_placeholder_without_stored_key_is_rejected(

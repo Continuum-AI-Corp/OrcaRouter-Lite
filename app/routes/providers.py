@@ -272,12 +272,16 @@ async def set_provider_key(
                     "stored key exists for this provider"
                 ),
             )
+        # Ciphertext is unchanged, so report whether THAT stored key
+        # still opens. Defaulting decryptable=true would hide a rotation
+        # failure on save-without-retype.
         return _dump_provider_key(
             ProviderKeyOut(
                 provider=existing.provider,
                 key_prefix=existing.key_prefix,
                 is_enabled=existing.is_enabled,
                 source="db",
+                decryptable=credential_is_decryptable(existing.encrypted_key),
             )
         )
 
