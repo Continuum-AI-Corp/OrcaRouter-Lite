@@ -156,11 +156,11 @@ async def test_put_dashboard_placeholder_is_no_change_without_warning(
     assert row.key_prefix == expected_prefix
 
 
-async def test_put_dashboard_placeholder_keeps_undecryptable_flag(
+async def test_put_dashboard_placeholder_does_not_overwrite_undecryptable_row(
     authed_client, tmp_sqlite_url,
 ):
-    """Save-without-retype on a rotated/corrupt row must not overwrite the
-    ciphertext and must not report decryptable=true."""
+    """Save-without-retype must not replace a rotated ciphertext. The
+    no-change PUT reports decryptable=true; GET still flags the stored row."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -187,9 +187,17 @@ async def test_put_dashboard_placeholder_keeps_undecryptable_flag(
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["decryptable"] is False
+    assert body["decryptable"] is True
     assert body["key_prefix"] == "sk-broken...xxxx"
     assert "warnings" not in body
+
+    listing = await authed_client.get("/v1/providers")
+    db_rows = [
+        p for p in listing.json()["providers"]
+        if p["provider"] == "openai" and p["source"] == "db"
+    ]
+    assert len(db_rows) == 1
+    assert db_rows[0]["decryptable"] is False
 
     engine = build_engine(tmp_sqlite_url)
     Session = async_sessionmaker(engine, expire_on_commit=False)
