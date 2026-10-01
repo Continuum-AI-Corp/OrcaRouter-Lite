@@ -87,5 +87,54 @@ async def test_concurrent_charges_never_exceed_cap(tmp_sqlite_url):
     assert final == cap
 
 
+async def test_stale_identity_map_cannot_clobber_a_concurrent_charge(tmp_sqlite_url):
+    """A session that loaded the key before a concurrent charge must not flush
+    its stale value over the DB's atomic result.
+
+    #161's documented usage runs charge_budget on the same session that
+    validate_api_key already used to load the ApiKey. Without
+    synchronize_session=False the ORM's 'auto' sync evaluates the SET in Python
+    against that stale identity-map copy, marks it dirty, and the commit
+    flushes it as a plain unguarded UPDATE — silently dropping the other
+    session's committed charge.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from packages.db.engine import build_engine
+    from packages.db.models.api_key import ApiKey
+    from packages.db.models.base import Base
+
+    engine = build_engine(tmp_sqlite_url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as s:
+        k = ApiKey(
+            workspace_id="default", name="sync", key_hash="h-sync", key_prefix="p-sync"
+        )
+        s.add(k)
+        await s.commit()
+        kid = k.id
+
+    cap = 10_000
+    async with factory() as stale, factory() as winner:
+        # `stale` mirrors the request session: the row is loaded at spent=0
+        # before the other session's charge commits.
+        loaded = (
+            await stale.execute(select(ApiKey).where(ApiKey.id == kid))
+        ).scalar_one()
+        assert await charge_budget(winner, kid, cap, 6_000) is True
+        assert await charge_budget(stale, kid, cap, 2_000) is True
+        # The charge left the identity-map copy untouched: the DB row is the
+        # only source of truth for the counter.
+        assert loaded.spent_microcents == 0
+
+    async with factory() as reader:
+        final = await read_spent(reader, kid)
+    await engine.dispose()
+    assert final == 8_000
+
+
 def test_microcent_conversion_constant():
     assert MICROCENTS_PER_CENT == 10_000

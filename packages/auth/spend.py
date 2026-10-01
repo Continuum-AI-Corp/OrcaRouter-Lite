@@ -78,12 +78,21 @@ async def charge_budget(
     When ``commit`` is False the UPDATEs are executed but not committed, so the
     caller can commit them in the same transaction as the request-log write
     (atomic log + charge — no window where the log lands but the charge is lost).
+
+    Both UPDATEs run with ``synchronize_session=False``: the session default
+    evaluates the SET in Python against any identity-map copy of the row and
+    marks it dirty, so a caller that loaded the key before this charge (the
+    documented #161 flow: validate_api_key loaded it, same session commits the
+    charge) would flush that stale computed value over the DB's atomic result —
+    silently dropping a concurrent charge. The DB row stays the only source of
+    truth; read the counter back with ``read_spent`` if you need it.
     """
     actual = actual_microcents or 0
     result = await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key_id, ApiKey.spent_microcents + actual <= cap_microcents)
         .values(spent_microcents=ApiKey.spent_microcents + actual)
+        .execution_options(synchronize_session=False)
     )
     if result.rowcount:
         if commit:
@@ -95,6 +104,7 @@ async def charge_budget(
         update(ApiKey)
         .where(ApiKey.id == api_key_id, ApiKey.spent_microcents < cap_microcents)
         .values(spent_microcents=cap_microcents)
+        .execution_options(synchronize_session=False)
     )
     if commit:
         await db.commit()
