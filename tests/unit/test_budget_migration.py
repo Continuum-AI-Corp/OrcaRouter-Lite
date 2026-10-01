@@ -234,3 +234,88 @@ async def test_ensure_budget_columns_survives_a_racing_boot(tmp_sqlite_url, monk
             ) == 2500
     finally:
         await engine.dispose()
+
+
+async def test_repair_raises_a_counter_staled_by_traffic(tmp_sqlite_url):
+    """Traffic logged after one boot's seed is counted by the next.
+
+    Until #161 wires the per-request charge, the counter only moves at boot:
+    requests keep landing in requests_log while a seeded key's spent_microcents
+    sits frozen, so a counter from an earlier boot is stale by everything that
+    flowed since. A seed gated on `= 0` can never see that traffic (the counter
+    is already nonzero), and the undercount is permanent; the every-boot
+    monotonic repair re-aggregates and closes the window at each restart.
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w1") == 2500
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE requests_log SET cost_microcents = cost_microcents + 500 "
+                    "WHERE api_key_id = (SELECT id FROM api_keys WHERE workspace_id = 'w1')"
+                )
+            )
+
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w1") == 3000
+    finally:
+        await engine.dispose()
+
+
+async def test_repair_clamps_to_the_budget_cap(tmp_sqlite_url):
+    """Re-aggregating never writes spend past the lifetime cap.
+
+    charge_budget (once #161 wires it) deliberately clamps a breaching request's
+    counter to the cap while the log row records the true, larger cost — so
+    `SUM(logs) > cap` is correct steady state, and an unclamped re-seed would
+    both overshoot the cap and undo that clamp on every boot. w1's cap is 100
+    cents = 1_000_000 microcents; history far past that must still land on the
+    cap, and the next boot must change nothing (the clamped state is a fixed
+    point of the repair).
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        await ensure_budget_columns(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE requests_log SET cost_microcents = 1500000 "
+                    "WHERE api_key_id = (SELECT id FROM api_keys WHERE workspace_id = 'w1')"
+                )
+            )
+
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w1") == 1_000_000
+
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w1") == 1_000_000
+    finally:
+        await engine.dispose()
+
+
+async def test_repair_never_lowers_a_counter(tmp_sqlite_url):
+    """The repair is monotonic: spend history already recorded is not re-trusted
+    to the logs. A retention job can delete rows (the counter then exceeds the
+    SUM), and physically-deleted history must not hand the key budget back —
+    same reasoning as the is_deleted filter the seed deliberately ignores.
+    """
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w2") == 700
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "DELETE FROM requests_log WHERE api_key_id = "
+                    "(SELECT id FROM api_keys WHERE workspace_id = 'w2')"
+                )
+            )
+
+        await ensure_budget_columns(engine)
+        assert await _spent(engine, "w2") == 700
+    finally:
+        await engine.dispose()

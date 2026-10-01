@@ -21,7 +21,14 @@ from sqlalchemy.exc import DBAPIError
 def _already_applied(err: DBAPIError) -> bool:
     """Whether a DDL failure means someone else applied the change first."""
     msg = str(err).lower()
-    return "already exists" in msg or "duplicate column" in msg
+    return (
+        "already exists" in msg
+        or "duplicate column" in msg
+        # Concurrent CREATE INDEX on Postgres can lose the race at the catalog
+        # insert rather than the IF NOT EXISTS probe, surfacing as a verror on
+        # pg_class's unique index instead of the usual "already exists".
+        or "pg_class_relname_nsp_index" in msg
+    )
 
 
 async def _apply_ddl(conn, statement: str) -> None:
@@ -46,14 +53,14 @@ async def _apply_ddl(conn, statement: str) -> None:
 async def ensure_budget_columns(engine) -> None:
     """Make `api_keys.spent_microcents` correct, whatever schema it started from.
 
-    Adds the column when an upgraded volume lacks it, and re-seeds lifetime spend
-    from historical request logs on every boot so the `ALTER` is never mistaken
+    Adds the column when an upgraded volume lacks it, and repairs lifetime spend
+    against historical request logs on every boot so the `ALTER` is never mistaken
     for proof that the seed ran. Also widens `budget_limit_cents` to BIGINT on
     Postgres (the column is scaled into microcents for every comparison against
     spend, and an int4 ceiling is about 214,748 dollars of lifetime budget) and
     creates the `ix_requests_log_api_key_spend` index that create_all only builds
     on fresh databases. Each step costs nothing on a database that needs none of
-    it — there the seed is a single indexed UPDATE that matches no row.
+    it — there the repair is a single indexed UPDATE that matches no row.
     """
     async with engine.begin() as conn:
         cols = {
@@ -98,22 +105,37 @@ async def ensure_budget_columns(engine) -> None:
         # cap tighter, while honouring the filter would hand a capped key
         # back the spend it was capped for.
         #
-        # Every boot, not only beside the ALTER, because the ALTER is no record
-        # of the seed: on SQLite that DDL is durable the instant it executes
-        # while this is DML in the transaction a kill — or the `database is
-        # locked` this very aggregate provokes on an upgrade that overlaps the
-        # old machine's writes — rolls back, and a gate keyed on the column
-        # would then never retry. It is idempotent because a log row and its
-        # charge are one commit, so this SUM *is* the lifetime counter and a key
-        # already holding spend has nothing to restore. Capped keys only: an
-        # uncapped key is never charged, so its counter stays at zero by design
-        # and nothing reads it.
+        # Not a one-shot `= 0` backfill but a monotonic, cap-clamped repair run
+        # every boot: the counter rises to max(current, log total) and is never
+        # written past budget_limit_cents scaled to microcents or below its
+        # current value. Until #161 wires the per-request charge, request logs
+        # are the only recorded spend, so a counter seeded at an earlier boot
+        # goes stale as traffic flows and only re-aggregating closes the gap.
+        # Afterwards the clamp keeps this a no-op on correct state: a key whose
+        # final charge was clamped deliberately under-reports its log total, and
+        # raising it back to the SUM would undo the clamp (and overshoot the
+        # cap). The strict inequality means a steady-state boot matches no row.
+        #
+        # It runs beside every ALTER, not only with the column's own, because
+        # the ALTER is no record of the seed: on SQLite that DDL is durable the
+        # instant it executes while this is DML in the transaction a kill — or
+        # the `database is locked` this very aggregate provokes on an upgrade
+        # that overlaps the old machine's writes — rolls back, and a gate keyed
+        # on the column would then never retry. Capped keys only: an uncapped
+        # key is never charged, so its counter stays at zero by design and
+        # nothing reads it. GREATEST/LEAST are Postgres; SQLite's scalar
+        # MAX/MIN take the same arguments.
+        greatest, least = ("GREATEST", "LEAST") if is_postgres else ("MAX", "MIN")
+        repaired = (
+            f"{least}({greatest}(spent_microcents, ("
+            "SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
+            "WHERE requests_log.api_key_id = api_keys.id"
+            f")), CAST(budget_limit_cents AS BIGINT) * {10_000})"
+        )
         await conn.execute(
             text(
-                "UPDATE api_keys SET spent_microcents = ("
-                "  SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
-                "  WHERE requests_log.api_key_id = api_keys.id"
-                ") WHERE spent_microcents = 0 AND budget_limit_cents IS NOT NULL"
+                f"UPDATE api_keys SET spent_microcents = {repaired} "
+                f"WHERE budget_limit_cents IS NOT NULL AND spent_microcents < {repaired}"
             )
         )
 
