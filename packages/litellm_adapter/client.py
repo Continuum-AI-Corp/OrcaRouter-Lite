@@ -98,6 +98,7 @@ class OrcaLiteLLMClient:
         allowed_fails: int | None = None,
         enable_pre_call_checks: bool = False,
         num_retries: int = 2,
+        timeout: float = 30.0,
     ):
         # Stash routing config on the instance so chat.py can read it without
         # re-querying the DB on every request.
@@ -152,7 +153,7 @@ class OrcaLiteLLMClient:
         router_kwargs: dict = {
             "model_list": model_list,
             "num_retries": num_retries,
-            "timeout": 30.0,
+            "timeout": timeout,
             "enable_pre_call_checks": enable_pre_call_checks,
         }
         # cooldown_time=0 must translate to disable_cooldowns=True. Otherwise

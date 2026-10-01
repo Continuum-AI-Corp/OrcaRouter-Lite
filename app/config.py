@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     # 600-3600 in `.env` to avoid burning quota on a known-dead model.
     # Tests should set 0 to disable cooldown entirely.
     router_cooldown_seconds: int = 60
+    # Per-request timeout, in seconds, that the LiteLLM Router applies to each
+    # upstream call. A timeout counts as a failure toward cooldown, so slow
+    # reasoning models that legitimately take 45-60s need this raised.
+    router_timeout_seconds: float = 30.0
     # Global default for failures-before-cooldown across all error types,
     # used by LiteLLM Router as the fallback when AllowedFailsPolicy returns
     # a falsy value. We set 0 so the policy's "fail fast on hard errors"
