@@ -17,6 +17,8 @@ from __future__ import annotations
 from sqlalchemy import BigInteger, inspect, text
 from sqlalchemy.exc import DBAPIError
 
+from packages.db.units import MICROCENTS_PER_CENT
+
 
 def _already_applied(err: DBAPIError) -> bool:
     """Whether a DDL failure means someone else applied the change first."""
@@ -123,14 +125,15 @@ async def ensure_budget_columns(engine) -> None:
         # that overlaps the old machine's writes — rolls back, and a gate keyed
         # on the column would then never retry. Capped keys only: an uncapped
         # key is never charged, so its counter stays at zero by design and
-        # nothing reads it. GREATEST/LEAST are Postgres; SQLite's scalar
-        # MAX/MIN take the same arguments.
+        # nothing reads it. The cap is scaled by MICROCENTS_PER_CENT, the same
+        # constant the request-path charge uses. GREATEST/LEAST are Postgres;
+        # SQLite's scalar MAX/MIN take the same arguments.
         greatest, least = ("GREATEST", "LEAST") if is_postgres else ("MAX", "MIN")
         repaired = (
             f"{least}({greatest}(spent_microcents, ("
             "SELECT CAST(COALESCE(SUM(cost_microcents), 0) AS BIGINT) FROM requests_log "
             "WHERE requests_log.api_key_id = api_keys.id"
-            f")), CAST(budget_limit_cents AS BIGINT) * {10_000})"
+            f")), CAST(budget_limit_cents AS BIGINT) * {MICROCENTS_PER_CENT})"
         )
         await conn.execute(
             text(

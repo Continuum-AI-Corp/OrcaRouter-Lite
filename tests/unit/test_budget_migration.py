@@ -319,3 +319,41 @@ async def test_repair_never_lowers_a_counter(tmp_sqlite_url):
         assert await _spent(engine, "w2") == 700
     finally:
         await engine.dispose()
+
+
+async def test_cap_scale_follows_the_shared_constant(tmp_sqlite_url, monkeypatch):
+    """The seed scales the cap by `MICROCENTS_PER_CENT`, not a literal re-type.
+
+    The migration and `packages.auth.spend` sit in different packages: a scale
+    typed into this SQL would clamp a counter to a different multiple of
+    `budget_limit_cents` than `charge_budget` compares against, silently
+    changing every capped key's budget by that factor. Perturbing the shared
+    constant therefore has to move the statement the boot emits.
+    """
+    from sqlalchemy import event
+
+    import packages.db.migrate as migrate
+    from packages.auth.spend import MICROCENTS_PER_CENT
+
+    assert MICROCENTS_PER_CENT == 10_000
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    seeds: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if "UPDATE api_keys SET spent_microcents" in statement:
+            seeds.append(statement)
+
+    try:
+        event.listen(engine.sync_engine, "before_cursor_execute", _record)
+        try:
+            monkeypatch.setattr(migrate, "MICROCENTS_PER_CENT", 777)
+            await ensure_budget_columns(engine)
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+        # One aggregate per boot, and it carries the shared scale.
+        assert len(seeds) == 1
+        assert "* 777" in seeds[0]
+    finally:
+        await engine.dispose()
+

@@ -36,7 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.db.models.api_key import ApiKey
 
-MICROCENTS_PER_CENT = 10_000
+# Defined in `packages.db.units` so the boot repair that clamps a counter to the
+# same cap scales by the identical number; re-exported here because this module
+# is the documented home of the budget accounting primitives.
+from packages.db.units import MICROCENTS_PER_CENT as MICROCENTS_PER_CENT
 
 
 async def read_spent(db: AsyncSession, api_key_id: str) -> int:
