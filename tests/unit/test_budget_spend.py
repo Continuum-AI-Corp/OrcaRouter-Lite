@@ -2,9 +2,10 @@
 
 import asyncio
 import contextlib
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +20,27 @@ from packages.auth.spend import (
     settle_parked_spend,
 )
 from packages.db.models.budget_park import BudgetPark
+
+_PARK_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+async def _stamp_parks(env, offsets: dict[str, int]) -> None:
+    """Give each park a distinct, host-independent `created_at`.
+
+    The column default is wall-clock and its resolution is platform-dependent
+    (two back-to-back `datetime.now()` calls return the same value on Windows,
+    whose clock ticks every ~15.6 ms), so parks written moments apart can share
+    a stamp and fall through to the `trace_id` tiebreak. Pinning the stamps
+    keeps these tests about fold ordering rather than about the host clock.
+    """
+    async with env() as s:
+        for trace_id, offset in offsets.items():
+            await s.execute(
+                update(BudgetPark)
+                .where(BudgetPark.trace_id == trace_id)
+                .values(created_at=_PARK_EPOCH + timedelta(seconds=offset))
+            )
+        await s.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -386,6 +408,9 @@ async def test_parked_queue_drains_oldest_first_as_the_cap_opens(parked_env):
     key_id = await _parked_key(parked_env, spent=9_000)
     await record_unsettled_spend(trace_id="t-old", api_key_id=key_id, microcents=2_000)
     await record_unsettled_spend(trace_id="t-new", api_key_id=key_id, microcents=500)
+    # Pinned so the assertion is about fold order and not about the host clock
+    # (see `_stamp_parks`); `t-old` is the older obligation.
+    await _stamp_parks(parked_env, {"t-old": 0, "t-new": 1})
 
     assert await settle_parked_spend(key_id, 10_000) == 1_000
     # `t-old` absorbed the whole allowance and kept its remainder; the younger,
@@ -401,6 +426,33 @@ async def test_parked_queue_drains_oldest_first_as_the_cap_opens(parked_env):
     assert await pending_parked_spend(key_id) == 0
     async with parked_env() as s:
         assert await read_spent(s, key_id) == 11_500
+
+
+async def test_tied_park_stamps_still_bill_to_the_cap(parked_env):
+    """Parks sharing a `created_at` fall to `trace_id`, and that order is arbitrary.
+
+    The column default's resolution is platform-dependent, so two obligations
+    filed in the same clock tick tie — and `trace_id` is a uuid4 in production,
+    so which row is trimmed first is arbitrary by construction. What must hold
+    regardless of which row wins is the part every caller depends on: the whole
+    parked total is accounted, the counter lands on the cap, and the remainder
+    stays visible as debt rather than being written off.
+    """
+    key_id = await _parked_key(parked_env, spent=9_000)
+    await record_unsettled_spend(trace_id="t-old", api_key_id=key_id, microcents=2_000)
+    await record_unsettled_spend(trace_id="t-new", api_key_id=key_id, microcents=500)
+    await _stamp_parks(parked_env, {"t-old": 0, "t-new": 0})  # the tie
+
+    assert await settle_parked_spend(key_id, 10_000) == 1_000
+    async with parked_env() as s:
+        assert await read_spent(s, key_id) == 10_000
+    # Whichever row absorbed the allowance, the untouched other row plus the
+    # trimmed remainder still adds up to the 1_500 that could not be absorbed.
+    assert sum((await _parks(parked_env, key_id)).values()) == 1_500
+    assert await pending_parked_spend(key_id) == 1_500
+
+    assert await settle_parked_spend(key_id, 20_000) == 1_500
+    assert await pending_parked_spend(key_id) == 0
 
 
 async def test_an_unreadable_park_ledger_does_not_read_as_no_debt(parked_env):

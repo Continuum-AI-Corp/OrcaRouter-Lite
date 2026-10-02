@@ -191,16 +191,24 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
 
     The park exists because a charge could not be recorded; leaving it parked
     forever would mean a key at its cap is rejected by an amount that never
-    settles and never clears, so every pre-check tries to move it. The
-    remaining allowance is applied oldest-obligation-first and a park larger
-    than it bills what fits and is rewritten to its remainder, rather than
-    staying parked whole. That keeps the invariant the fold exists to hold:
-    either the queue is empty, or the counter sits exactly on the cap. Without
-    it a key can be refused at a lifetime spend below its limit with a row that
-    nothing will ever shrink, which is the state this function is supposed to
-    drain. The remainder is still a real debt — the over-claim is the
-    fail-closed policy — so it stays visible and keeps `is_exhausted` blocking;
+    settles and never clears, so every pre-check tries to move it. Park rows are
+    read oldest-`created_at` first and the remaining allowance is applied to them
+    in that order; a park larger than the allowance bills what fits and is
+    rewritten to its remainder, rather than staying parked whole. That keeps the
+    invariant the fold exists to hold: either the queue is empty, or the counter
+    sits exactly on the cap. Without it a key can be refused at a lifetime spend
+    below its limit with a row that nothing will ever shrink, which is the state
+    this function is supposed to drain. The remainder is still a real debt — the
+    over-claim is the fail-closed policy — so it stays visible and keeps
+    `is_exhausted` blocking;
     it is never written off, and it folds for free the moment the cap is raised.
+
+    Two parks carrying the same `created_at` fall through to the `trace_id`
+    tiebreak, and `trace_id` is a uuid4 — so for obligations stamped within the
+    same clock tick the order is arbitrary rather than oldest-first. The
+    accounting does not depend on which row wins: the parked total is conserved
+    either way, the counter still reaches `min(cap, spent + debt)`, and only
+    which row is trimmed differs.
 
     The charge and the row writes share one transaction with compare-and-swap
     guards on each: two workers folding the same park cannot double-bill it,
