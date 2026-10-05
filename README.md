@@ -1,5 +1,7 @@
 # OrcaRouter Lite
 
+[![Deploy to Railyard](https://app.railyard.run/deploy/badge)](https://app.railyard.run/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite)
+
 **Self-hosted LLM router with a managed safety net.**
 OpenAI-compatible. BYOK. Single-workspace. Streaming. `model="auto"`.
 
