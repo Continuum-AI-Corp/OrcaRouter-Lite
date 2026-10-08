@@ -217,7 +217,9 @@ async def test_unbudgeted_root_key_unaffected(budget_env):
     fake.acompletion.assert_awaited_once()
 
 
-async def _budgeted_stream(budget_env, *, chunks, budget_limit_cents=10):
+async def _budgeted_stream(
+    budget_env, *, chunks, budget_limit_cents=10, stream_options=None,
+):
     """Drive a streaming request for a budgeted key and return its final spend."""
     make_client, fake, factory, _root = budget_env
     key, key_id = await _make_budgeted_key(factory, budget_limit_cents=budget_limit_cents)
@@ -236,7 +238,10 @@ async def _budgeted_stream(budget_env, *, chunks, budget_limit_cents=10):
                 "model": "gpt-4o-mini",
                 "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
-                "stream_options": {"include_usage": False},
+                "stream_options": (
+                    {"include_usage": False} if stream_options is None
+                    else stream_options
+                ),
             },
         ) as r:
             async for _ in r.aiter_lines():
@@ -252,20 +257,42 @@ async def _budgeted_stream(budget_env, *, chunks, budget_limit_cents=10):
         ).scalar_one(), fake.acompletion.call_args
 
 
-async def test_budgeted_stream_without_usage_charges_remaining(budget_env):
-    # A completed stream that never delivers a usage frame (client forced
-    # include_usage=False, provider ignored it) must NOT bill zero — that would
-    # let a capped key stream for free. Fail-closed: charge the full remaining cap.
+async def test_budgeted_stream_usage_declined_by_client_prices_the_delivery(
+    budget_env,
+):
+    # The client explicitly declined usage frames. The engine does not override
+    # that (it would hand the client a usage-only frame it asked not to
+    # receive), and the completed stream is then priced from what it delivered
+    # rather than fail-closed: the client told us up front that it does not
+    # want usage frames, so charging it a lifetime budget for a normal answer
+    # would punish an explicit, documented preference.
     spent, call_args = await _budgeted_stream(
         budget_env,
         chunks=[
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ],
+        stream_options={"include_usage": False},
     )
-    # Even though the client demanded include_usage=False, the budgeted key forces it.
+    assert call_args.kwargs["stream_options"]["include_usage"] is False
+    assert 0 < spent < 100_000
+
+
+async def test_budgeted_stream_usage_requested_but_missing_charges_remaining(budget_env):
+    # Nothing suppressed measurement: the engine asked for a usage frame and
+    # the provider never sent one. A completed stream with content and no
+    # measurement is the one unmeasured case still charged fail-closed — that
+    # is what keeps a capped key from being streamed free behind an upstream
+    # that silently omits its usage.
+    spent, call_args = await _budgeted_stream(
+        budget_env,
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ],
+        stream_options={"include_usage": True},
+    )
     assert call_args.kwargs["stream_options"]["include_usage"] is True
-    # No usage frame observed -> full cap charged.
     assert spent == 100_000
 
 
@@ -325,6 +352,7 @@ async def test_fail_closed_charge_is_recorded_on_the_row_it_charges(budget_env):
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ],
+        stream_options={"include_usage": True},
     )
     assert spent == 100_000  # the full remaining allowance
 
@@ -381,8 +409,10 @@ async def test_budgeted_stream_midstream_error_charges_actual_only(budget_env):
     # The error response was delivered in full.
     assert "Upstream provider error" in text
     assert "[DONE]" in text
-    # Only the recorded (~0) cost is charged — not the 100_000-microcent cap.
-    assert await _get_spent(factory, key_id) == 0
+    # The delivery is priced from its characters, floored at one microcent so a
+    # short answer is never free — and nowhere near the 100_000-microcent cap.
+    spent = await _get_spent(factory, key_id)
+    assert 0 < spent < 100_000
 
     # The key is NOT exhausted: a follow-up streaming request is still served.
     fake.acompletion = AsyncMock(return_value=_ok_stream())
@@ -464,11 +494,13 @@ async def test_budgeted_stream_error_after_unmeasured_content_charges_estimate(b
     assert 0 < spent < 1_000_000  # not free, and not the 100-cent cap
 
 
-async def test_budgeted_blocking_without_usage_charges_remaining(budget_env):
-    # A budgeted key whose provider ignores the forced include_usage and returns
-    # a usage-less completion has an unknown cost. Mirroring the streaming rule,
-    # the blocking path must fail closed and charge the full remaining allowance
-    # — otherwise the delivered completion costs nothing and the cap is bypassed.
+async def test_budgeted_blocking_without_usage_prices_the_delivery(budget_env):
+    # A budgeted key whose provider answers without token counts has an unknown
+    # cost — but a blocking response is here in full, so it is priced from what
+    # it actually returned, exactly like a mid-stream fault. Charging the whole
+    # remaining lifetime allowance instead (the old rule) billed a customer
+    # their entire budget for one ordinary request whose upstream omitted a
+    # field.
     make_client, fake, factory, _root = budget_env
     key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
 
@@ -492,7 +524,22 @@ async def test_budgeted_blocking_without_usage_charges_remaining(budget_env):
         )
 
     assert r.status_code == 200, r.text
-    assert await _get_spent(factory, key_id) == 100_000  # 10 cents, fail-closed
+    spent = await _get_spent(factory, key_id)
+    # Never free (floored at one microcent), never the cap.
+    assert 0 < spent < 100_000
+
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        row = (
+            await s.execute(
+                select(RequestLog).where(RequestLog.api_key_id == key_id)
+            )
+        ).scalar_one()
+    assert spent == row.cost_microcents  # charged == accounted
+    assert row.output_tokens > 0  # the row explains its own cost
 
 
 async def test_budgeted_blocking_httpexception_charges_recorded_cost(budget_env):
@@ -922,3 +969,161 @@ async def test_build_log_row_normalizes_anthropic_style_usage():
     )
     assert row.input_tokens == 12
     assert row.output_tokens == 7
+
+
+async def test_budgeted_empty_stream_without_usage_settles_zero(budget_env):
+    """Nothing delivered and nothing measured must bill nothing.
+
+    The fail-closed charge exists for a delivery the provider never priced.
+    A stream that yields no content and no usage frame delivered nothing at
+    all, so charging the key its whole remaining allowance would exhaust it for
+    an empty response — and every later request with it would 429.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    spent, _args = await _budgeted_stream(
+        budget_env,
+        chunks=[{"choices": [{"delta": {}, "finish_reason": "stop"}]}],
+    )
+    assert spent == 0
+
+    # And the key is not exhausted: a follow-up request is still served.
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-after-empty",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello!"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+    })
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert r.status_code == 200, r.text
+
+
+async def test_budgeted_disconnect_at_done_frame_still_charges_remaining(budget_env):
+    """Where the client hangs up must not change what it is charged.
+
+    A stream that completed with content but no usage frame is settled
+    fail-closed. If the client happened to disconnect at the trailing [DONE]
+    yield instead of waiting for it, the identical delivery must not be
+    re-priced as a mid-stream hangup — otherwise reading the whole answer and
+    leaving is the cheapest way to use a capped key.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    delivered = "the quick brown fox " * 200
+
+    class _HangupAtDone:
+        def __init__(self):
+            self._n = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            self._n += 1
+            if self._n == 1:
+                return {"choices": [{"delta": {"content": delivered},
+                                     "finish_reason": None}]}
+            # The provider is done (the next pull would raise StopAsyncIteration),
+            # so the engine finishes its own framing; the consumer leaves during
+            # the [DONE] yield, i.e. after completion.
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            pass
+
+    async def _stream():
+        yield {"choices": [{"delta": {"content": delivered}, "finish_reason": None}]}
+        # The consumer goes away the moment the engine starts its trailing
+        # framing, which is after the provider's stream ended.
+        await asyncio.sleep(0)
+
+    fake.acompletion = AsyncMock(return_value=_HangupAtDone())
+
+    async with await make_client(key) as c:
+        try:
+            async with c.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={"model": "gpt-4o-mini", "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+            ) as r:
+                async for _ in r.aiter_lines():
+                    pass
+        except Exception:
+            pass
+
+    await asyncio.sleep(0.05)
+    spent = await _get_spent(factory, key_id)
+    assert spent == 1_000_000  # the full cap, i.e. the fail-closed charge
+
+
+async def test_budgeted_stream_usage_without_token_keys_is_unmeasured(budget_env):
+    """A usage frame with no countable token total is not a measurement.
+
+    `{"total_tokens": 123}` carries no per-direction counts, so every token
+    read normalizes to zero: charging the recorded cost would bill a delivered
+    completion nothing, leaving the cap steerable by the upstream's choice of
+    fields. It must be treated as no usage at all.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    spent, _args = await _budgeted_stream(
+        budget_env,
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {
+                "usage": {"total_tokens": 123},
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ],
+        stream_options={"include_usage": True},
+    )
+    # A stream that completed with delivered content but no countable usage is
+    # the fail-closed case, so the key pays its remaining allowance. What must
+    # NOT happen is the old behavior — the tokenless frame counting as measured
+    # and settling the delivery at zero.
+    assert spent == 100_000
+
+
+async def test_budgeted_blocking_usage_without_token_keys_is_unmeasured(budget_env):
+    """Same rule on the blocking path: tokenless usage is unmeasured."""
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-total-only",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "a delivered answer"},
+            "finish_reason": "stop",
+        }],
+        "usage": {"total_tokens": 999},
+    })
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text
+    spent = await _get_spent(factory, key_id)
+    assert 0 < spent < 100_000  # priced from the delivery, never free, never the cap

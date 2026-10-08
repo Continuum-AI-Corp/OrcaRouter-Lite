@@ -31,7 +31,7 @@ from app.deps import get_db, get_key_context
 from app.protocols.sse import AdapterError
 from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
-from packages.auth.spend import MICROCENTS_PER_CENT, budget_precheck, charge_budget
+from packages.auth.spend import MICROCENTS_PER_CENT, charge_budget, read_spent
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
@@ -77,6 +77,34 @@ def _text_chars(content) -> int:
     return 0
 
 
+_COUNTABLE_USAGE_KEYS = (
+    "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens",
+)
+
+
+def _countable_usage(usage) -> bool:
+    """Whether a usage dict carries at least one countable token total.
+
+    A truthy `usage` is not proof the provider measured anything: some
+    upstreams report `{"total_tokens": 123}` and nothing else. Settling on that
+    normalizes every token read to zero, the row records a zero cost, and a
+    delivered completion bills the key nothing — the cap becomes steerable by
+    the upstream's field choice. Anything short of a countable key is treated
+    as no measurement at all.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return False
+    return any(usage.get(k) for k in _COUNTABLE_USAGE_KEYS)
+
+
+def _estimate_usage(prompt_chars: int, completion_chars: int) -> dict:
+    """Token counts priced from characters, for a delivery the provider never measured."""
+    return {
+        "prompt_tokens": max(1, prompt_chars // _CHARS_PER_TOKEN),
+        "completion_tokens": max(1, completion_chars // _CHARS_PER_TOKEN),
+    }
+
+
 def _settle_unmeasured_stream(
     agg_usage: dict, agg_output_chars: int, body, *, caller_bailed: bool = False
 ) -> dict:
@@ -97,42 +125,161 @@ def _settle_unmeasured_stream(
     at the first byte would settle every request at zero and the cap would stop
     moving for exactly the client choosing not to wait.
     """
-    if agg_usage:
+    if _countable_usage(agg_usage):
         return agg_usage
     if not agg_output_chars and not caller_bailed:
         return agg_usage
     prompt_chars = sum(_text_chars(m.content) for m in body.messages)
-    return {
-        "prompt_tokens": max(1, prompt_chars // _CHARS_PER_TOKEN),
-        "completion_tokens": max(1, agg_output_chars // _CHARS_PER_TOKEN),
-    }
+    return _estimate_usage(prompt_chars, agg_output_chars)
+
+
+def _blocking_delivery_chars(response: dict) -> tuple[bool, int]:
+    """Delivered-content flag and completion characters of a blocking response.
+
+    Returns `(has_content, completion_chars)` so the fail-closed gate and the
+    delivery estimate read the same evidence — a gate that counts content as
+    "delivered" while the estimator cannot see it would price the same delivery
+    two different ways.
+    """
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return False, 0
+    has_content = False
+    chars = 0
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        candidates: list = []
+        text = choice.get("text")
+        if isinstance(text, str):
+            candidates.append(text)
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                candidates.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        candidates.append(part)
+                    elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                        candidates.append(part["text"])
+        for value in candidates:
+            n = len(value)
+            chars += n
+            if value.strip():
+                has_content = True
+    return has_content, chars
 
 
 def _blocking_delivery_has_content(response: dict) -> bool:
     """Whether a blocking ChatCompletion response carried delivered content."""
-    choices = response.get("choices")
-    if not isinstance(choices, list):
-        return False
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        text = choice.get("text")
-        if isinstance(text, str) and text.strip():
-            return True
-        message = choice.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return True
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, str) and part.strip():
-                        return True
-                    if isinstance(part, dict):
-                        t = part.get("text")
-                        if isinstance(t, str) and t.strip():
-                            return True
-    return False
+    return _blocking_delivery_chars(response)[0]
+
+
+# Endings a settlement can have. Handlers record which one happened; the
+# charge is decided from it in exactly one place (see `_unmeasured_charge`),
+# so no handler can price its own ending differently from its siblings.
+_STREAM_IN_FLIGHT = "in_flight"
+_STREAM_COMPLETED = "completed"
+_STREAM_CLIENT_DISCONNECT = "client_disconnect"
+_STREAM_UPSTREAM_ERROR = "upstream_error"
+_STREAM_ADAPTER_ERROR = "adapter_error"
+
+# How an unmeasured-but-delivered request is charged when it ended normally.
+_REMAINING = "remaining"
+_ESTIMATE = "estimate"
+
+
+def _cost_of_usage(
+    usage: dict,
+    *,
+    model_id: str | None,
+    fallback_model: str | None = None,
+) -> int:
+    """Catalog cost of a token count, for a delivery the provider never priced."""
+    return _compute_cost_microcents(
+        litellm_cost_usd=None,
+        model_id=model_id,
+        fallback_model=fallback_model,
+        input_tokens=usage.get("prompt_tokens", 0) or 0,
+        output_tokens=usage.get("completion_tokens", 0) or 0,
+    )
+
+
+def _unmeasured_charge(
+    *,
+    delivered: bool,
+    ending: str,
+    prompt_chars: int,
+    completion_chars: int,
+    policy: str,
+    cap: int,
+    spent: int,
+    model_id: str | None,
+    fallback_model: str | None = None,
+) -> tuple[int, dict | None]:
+    """Charge for a request the provider never measured, from stream facts.
+
+    The single decision point for every unmeasured ending, so the streaming and
+    blocking paths cannot drift apart. The rules, in order:
+
+    - Nothing delivered: a provider or adapter failure that returned nothing
+      cost nothing measurable and settles at zero; a client that hung up
+      before the first byte still caused the prompt to go upstream, so it pays
+      the prompt estimate.
+    - Content delivered and the stream ended normally: charged the remaining
+      allowance (`policy=_REMAINING`). A stream that completed without ever
+      reporting usage is anomalous, and a client must not be able to opt out of
+      measurement and keep streaming for free.
+    - Content delivered and the ending was a hangup or a fault on our side or
+      the provider's: priced from the delivery estimate, which is the most we
+      can honestly know about a delivery nobody measured.
+
+    A disconnect *after* a completed stream is not a separate ending: `ending`
+    is already `_STREAM_COMPLETED` by then, so where the client chose to hang up
+    cannot change the bill.
+
+    Returns the charge together with the token counts it was derived from, so
+    the request-log row explains its own `cost_microcents` instead of recording
+    a cost with zero tokens behind it. The counts are `None` for the branches
+    that charge nothing and for the fail-closed raise, where no honest token
+    estimate exists.
+    """
+    import os as _os
+    if _os.environ.get("ORCA_DEBUG_CHARGE"):
+        print("DBG unmeasured", dict(delivered=delivered, ending=ending, policy=policy, pchars=prompt_chars, cchars=completion_chars, model_id=model_id, fallback=fallback_model, cap=cap, spent=spent), flush=True)
+    if ending == _STREAM_IN_FLIGHT:
+        # Settlement ran without an ending being recorded, which can only mean
+        # the consumer left before the provider finished. Priced as the hangup
+        # it is — never as a normal completion, which would let an unrecorded
+        # ending charge the whole remaining allowance.
+        ending = _STREAM_CLIENT_DISCONNECT
+    if not delivered:
+        if ending == _STREAM_CLIENT_DISCONNECT:
+            estimate = _estimate_usage(prompt_chars, 0)
+            return (
+                max(1, _cost_of_usage(
+                    estimate,
+                    model_id=model_id,
+                    fallback_model=fallback_model,
+                )),
+                estimate,
+            )
+        return 0, None
+    if ending == _STREAM_COMPLETED and policy == _REMAINING:
+        return max(0, cap - spent), None
+    estimate = _estimate_usage(prompt_chars, completion_chars)
+    # Floored at one microcent: a short answer estimates to a fraction of a
+    # microcent, which truncates to zero, and a delivery that costs nothing is
+    # exactly what the cap must not allow. One microcent is 0.0001 cent — the
+    # smallest amount the counter can honestly represent.
+    return (
+        max(1, _cost_of_usage(
+            estimate, model_id=model_id, fallback_model=fallback_model,
+        )),
+        estimate,
+    )
 
 
 def _chunk_to_dict(chunk) -> dict:
@@ -588,11 +735,11 @@ async def execute_chat(
     # exceed the cap (fail-closed, never over-recorded).
     if kc.budget_limit_cents is not None:
         cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
-        spent = await budget_precheck(db, str(kc.key_id), cap)
+        spent = await read_spent(db, str(kc.key_id))
         if spent >= cap:
             raise HTTPException(
                 status_code=429,
-                detail=f"API key budget exhausted ({cap} microcents lifetime cap reached).",
+                detail="API key budget exhausted (lifetime cap reached).",
             )
         kc._budget_cap = cap
         kc._budget_spent = spent
@@ -689,14 +836,16 @@ async def execute_chat(
     # mid-flight cascade is impossible — we have to surface the error and let
     # the client decide what to do.
     if body.stream:
-        # Auto-inject `stream_options.include_usage=True` if the client didn't set
-        # it, so streaming responses carry token counts and we bill correctly.
-        # A budgeted key MUST receive usage so its spend is measured: a
-        # client-supplied `include_usage=False` would otherwise record zero cost
-        # and let a capped key stream for free, so force it on for any budgeted key
-        # regardless of the client's preference.
+        # Auto-inject `stream_options.include_usage=True` if the client didn't
+        # set it, so streaming responses carry token counts and we bill the
+        # measured cost. A budgeted key needs it: without a usage frame the
+        # settlement falls back to pricing the delivery, which under-counts.
+        # A client that explicitly asked for `include_usage: False` still gets
+        # it — overriding that would hand every budgeted client an extra
+        # usage-only frame they asked not to receive. The cost of honouring it
+        # is bounded and visible: the stream settles from what it delivered.
         existing_so = completion_kwargs.get("stream_options") or {}
-        if getattr(kc, "_budget_cap", None) is not None or "include_usage" not in existing_so:
+        if "include_usage" not in existing_so:
             completion_kwargs["stream_options"] = {**existing_so, "include_usage": True}
 
         async def _log_pre_stream_failure(status: int, err_type: str | None) -> None:
@@ -774,16 +923,23 @@ async def execute_chat(
             status_code = 200
             error_type: str | None = None
             log_written = False
-            # The usage frame is the billing signal: True once one has been
-            # observed. A stream that ends without it — client hung up before
-            # the usage frame, suppressed it, or the provider omitted it — has
-            # an unknown cost and is settled fail-closed against the key's
-            # remaining allowance so the cap cannot be bypassed. With a usage
-            # frame delivered the cost is known even if the client then
-            # disconnects, and charging more would over-bill a quantity the
-            # row already accounts for (and break charged == row.cost, the
-            # invariant the trace-id idempotence relies on).
-            usage_seen = False
+            # How the stream ended. Handlers record the ending and nothing
+            # else — the charge is decided from these facts in one place
+            # (`_unmeasured_charge`), so a handler cannot price its own ending
+            # differently from a sibling. `usage_seen` is deliberately gone: a
+            # truthy usage dict is not a measurement (see `_countable_usage`),
+            # and where the client chose to hang up must not be able to change
+            # the bill.
+            stream_ending = _STREAM_IN_FLIGHT
+            # Whether this request asked the provider for a usage frame. We ask
+            # unless the client explicitly opted out. The distinction decides
+            # what an unmeasured completion costs: a provider that ignored our
+            # request is failing to measure something we needed (fail closed),
+            # while a client that declined usage told us up front, and is then
+            # charged for what it actually received.
+            usage_requested = bool(
+                (completion_kwargs.get("stream_options") or {}).get("include_usage")
+            )
 
             async def _finalize() -> None:
                 """Write the request log row exactly once.
@@ -884,27 +1040,55 @@ async def execute_chat(
                 def _settlement_amount() -> int:
                     """Budget charge for this request, in microcents.
 
-                    The usage frame is the billing signal. When no usage frame
-                    was ever observed — the stream ended early, the client
-                    suppressed the frame, or the provider omitted it — the real
-                    cost is unknown and the full remaining allowance is charged
-                    (fail-closed) so no client-side choice can bypass the cap.
-                    Once a usage frame was delivered the cost is known — even
-                    if the stream then died — and the recorded cost is charged.
+                    A usage frame carrying countable token totals is the billing
+                    signal: the cost is known, and charging more would
+                    over-bill a quantity the row already accounts for. A frame
+                    without those keys is not a measurement at all.
 
-                    The raised amount is written back into the row, not just
-                    into the counter: a charge only the counter saw would leave
-                    a key exhausted by an amount nothing in its own request
-                    history accounts for.
+                    When nothing was measured, the charge comes from
+                    `_unmeasured_charge` and the stream's recorded ending —
+                    never from which exception handler happened to run. The
+                    rules that matters here:
+
+                    - we asked for usage and the provider sent none: the
+                      completed delivery is charged the remaining allowance
+                      (fail-closed), because that is an upstream failing to
+                      report what the cap needs;
+                    - the client declined usage frames up front: priced from
+                      the delivery, since we were told not to ask;
+                    - a hangup or a fault on either side: priced from what
+                      reached the client;
+                    - nothing delivered: charged nothing, unless a client hung
+                      up, in which case the prompt it caused was still billed.
+
+                    The amount is written back into the row, not just into the
+                    counter: a charge only the counter saw would leave a key
+                    exhausted by an amount nothing in its own request history
+                    accounts for.
                     """
                     actual = row_values.get("cost_microcents") or 0
-                    if not usage_seen:
-                        actual = max(
-                            actual,
-                            (getattr(kc, "_budget_cap", 0) or 0)
-                            - (getattr(kc, "_budget_spent", 0) or 0),
+                    if not _countable_usage(agg_usage):
+                        charge, estimate = _unmeasured_charge(
+                            delivered=agg_output_chars > 0,
+                            ending=stream_ending,
+                            prompt_chars=sum(
+                                _text_chars(m.content) for m in body.messages
+                            ),
+                            completion_chars=agg_output_chars,
+                            policy=_REMAINING if usage_requested else _ESTIMATE,
+                            cap=getattr(kc, "_budget_cap", 0) or 0,
+                            spent=getattr(kc, "_budget_spent", 0) or 0,
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
                         )
+                        actual = max(actual, charge)
                         row_values["cost_microcents"] = actual
+                        if estimate is not None:
+                            # The row explains its own charge: an estimated
+                            # delivery records the estimated tokens, so a
+                            # non-zero cost never sits on a zero-token row.
+                            row_values["input_tokens"] = estimate["prompt_tokens"]
+                            row_values["output_tokens"] = estimate["completion_tokens"]
                     return actual
 
                 async def _commit_row(*, retry: bool) -> None:
@@ -1026,7 +1210,6 @@ async def execute_chat(
                             agg_fallback = True
                     if "usage" in d and d["usage"]:
                         agg_usage = d["usage"]
-                        usage_seen = True
                     if d.get("model"):
                         agg_model = d["model"]
                     last_d = d
@@ -1035,6 +1218,12 @@ async def execute_chat(
                             delta = choice.get("delta") or {}
                             agg_output_chars += _text_chars(delta.get("content"))
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
+                # The provider's stream is done: everything after this point is
+                # our own framing. Recording it HERE is what makes a client that
+                # hangs up at the trailing [DONE] frame pay the same charge as
+                # one that stays connected — where it disconnects is its choice,
+                # not a fact about the delivery.
+                stream_ending = _STREAM_COMPLETED
                 # A trailing frame that already carries `usage` is the usage
                 # frame, whether or not `choices` is empty. LiteLLM's
                 # include_usage chunk uses
@@ -1095,19 +1284,16 @@ async def execute_chat(
                 # and run to completion. The scope exits normally and we
                 # re-raise the original CancelledError below.
                 #
-                # Settle the delivery before unwinding. The usage frame is the
-                # last chunk, so a hangup almost always means it never arrived
-                # and the cost is unknown — but unknown is not licence to bill
-                # the whole remaining allowance for a few sentences the user
-                # chose to stop reading. Price what reached the client, the way
-                # the provider-error branch does. A bail is the one unmeasured
-                # ending where even an empty delivery costs the prompt: the
-                # client chose the emptiness, and `acompletion` had already
-                # sent the prompt upstream.
-                agg_usage = _settle_unmeasured_stream(
-                    agg_usage, agg_output_chars, body, caller_bailed=True,
-                )
-                usage_seen = True
+                # Record the ending; the charge is decided from it in
+                # `_settlement_amount`, together with every other ending. A
+                # stream that already completed keeps `completed`: hanging up
+                # at the trailing [DONE] frame changes nothing about what was
+                # delivered, and pricing it as a disconnect would let a client
+                # buy the estimate for a full answer by leaving at the last
+                # byte. A mid-stream bail keeps its own pricing (including the
+                # prompt-only charge for a hangup before the first byte).
+                if stream_ending != _STREAM_COMPLETED:
+                    stream_ending = _STREAM_CLIENT_DISCONNECT
                 aclose = getattr(stream_obj, "aclose", None)
                 with anyio.CancelScope(shield=True):
                     if aclose is not None:
@@ -1132,13 +1318,11 @@ async def execute_chat(
                 logger.warning(
                     "chat_completion_stream_adapter_error", served_model=agg_model,
                 )
-                # An adapter fault is our bug, not a choice the caller made:
-                # price what reached the client instead of leaving the
-                # settlement unknown, which would charge a budgeted key its
-                # entire remaining budget. Nothing delivered settles at the
-                # 0 the row already records.
-                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
-                usage_seen = True
+                # An adapter fault is our bug, not a choice the caller made, so
+                # it prices like the other faults: from what reached the client.
+                # Nothing delivered settles at the 0 the row already records.
+                if stream_ending != _STREAM_COMPLETED:
+                    stream_ending = _STREAM_ADAPTER_ERROR
                 aclose = getattr(stream_obj, "aclose", None)
                 with anyio.CancelScope(shield=True):
                     if aclose is not None:
@@ -1173,14 +1357,13 @@ async def execute_chat(
                     "chat_completion_stream_error",
                     error=str(exc), error_type=error_type,
                 )
-                # Mark the settlement known: compute the delivery estimate
-                # and mark usage_seen BEFORE yielding the error frame and sentinel.
-                # If the client disconnects during yield, GeneratorExit unwinds
-                # directly through finally without executing lines below the yield;
-                # settling first ensures _finalize never charges the key's full
-                # remaining allowance for a client disconnect during error delivery.
-                agg_usage = _settle_unmeasured_stream(agg_usage, agg_output_chars, body)
-                usage_seen = True
+                # Record the ending BEFORE yielding the error frame and the
+                # sentinel. If the client disconnects during that yield,
+                # GeneratorExit unwinds straight through finally, so anything
+                # decided after the yield would be skipped and this fault would
+                # be priced as a normal completion.
+                if stream_ending != _STREAM_COMPLETED:
+                    stream_ending = _STREAM_UPSTREAM_ERROR
                 err_body = {
                     "error": {
                         "message": f"Upstream provider error: {exc}",
@@ -1290,31 +1473,53 @@ async def execute_chat(
         from sqlalchemy import select
 
         settle_amount = log.cost_microcents
-        # Fail-closed mirror of the streaming path's cost-unknown rule: a
-        # budgeted key whose successful response carries no usage (a provider
-        # that answered without the field at all) has an unknown cost — charge
-        # the full remaining allowance so a delivered completion can never cost
-        # nothing, and record that amount on the row: a charge only the counter
-        # saw would leave a key exhausted by an amount nothing in its own
-        # request history accounts for. Gated on having actually received a
-        # completion dict AND delivered content: a request that failed before
-        # the upstream answered (response == {}, e.g. the re-raised
-        # HTTPException above, whose status_code never left 200), or a
-        # successful but empty completion, charges its recorded ~0 cost instead —
-        # mirroring the cache-hit and pre-stream-failure paths.
+        # A budgeted key whose successful response carries no countable usage
+        # (a provider that answered without token counts, or with a frame that
+        # has none) has an unknown cost. Unlike the streaming path — where a
+        # stream that completed without ever reporting usage is anomalous and
+        # priced fail-closed — a blocking response is here in full, so what it
+        # actually returned can be priced: the same delivery-estimate the fault
+        # endings use. Charging the whole remaining allowance here would bill a
+        # customer their lifetime budget for one ordinary request whose upstream
+        # omits a field, which is a far worse failure than the one the rule
+        # exists to prevent.
+        #
+        # Gated on a delivered completion dict AND delivered content: a request
+        # that failed before the upstream answered (response == {}, e.g. the
+        # re-raised HTTPException above, whose status_code never left 200) and
+        # a successful but empty completion both charge their recorded ~0 cost,
+        # mirroring the cache-hit and pre-stream-failure paths. A completion the
+        # provider priced through _orca_meta keeps that authoritative cost.
         if (
             getattr(kc, "_budget_cap", None) is not None
             and status_code < 400
             and isinstance(response, dict)
             and response
-            and not response.get("usage")
-            and _blocking_delivery_has_content(response)
+            and not _countable_usage(response.get("usage"))
         ):
-            settle_amount = max(
-                log.cost_microcents or 0,
-                kc._budget_cap - (getattr(kc, "_budget_spent", 0) or 0),
+            delivered, completion_chars = _blocking_delivery_chars(response)
+            charge, estimate = _unmeasured_charge(
+                delivered=delivered,
+                ending=(
+                    _STREAM_COMPLETED if delivered else _STREAM_UPSTREAM_ERROR
+                ),
+                prompt_chars=sum(_text_chars(m.content) for m in body.messages),
+                completion_chars=completion_chars,
+                # A delivered blocking completion is priced from what it
+                # returned; `_REMAINING` is the streaming path's rule for a
+                # stream that completed without ever reporting usage.
+                policy=_ESTIMATE,
+                cap=kc._budget_cap,
+                spent=getattr(kc, "_budget_spent", 0) or 0,
+                model_id=log.model_resolved,
+                fallback_model=log.model_requested,
             )
+            settle_amount = max(log.cost_microcents or 0, charge)
             log.cost_microcents = settle_amount
+            if estimate is not None:
+                # The row accounts for its own cost, as on the streaming path.
+                log.input_tokens = estimate["prompt_tokens"]
+                log.output_tokens = estimate["completion_tokens"]
 
         # Values are snapshotted once (latency is measured in _build_log_row,
         # before any commit attempt, so retry backoff never inflates it) and
@@ -1345,8 +1550,17 @@ async def execute_chat(
                 except Exception:
                     pass
                 if attempt == max_attempts:
+                    # Row and charge die together here, so this request's spend
+                    # is not counted against the cap — stated plainly because a
+                    # reader of the log has to know the counter under-reports
+                    # until the next boot repair reconciles it. Parking the
+                    # obligation durably is #162's work; until it lands this
+                    # path is observably lossy under a sustained DB outage.
                     logger.warning(
-                        "request_log_commit_failed", error=str(commit_err), attempts=attempt,
+                        "request_log_commit_failed",
+                        error=str(commit_err),
+                        attempts=attempt,
+                        budget_charge_lost=settle_amount,
                     )
                     break
                 logger.info(
