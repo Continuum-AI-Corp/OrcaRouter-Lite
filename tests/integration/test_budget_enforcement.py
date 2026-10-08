@@ -1890,3 +1890,106 @@ async def test_budgeted_stream_priced_usage_keeps_its_cost(budget_env):
     )
     assert spent == 500  # 0.0005 USD, charged as measured
     assert spent < 10_000_000
+
+
+async def test_budgeted_free_model_without_usage_is_not_fails_closed(budget_env):
+    """A known-free catalog model is priced at zero, not at the remaining cap.
+
+    The catalog lists several genuinely free models (`orcarouter/free`,
+    `deepseek-v4-flash-free`, ... — 0.0 in, 0.0 out). One of those, whose
+    provider omits the usage frame, must cost nothing: charging a budgeted
+    key its entire remaining lifetime budget for a free delivery, then
+    429-blocking it forever, is not fail-closed, it is just wrong.
+    """
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    # The provider answered but reported no usage — the shape that arms the
+    # missing-usage fail-closed charge.
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-free",
+        "model": "orcarouter/free",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "a free answer"},
+            "finish_reason": "stop",
+        }],
+    })
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "orcarouter/free",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text
+    assert await _get_spent(factory, key_id) == 0
+
+
+async def test_budgeted_blocking_retry_cannot_double_charge_a_blind_row(
+    budget_env, monkeypatch,
+):
+    """The blocking retry must re-insert the same primary key, not a new one.
+
+    `RequestLog.trace_id` is indexed, not unique, so a retry that builds a
+    fresh UUID per attempt inserts a *second* row and charges again. That
+    happens when the durability probe cannot see the first attempt's row yet —
+    a commit applied but not yet visible. Pinning the row id (as the streaming
+    path does) makes the duplicate INSERT collide instead.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from packages.db.models.request_log import RequestLog
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    usage = {"prompt_tokens": 10_000, "completion_tokens": 5_000, "total_tokens": 15_000}
+    fake.acompletion = AsyncMock(side_effect=lambda **kw: _completion("hi", usage=usage))
+
+    real_commit = AsyncSession.commit
+    state = {"commits": 0}
+
+    async def _drop_first_settlement_ack(self, *args, **kwargs):
+        # The auth-time commit runs for real; the first settlement commit
+        # applies and then reports failure, so the retry re-runs the insert.
+        state["commits"] += 1
+        result = await real_commit(self, *args, **kwargs)
+        if state["commits"] == 2:
+            raise RuntimeError("connection lost after commit")
+        return result
+
+    real_scalar = AsyncSession.scalar
+
+    async def _blind_probe(self, *args, **kwargs):
+        # The probe cannot see the first attempt's row yet — the exact window
+        # in which an unpinned id produces a second insert and a second charge.
+        if state["commits"] == 2:
+            return None
+        return await real_scalar(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", _drop_first_settlement_ack)
+    monkeypatch.setattr(AsyncSession, "scalar", _blind_probe)
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert r.status_code == 200, r.text
+
+    async with factory() as s:
+        rows = (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == key_id))
+        ).scalars().all()
+    cost = rows[0].cost_microcents
+    assert cost > 0
+    # One row, one charge: the retry collided on the pinned primary key rather
+    # than inserting a sibling row for the same trace.
+    assert len(rows) == 1
+    assert await _get_spent(factory, key_id) == cost

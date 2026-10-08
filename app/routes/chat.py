@@ -228,6 +228,18 @@ def _unmeasured_charge(
     that charge nothing and for the fail-closed raise, where no honest token
     estimate exists.
     """
+    priced = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
+    if (
+        priced is not None
+        and not priced.input_cost_per_token
+        and not priced.output_cost_per_token
+    ):
+        # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
+        # cost of anything it delivers is zero, and zero is known. Charging the
+        # remaining allowance for a free delivery because the provider omitted
+        # its usage frame is not fail-closed, it is simply wrong — and it costs
+        # the key its whole lifetime budget in one request.
+        return 0, None
     if ending == _STREAM_IN_FLIGHT:
         # Settlement ran without an ending being recorded, which can only mean
         # the consumer left before the provider finished. Priced as the hangup
@@ -1765,6 +1777,13 @@ async def execute_chat(
             for c in RequestLog.__table__.columns
             if getattr(log, c.key) is not None
         }
+        # Pin the primary key before any attempt, so a retry re-inserts the
+        # same row instead of a fresh UUID: `trace_id` is indexed but not
+        # unique, so without this an ack-loss retry whose probe cannot see the
+        # first attempt's row yet inserts a second row for one trace and
+        # charges it twice. The duplicate INSERT collides on the key instead,
+        # which the loop treats as the write already having landed.
+        log_values.setdefault("id", str(uuid.uuid4()))
         max_attempts = len(_LOG_COMMIT_BACKOFF_S) + 1
 
         async def _durable() -> bool:
