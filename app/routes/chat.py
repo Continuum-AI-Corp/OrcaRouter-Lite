@@ -60,7 +60,7 @@ FALLBACK_HEADER = "x-orca-fallback"
 _LOG_COMMIT_BACKOFF_S: tuple[float, ...] = (0.1, 0.4)
 
 # Crude character→token divisor used only to price a delivery the provider
-# never measured (see `_settle_unmeasured_stream`).
+# never measured (see `_estimate_usage`).
 _CHARS_PER_TOKEN = 4
 
 
@@ -105,34 +105,6 @@ def _estimate_usage(prompt_chars: int, completion_chars: int) -> dict:
     }
 
 
-def _settle_unmeasured_stream(
-    agg_usage: dict, agg_output_chars: int, body, *, caller_bailed: bool = False
-) -> dict:
-    """Token counts for a stream that delivered content but reported no usage.
-
-    Reached when the stream ends without a usage frame after content had
-    already been forwarded — a provider failing mid-generation or a client
-    hanging up. The prompt was billed upstream and the delivered text is real,
-    so settling such a stream at zero would let a flaky provider be streamed
-    for free against a capped key. Character counts divided by 4 under-count
-    code and CJK on purpose — an estimate must not over-bill for a failure the
-    caller cannot steer.
-
-    `caller_bailed` also prices a delivery that carried nothing. An empty
-    delivery from a provider failure is evidence of an empty cost, so there the
-    two are the same thing; a client that hung up *caused* the empty delivery,
-    after the prompt had already gone upstream. Without the flag, disconnecting
-    at the first byte would settle every request at zero and the cap would stop
-    moving for exactly the client choosing not to wait.
-    """
-    if _countable_usage(agg_usage):
-        return agg_usage
-    if not agg_output_chars and not caller_bailed:
-        return agg_usage
-    prompt_chars = sum(_text_chars(m.content) for m in body.messages)
-    return _estimate_usage(prompt_chars, agg_output_chars)
-
-
 def _blocking_delivery_chars(response: dict) -> tuple[bool, int]:
     """Delivered-content flag and completion characters of a blocking response.
 
@@ -173,7 +145,12 @@ def _blocking_delivery_chars(response: dict) -> tuple[bool, int]:
 
 
 def _blocking_delivery_has_content(response: dict) -> bool:
-    """Whether a blocking ChatCompletion response carried delivered content."""
+    """Whether a blocking ChatCompletion response carried delivered content.
+
+    Unused on this rung — the gate here needs the character count too, so it
+    reads `_blocking_delivery_chars` directly. This exists for the
+    durable-recovery rung, whose blocking gate checks content alone.
+    """
     return _blocking_delivery_chars(response)[0]
 
 
@@ -912,7 +889,7 @@ async def execute_chat(
             agg_latency = 0
             # Characters of assistant text handed to the client — the only
             # measure of what a stream delivered when the provider never
-            # reported usage (see `_settle_unmeasured_stream`).
+            # reported usage (see `_estimate_usage`).
             agg_output_chars = 0
             # The first chunk's `model` field tells us what LiteLLM actually
             # served (could be a cascaded fallback, not the resolved primary).
