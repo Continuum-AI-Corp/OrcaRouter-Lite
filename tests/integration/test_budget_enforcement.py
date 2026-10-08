@@ -829,3 +829,96 @@ async def test_budgeted_blocking_commit_failure_persists_row_and_charge(budget_e
         ).scalars().all()
     assert len(rows) == 1  # never doubled
     assert await _get_spent(factory, key_id) == rows[0].cost_microcents
+
+async def test_budgeted_blocking_missing_usage_empty_content_settles_zero(budget_env):
+    # An empty delivery with the usage dict missing entirely must NOT fail
+    # closed: gating on content (not just `response` truthiness) means a 200
+    # that carried nothing bills nothing. The alternative (charging the whole
+    # remaining allowance for an empty answer) permanently exhausts the key
+    # for a no-op delivery.
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-empty",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": ""},
+            "finish_reason": "stop",
+        }],
+    })
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text
+    assert await _get_spent(factory, key_id) == 0
+
+
+async def test_budgeted_blocking_empty_usage_dict_settles_zero(budget_env):
+    # `usage: {}` on an empty completion is the same empty delivery as a
+    # usage of explicit zeros — it must not hit the fail-closed arm.
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=10)
+
+    fake.acompletion = AsyncMock(return_value={
+        "id": "chatcmpl-empty-usage",
+        "model": "gpt-4o-mini",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": ""},
+            "finish_reason": "stop",
+        }],
+        "usage": {},
+    })
+
+    async with await make_client(key) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert r.status_code == 200, r.text
+    assert await _get_spent(factory, key_id) == 0
+
+
+async def test_build_log_row_normalizes_anthropic_style_usage():
+    # A usage frame keyed input_tokens/output_tokens (the keys /v1/messages
+    # forwards) must normalize to the request row's token fields, or every
+    # token-keyed settlement gate treats the frame as zero tokens.
+    from app.routes.chat import _build_log_row
+
+    class _Body:
+        messages = []
+        model = "claude-3-5-haiku"
+        stream = False
+
+    class _Kc:
+        workspace_id = "default"
+        key_id = "k"
+
+    row = await _build_log_row(
+        body=_Body(),
+        kc=_Kc(),
+        response={
+            "model": "claude-3-5-haiku",
+            "usage": {"input_tokens": 12, "output_tokens": 7},
+        },
+        status_code=200,
+        error_type=None,
+        started_perf=0.0,
+        strategy="balanced",
+        requested_model="claude-3-5-haiku",
+    )
+    assert row.input_tokens == 12
+    assert row.output_tokens == 7

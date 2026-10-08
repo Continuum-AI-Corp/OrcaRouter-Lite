@@ -108,6 +108,33 @@ def _settle_unmeasured_stream(
     }
 
 
+def _blocking_delivery_has_content(response: dict) -> bool:
+    """Whether a blocking ChatCompletion response carried delivered content."""
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        text = choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return True
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return True
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str) and part.strip():
+                        return True
+                    if isinstance(part, dict):
+                        t = part.get("text")
+                        if isinstance(t, str) and t.strip():
+                            return True
+    return False
+
+
 def _chunk_to_dict(chunk) -> dict:
     """Normalize a litellm chunk (Pydantic model or dict) into a plain dict.
 
@@ -258,8 +285,13 @@ async def _build_log_row(
     meta = response.get("_orca_meta", {}) or {}
     usage = response.get("usage", {}) or {}
     resolved = actual_resolved or response.get("model") or requested_model
-    input_t = usage.get("prompt_tokens", 0) or 0
-    output_t = usage.get("completion_tokens", 0) or 0
+    # Providers report usage under different keys: OpenAI-style
+    # prompt_tokens/completion_tokens, Anthropic-style input_tokens/
+    # output_tokens (what /v1/messages forwards). Read both so a
+    # differently-keyed frame does not normalize to zero tokens — the
+    # token count is what the fail-closed budget gates key on.
+    input_t = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0) or 0
+    output_t = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0) or 0
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
@@ -1265,9 +1297,10 @@ async def execute_chat(
         # nothing, and record that amount on the row: a charge only the counter
         # saw would leave a key exhausted by an amount nothing in its own
         # request history accounts for. Gated on having actually received a
-        # completion dict: a request that failed before the upstream answered
-        # (response == {}, e.g. the re-raised HTTPException above, whose
-        # status_code never left 200) charges its recorded ~0 cost instead —
+        # completion dict AND delivered content: a request that failed before
+        # the upstream answered (response == {}, e.g. the re-raised
+        # HTTPException above, whose status_code never left 200), or a
+        # successful but empty completion, charges its recorded ~0 cost instead —
         # mirroring the cache-hit and pre-stream-failure paths.
         if (
             getattr(kc, "_budget_cap", None) is not None
@@ -1275,6 +1308,7 @@ async def execute_chat(
             and isinstance(response, dict)
             and response
             and not response.get("usage")
+            and _blocking_delivery_has_content(response)
         ):
             settle_amount = max(
                 log.cost_microcents or 0,
