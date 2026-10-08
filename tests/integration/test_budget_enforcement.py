@@ -1127,3 +1127,78 @@ async def test_budgeted_blocking_usage_without_token_keys_is_unmeasured(budget_e
     assert r.status_code == 200, r.text
     spent = await _get_spent(factory, key_id)
     assert 0 < spent < 100_000  # priced from the delivery, never free, never the cap
+
+
+async def test_streaming_commit_task_cancellation_does_not_drop_the_charge(
+    budget_env, monkeypatch
+):
+    """A cancelled detached commit task must not swallow the settlement.
+
+    The commit runs detached so the stream cannot abort it, but the task can
+    still be cancelled itself (loop teardown, a direct cancel). That lands in
+    the retry loop's give-up arm, which used to pass over the cancellation
+    with `pass`: the row was never written, `spent_microcents` never moved and
+    nothing was logged, so the cap silently reopened for exactly the key whose
+    settlement failed. The arm now re-runs the write inside a shield.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    real_commit = AsyncSession.commit
+    commits = {"n": 0}
+
+    async def _first_settlement_commit_is_cancelled(self, *args, **kwargs):
+        # The auth-time commit runs for real; the first settlement commit is
+        # cancelled the way loop teardown cancels a detached task.
+        commits["n"] += 1
+        if commits["n"] == 1:
+            return await real_commit(self, *args, **kwargs)
+        if commits["n"] == 2:
+            raise asyncio.CancelledError()
+        return await real_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", _first_settlement_commit_is_cancelled)
+
+    async def _stream():
+        yield {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}
+        yield {
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+        }
+
+    fake.acompletion = AsyncMock(return_value=_stream())
+
+    async with await make_client(key) as c:
+        try:
+            async with c.stream(
+                "POST", "/v1/chat/completions",
+                json={"model": "gpt-4o-mini", "stream": True,
+                      "messages": [{"role": "user", "content": "hi"}]},
+            ) as r:
+                async for _ in r.aiter_lines():
+                    pass
+        except Exception:
+            pass  # the injected cancellation may surface to the transport
+
+    await asyncio.sleep(0.05)
+
+    # The delivery was measured, so the charge is that measurement, and it
+    # counted: the shielded retry landed the row with the charge.
+    spent = await _get_spent(factory, key_id)
+    assert 0 < spent < 1_000_000  # the charge counted despite the cancellation
+    assert commits["n"] >= 3  # auth, the cancelled attempt, then the retry
+
+    from sqlalchemy import select
+
+    from packages.db.models.request_log import RequestLog
+
+    async with factory() as s:
+        rows = (
+            await s.execute(
+                select(RequestLog).where(RequestLog.api_key_id == key_id)
+            )
+        ).scalars().all()
+    assert len(rows) == 1  # the retry is idempotent: never a second row
+    assert spent == rows[0].cost_microcents

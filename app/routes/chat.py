@@ -1180,17 +1180,49 @@ async def execute_chat(
                         # CancelledError aimed at us, not at the commit —
                         # wait the in-flight attempt out so a row about to
                         # land isn't dropped, then let the cancellation
-                        # propagate (no further attempts: we are being torn
-                        # down).
+                        # propagate.
                         try:
                             await commit_task
+                            return
                         except Exception as commit_err:
                             logger.warning(
                                 "request_log_commit_failed",
                                 error=str(commit_err), attempts=attempt,
                             )
                         except BaseException:
-                            pass
+                            # The detached task itself was cancelled, so its
+                            # write is gone and the charge died with it. Retrying
+                            # outside a shield would be cancelled before it
+                            # starts; inside one it runs to completion, and
+                            # `_commit_row(retry=True)` is idempotent on
+                            # trace_id — a commit that landed with a lost ack
+                            # is recognised and not charged twice.
+                            try:
+                                with anyio.CancelScope(shield=True):
+                                    last_try = asyncio.ensure_future(
+                                        _commit_row(retry=True)
+                                    )
+                                    await asyncio.shield(last_try)
+                                return
+                            except Exception as retry_err:
+                                logger.warning(
+                                    "request_log_commit_failed",
+                                    error=str(retry_err), attempts=attempt,
+                                )
+                            except BaseException as retry_cancel:
+                                # Nothing more can be done from inside a
+                                # cancellation. Say exactly what was lost —
+                                # this PR has no durable park yet, so the only
+                                # record of the dropped cost is this line, and
+                                # a silent swallow here would reopen the cap for
+                                # the key whose settlement failed with no trace
+                                # that it happened.
+                                logger.warning(
+                                    "request_log_commit_failed",
+                                    error=str(retry_cancel),
+                                    attempts=attempt,
+                                    budget_charge_lost=_settlement_amount(),
+                                )
                         raise
 
             last_d: dict = {}
