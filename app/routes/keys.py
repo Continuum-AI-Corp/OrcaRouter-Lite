@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,9 +23,6 @@ class CreateKey(BaseModel):
     name: str
     # None (omitted) = unrestricted. [] = deny everything. See UpdateKey.
     model_allowlist: list[str] | None = None
-    # A restricted caller may not mint this at all (see
-    # _require_create_within_allowlist), so it can never widen its own cap.
-    budget_limit_cents: int | None = Field(default=None, gt=0)
 
 
 class UpdateKey(BaseModel):
@@ -117,8 +114,21 @@ async def _lock_caller(db: AsyncSession, key_id: str) -> ApiKey:
 def _require_create_within_allowlist(
     caller_allowlist: list[str] | None,
     new_allowlist: list[str] | None,
+    caller_budget: int | None = None,
 ) -> None:
-    """Restricted callers may only mint a non-null subset of their own list."""
+    """Restricted callers may only mint keys that are at least as restricted.
+
+    A caller counts as restricted when it carries an allowlist *or* a budget
+    cap. A budget-restricted caller can never mint, because every child it
+    creates would carry no budget field and therefore be uncapped — a
+    one-step escalation. Allowlist-restricted callers may mint a non-null
+    subset of their own list.
+    """
+    if caller_budget is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Budget-restricted API keys cannot mint keys.",
+        )
     if caller_allowlist is None:
         return
     if new_allowlist is None:
@@ -141,38 +151,44 @@ def _require_update_within_allowlist(
     caller_id: str,
     target_id: str,
     new_allowlist: list[str] | None,
+    caller_budget: int | None = None,
 ) -> None:
     """Unrestricted operator may set any value, including None.
 
-    A restricted caller may only update its own row, and only to a
-    non-null list that is a subset of its current allowlist.
+    A restricted caller (allowlist *or* budget cap) may only update its own
+    row, and only to a non-null list that is a subset of its current
+    allowlist.
     """
-    if caller_allowlist is None:
+    if caller_allowlist is None and caller_budget is None:
         return
     if caller_id != target_id:
         raise HTTPException(
             status_code=403,
             detail="Restricted API keys can only update their own model_allowlist.",
         )
-    if new_allowlist is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Restricted API keys cannot clear their own model_allowlist.",
-        )
-    if not set(new_allowlist) <= set(caller_allowlist):
-        raise HTTPException(
-            status_code=403,
-            detail="Restricted API keys can only narrow their own model_allowlist.",
-        )
+    if caller_allowlist is not None:
+        if new_allowlist is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Restricted API keys cannot clear their own model_allowlist.",
+            )
+        if not set(new_allowlist) <= set(caller_allowlist):
+            raise HTTPException(
+                status_code=403,
+                detail="Restricted API keys can only narrow their own model_allowlist.",
+            )
+    # Budget-only restricted caller: its allowlist is None, so there is
+    # nothing to preserve; mutating it can only self-narrow.
 
 
 def _require_revoke_allowed(
     caller_allowlist: list[str] | None,
     caller_id: str,
     target_id: str,
+    caller_budget: int | None = None,
 ) -> None:
     """A restricted key may revoke itself, never a sibling or operator key."""
-    if caller_allowlist is not None and caller_id != target_id:
+    if (caller_allowlist is not None or caller_budget is not None) and caller_id != target_id:
         raise HTTPException(
             status_code=403,
             detail="Restricted API keys can only revoke themselves.",
@@ -186,6 +202,11 @@ async def list_keys(
 ) -> dict:
     # Workspace scoping on the read path: without it, a key sees every
     # workspace's keys (the write path has always been scoped).
+    if kc.model_allowlist is not None or kc.budget_limit_cents is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Restricted API keys cannot list keys. Use an unrestricted key.",
+        )
     rows = (
         await db.execute(
             select(ApiKey).where(
@@ -204,7 +225,9 @@ async def create_key(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     caller = await _lock_caller(db, kc.key_id)
-    _require_create_within_allowlist(caller.model_allowlist, body.model_allowlist)
+    _require_create_within_allowlist(
+        caller.model_allowlist, body.model_allowlist, caller.budget_limit_cents
+    )
 
     allowlist = _validate_model_allowlist(body.model_allowlist)
     full_key, key_hash, key_prefix = generate_api_key()
@@ -214,7 +237,6 @@ async def create_key(
         key_hash=key_hash,
         key_prefix=key_prefix,
         model_allowlist=allowlist,
-        budget_limit_cents=body.budget_limit_cents,
     )
     db.add(row)
     await db.commit()
@@ -224,7 +246,6 @@ async def create_key(
         **_key_public(row),
         "api_key": full_key,  # plaintext shown ONCE
         "model_allowlist": row.model_allowlist,
-        "budget_limit_cents": row.budget_limit_cents,
     }
 
 
@@ -246,7 +267,8 @@ async def update_key(
             raise HTTPException(status_code=404, detail="Key not found")
 
     _require_update_within_allowlist(
-        caller.model_allowlist, caller.id, row.id, body.model_allowlist
+        caller.model_allowlist, caller.id, row.id, body.model_allowlist,
+        caller.budget_limit_cents,
     )
 
     row.model_allowlist = _validate_model_allowlist(body.model_allowlist)
@@ -269,7 +291,9 @@ async def revoke_key(
         if row is None:
             raise HTTPException(status_code=404, detail="Key not found")
 
-    _require_revoke_allowed(caller.model_allowlist, caller.id, row.id)
+    _require_revoke_allowed(
+        caller.model_allowlist, caller.id, row.id, caller.budget_limit_cents
+    )
 
     row.is_active = False
     row.revoked_at = datetime.now(timezone.utc)
