@@ -1333,11 +1333,12 @@ async def execute_chat(
                         except BaseException as commit_cancel:
                             # The in-flight commit task is what was cancelled
                             # (or the loop is tearing it down): it can no longer
-                            # write, so probe durability and park the obligation
-                            # like every other arm here. #161 re-runs the write
-                            # inside a shield instead; the park is the stronger
-                            # guarantee on this rung — the cost keeps counting
-                            # even when the write can no longer land at all.
+                            # write, so probe durability and park the
+                            # obligation like every other arm here. This rung
+                            # does not also re-run the write inside a shield —
+                            # #161 does that, and the park is the stronger
+                            # guarantee: the cost keeps counting even when the
+                            # write can no longer land at all.
                             await _give_up_settlement(
                                 kc, row_values["trace_id"], _settlement_amount(),
                                 attempt, commit_cancel, _durable,
