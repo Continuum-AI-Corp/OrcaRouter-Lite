@@ -1207,7 +1207,11 @@ async def test_cancelled_during_backoff_gives_up_exactly_once(
         assert not (
             await s.execute(select(RequestLog.id).where(RequestLog.api_key_id == key_id))
         ).all()
-    assert await pending_parked_spend(key_id) == 100_000
+    # The parked obligation is the charge this settlement decided on: the
+    # delivery-priced amount for a usage-less blocking completion, never the
+    # whole remaining allowance.
+    parked = await pending_parked_spend(key_id)
+    assert 0 < parked < 100_000
 
 
 async def test_cancelled_rollback_does_not_skip_the_give_up(
@@ -1279,7 +1283,8 @@ async def test_cancelled_rollback_does_not_skip_the_give_up(
     # cost is accounted for once, and no give-up was needed to do it — before
     # this the request died here with nothing billed and nothing parked.
     assert give_ups == []
-    assert await _get_spent(factory, key_id) == 100_000
+    landed = await _get_spent(factory, key_id)
+    assert 0 < landed < 100_000  # the delivery-priced charge, once
     assert await pending_parked_spend(key_id) == 0
     from sqlalchemy import select
 
@@ -1837,8 +1842,12 @@ async def test_budgeted_blocking_empty_usage_is_not_billed_the_cap(budget_env, m
         monkeypatch,
         usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     )
-    assert spent == 0
-    assert cost == 0
+    # Not the cap — that is the point of the test. And not zero either: the
+    # completion carried content, so it is priced from that delivery (floored at
+    # one microcent) rather than being treated as a measured zero, which would
+    # let a capped key be served free behind an unpriceable upstream.
+    assert 0 < spent < 100_000
+    assert cost == spent
 
 
 async def test_budgeted_blocking_unpriced_usage_with_tokens_bills_the_cap(

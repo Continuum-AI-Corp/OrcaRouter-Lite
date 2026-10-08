@@ -33,8 +33,8 @@ from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.spend import (
     MICROCENTS_PER_CENT,
+    budget_precheck,
     charge_budget,
-    read_spent,
     record_unsettled_spend,
 )
 from packages.auth.types import KeyContext
@@ -837,7 +837,10 @@ async def execute_chat(
     # exceed the cap (fail-closed, never over-recorded).
     if kc.budget_limit_cents is not None:
         cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
-        spent = await read_spent(db, str(kc.key_id))
+        # Fold-aware on this rung: the pre-check has to re-file and settle what
+        # an outage left parked, or a key whose settlement failed would keep
+        # dispatching as if it had never spent anything.
+        spent = await budget_precheck(db, str(kc.key_id), cap)
         if spent >= cap:
             raise HTTPException(
                 status_code=429,
