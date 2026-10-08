@@ -1327,40 +1327,18 @@ async def execute_chat(
                                 kc, row_values["trace_id"], _settlement_amount(),
                                 attempt, commit_err, _durable,
                             )
-                        except BaseException:
-                            # The detached task itself was cancelled, so its
-                            # write is gone and the charge died with it. Retrying
-                            # outside a shield would be cancelled before it
-                            # starts; inside one it runs to completion, and
-                            # `_commit_row(retry=True)` is idempotent on
-                            # trace_id — a commit that landed with a lost ack
-                            # is recognised and not charged twice.
-                            try:
-                                with anyio.CancelScope(shield=True):
-                                    last_try = asyncio.ensure_future(
-                                        _commit_row(retry=True)
-                                    )
-                                    await asyncio.shield(last_try)
-                                return
-                            except Exception as retry_err:
-                                logger.warning(
-                                    "request_log_commit_failed",
-                                    error=str(retry_err), attempts=attempt,
-                                )
-                            except BaseException as retry_cancel:
-                                # Nothing more can be done from inside a
-                                # cancellation. Say exactly what was lost —
-                                # this PR has no durable park yet, so the only
-                                # record of the dropped cost is this line, and
-                                # a silent swallow here would reopen the cap for
-                                # the key whose settlement failed with no trace
-                                # that it happened.
-                                logger.warning(
-                                    "request_log_commit_failed",
-                                    error=str(retry_cancel),
-                                    attempts=attempt,
-                                    budget_charge_lost=_settlement_amount(),
-                                )
+                        except BaseException as commit_cancel:
+                            # The in-flight commit task is what was cancelled
+                            # (or the loop is tearing it down): it can no longer
+                            # write, so probe durability and park the obligation
+                            # like every other arm here. #161 re-runs the write
+                            # inside a shield instead; the park is the stronger
+                            # guarantee on this rung — the cost keeps counting
+                            # even when the write can no longer land at all.
+                            await _give_up_settlement(
+                                kc, row_values["trace_id"], _settlement_amount(),
+                                attempt, commit_cancel, _durable,
+                            )
                         raise
 
             last_d: dict = {}
@@ -1669,7 +1647,10 @@ async def execute_chat(
         # received a completion dict: a request that failed before the upstream
         # answered (response == {}, e.g. the re-raised HTTPException above, whose
         # status_code never left 200) charges its recorded ~0 cost instead —
-        # mirroring the cache-hit and pre-stream-failure paths.
+        # mirroring the cache-hit and pre-stream-failure paths. The missing-
+        # usage disjunct is gated on delivered content too: an empty 200
+        # where usage is absent (or "{}") is a known-zero delivery, not the
+        # unknown-cost case fail-closed exists for.
         if (
             getattr(kc, "_budget_cap", None) is not None
             and status_code < 400
