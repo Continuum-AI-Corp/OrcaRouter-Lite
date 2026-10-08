@@ -1261,7 +1261,17 @@ async def execute_chat(
                             row_values["input_tokens"] = estimate["prompt_tokens"]
                             row_values["output_tokens"] = estimate["completion_tokens"]
                     elif (
+                        # Countable tokens with no price we can honour is also
+                        # an unknown cost — an upstream absent from the catalog
+                        # still bills us. But how unknown is charged depends on
+                        # the ending, exactly as it does when nothing was
+                        # measured at all: a completed delivery fails closed,
+                        # while a hangup or a fault is priced from what it
+                        # delivered. Gating on completion alone left a stream
+                        # that faulted after an unpriceable usage frame settling
+                        # at zero — free behind a broken upstream.
                         stream_ending == _STREAM_COMPLETED
+                        and usage_requested
                         and not actual
                         and (
                             row_values.get("input_tokens")
@@ -1279,6 +1289,40 @@ async def execute_chat(
                             - (getattr(kc, "_budget_spent", 0) or 0),
                         )
                         row_values["cost_microcents"] = actual
+                    elif (
+                        # The same unpriceable tokens on a fault ending, or
+                        # behind a client that declined usage frames: priced
+                        # from the delivery rather than charged the cap, which
+                        # is all we can honestly know about it.
+                        not actual
+                        and (
+                            row_values.get("input_tokens")
+                            or row_values.get("output_tokens")
+                        )
+                        and not _has_known_price(
+                            litellm_cost_usd=(agg_usage or {}).get("cost_usd"),
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
+                        )
+                    ):
+                        charge, estimate = _unmeasured_charge(
+                            delivered=agg_output_chars > 0,
+                            ending=stream_ending,
+                            prompt_chars=sum(
+                                _text_chars(m.content) for m in body.messages
+                            ),
+                            completion_chars=agg_output_chars,
+                            policy=_ESTIMATE,
+                            cap=getattr(kc, "_budget_cap", 0) or 0,
+                            spent=getattr(kc, "_budget_spent", 0) or 0,
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
+                        )
+                        actual = max(actual, charge)
+                        row_values["cost_microcents"] = actual
+                        if estimate is not None:
+                            row_values["input_tokens"] = estimate["prompt_tokens"]
+                            row_values["output_tokens"] = estimate["completion_tokens"]
                     return actual
 
                 async def _commit_row(*, retry: bool) -> None:

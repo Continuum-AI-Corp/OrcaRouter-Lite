@@ -1993,3 +1993,74 @@ async def test_budgeted_blocking_retry_cannot_double_charge_a_blind_row(
     # than inserting a sibling row for the same trace.
     assert len(rows) == 1
     assert await _get_spent(factory, key_id) == cost
+
+
+async def test_budgeted_stream_fault_with_unpriceable_usage_is_charged(
+    budget_env, monkeypatch
+):
+    """A fault ending after unpriceable usage must not settle at zero.
+
+    The stream carries countable tokens but nothing we can price them with (an
+    upstream absent from the catalog, no cost_usd), then faults mid-stream.
+    Gating the unpriceable arm on `stream_ending == _STREAM_COMPLETED` meant
+    such a stream matched neither arm — not the unmeasured one (usage is
+    countable), not the unpriceable one (the ending was not a clean
+    completion) — and settled at the row's zero cost. Behind an upstream that
+    cannot cost AND then fails, a budgeted key is streamed for free.
+    """
+    import app.routes.chat as chat
+
+    monkeypatch.setattr(chat, "_lookup_priced_model", lambda model_id: None)
+
+    make_client, fake, factory, _root = budget_env
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+
+    def _fails_after_usage():
+        async def _gen():
+            yield {"choices": [{"delta": {"content": "x" * 2000}, "finish_reason": None}]}
+            yield {"usage": {"prompt_tokens": 5000, "completion_tokens": 2000}}
+            raise RuntimeError("upstream exploded mid-generation")
+        return _gen()
+
+    fake.acompletion = AsyncMock(return_value=_fails_after_usage())
+
+    async with await make_client(key) as c:
+        async with c.stream(
+            "POST", "/v1/chat/completions",
+            json={"model": "gpt-4o-mini", "stream": True,
+                  "messages": [{"role": "user", "content": "hi"}],
+                  "stream_options": {"include_usage": True}},
+        ) as r:
+            await r.aread()
+
+    spent = await _get_spent(factory, key_id)
+    # Priced from the delivery: charged, but nowhere near the 100_000-cent cap
+    # (1_000_000 microcents).
+    assert 0 < spent < 1_000_000
+
+
+async def test_budgeted_stream_unpriceable_usage_honors_usage_opt_out(
+    budget_env, monkeypatch
+):
+    """A client that declined usage frames is not charged the cap for them.
+
+    The unmeasured arm already splits on `usage_requested`: a client that
+    explicitly set `include_usage=False` is priced from what it received. The
+    unpriceable arm did not, so a provider that attaches a countable frame
+    anyway billed an opted-out client its whole remaining lifetime allowance —
+    the same penalty the sibling arm exists to avoid.
+    """
+    import app.routes.chat as chat
+
+    monkeypatch.setattr(chat, "_lookup_priced_model", lambda model_id: None)
+
+    spent, _args = await _budgeted_stream(
+        budget_env,
+        budget_limit_cents=100,
+        stream_options={"include_usage": False},
+        chunks=[
+            {"choices": [{"delta": {"content": "x" * 2000}, "finish_reason": None}]},
+            {"usage": {"prompt_tokens": 5000, "completion_tokens": 2000}},
+        ],
+    )
+    assert 0 < spent < 1_000_000
