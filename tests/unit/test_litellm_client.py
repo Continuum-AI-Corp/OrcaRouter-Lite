@@ -177,6 +177,37 @@ async def test_openai_deployments_advertise_response_schema(monkeypatch):
     assert "supports_response_schema" not in (by_name["claude-3-5-sonnet-latest"].get("model_info") or {})
 
 
+def test_router_timeout_defaults_to_30s_and_is_configurable(monkeypatch):
+    """The Router timeout used to be hardcoded at 30s. It must default to the
+    same value, and a caller-supplied timeout must reach the Router."""
+    import litellm
+
+    from packages.litellm_adapter.client import OrcaLiteLLMClient
+    from packages.litellm_adapter.types import ProviderDeployment
+
+    captured: list[dict] = []
+
+    def _router(**kwargs):
+        captured.append(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(litellm, "Router", _router)
+    deployments = [
+        ProviderDeployment(
+            model_name="gpt-4o-mini",
+            litellm_model="openai/gpt-4o-mini",
+            api_key="sk-test",
+            provider="openai",
+        )
+    ]
+
+    OrcaLiteLLMClient(deployments=deployments)
+    OrcaLiteLLMClient(deployments=deployments, timeout=90.0)
+
+    assert captured[0]["timeout"] == 30.0
+    assert captured[1]["timeout"] == 90.0
+
+
 async def test_acompletion_non_stream_returns_dict_with_orca_meta(fake_router_with_stream):
     """Non-stream path must keep returning a dict with the _orca_meta
     injection — that's the contract the existing chat.py blocking path

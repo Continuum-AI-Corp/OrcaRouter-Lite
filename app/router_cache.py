@@ -237,6 +237,7 @@ async def get_router(session) -> object:
             allowed_fails=settings.router_allowed_fails,
             enable_pre_call_checks=settings.router_pre_call_checks,
             num_retries=settings.router_num_retries_default,
+            timeout=settings.router_timeout_seconds,
         )
         return _cached_client
 
