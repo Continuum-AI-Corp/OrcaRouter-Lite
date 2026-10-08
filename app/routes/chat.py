@@ -246,9 +246,6 @@ def _unmeasured_charge(
     that charge nothing and for the fail-closed raise, where no honest token
     estimate exists.
     """
-    import os as _os
-    if _os.environ.get("ORCA_DEBUG_CHARGE"):
-        print("DBG unmeasured", dict(delivered=delivered, ending=ending, policy=policy, pchars=prompt_chars, cchars=completion_chars, model_id=model_id, fallback=fallback_model, cap=cap, spent=spent), flush=True)
     if ending == _STREAM_IN_FLIGHT:
         # Settlement ran without an ending being recorded, which can only mean
         # the consumer left before the provider finished. Priced as the hangup
