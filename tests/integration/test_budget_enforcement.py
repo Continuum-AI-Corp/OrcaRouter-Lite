@@ -1867,3 +1867,26 @@ async def test_streaming_commit_task_cancellation_gives_up(budget_env, monkeypat
         await task
     except BaseException:
         pass
+
+
+async def test_budgeted_stream_priced_usage_keeps_its_cost(budget_env):
+    """A usage frame carrying cost but no token counts is still measured.
+
+    LiteLLM prices a frame on its own via cost_usd, with no per-direction
+    token counts alongside; the row records that authoritative number. The
+    fail-closed branch must not replace it with the remaining allowance.
+    """
+    spent, _args = await _budgeted_stream(
+        budget_env,
+        budget_limit_cents=100,
+        stream_options={"include_usage": True},
+        chunks=[
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {
+                "usage": {"cost_usd": 0.0005},
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+            },
+        ],
+    )
+    assert spent == 500  # 0.0005 USD, charged as measured
+    assert spent < 10_000_000

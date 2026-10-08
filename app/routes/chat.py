@@ -1215,7 +1215,18 @@ async def execute_chat(
                     accounts for.
                     """
                     actual = row_values.get("cost_microcents") or 0
-                    if not _countable_usage(agg_usage):
+                    # A delivery LiteLLM already priced is not cost-unknown,
+                    # even without token counts: the row carries that
+                    # authoritative number (or the usage frame does), and
+                    # replacing it with the remaining allowance would bill a
+                    # request whose cost was known and small as though it were
+                    # the rest of the customer's lifetime budget. Same guard the
+                    # blocking path applies for the same reason.
+                    if (
+                        not _countable_usage(agg_usage)
+                        and not (row_values.get("cost_microcents") or 0)
+                        and not (agg_usage or {}).get("cost_usd")
+                    ):
                         charge, estimate = _unmeasured_charge(
                             delivered=agg_output_chars > 0,
                             ending=stream_ending,
