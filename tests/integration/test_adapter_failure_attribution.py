@@ -27,6 +27,10 @@ from tests.integration.test_anthropic_messages import (  # noqa: F401 (fixture)
     _messages_payload,
     native_client,
 )
+from tests.integration.test_budget_enforcement import (  # noqa: F401
+    _get_spent,
+    _make_budgeted_key,
+)
 
 _GEMINI_PAYLOAD = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
 
@@ -129,3 +133,90 @@ async def test_a_real_client_disconnect_is_still_499(native_client):
 
     assert slow.closed is True
     assert await _log_rows() == [(499, "client_disconnect", True)]
+
+
+# ── Budget settlement on an adapter fault ──────────────────────────────
+# The adapter IS the response body, so its failure unwinds through the
+# engine's SSE generator. The engine must settle that request on what it
+# delivered — leaving the settlement "unknown" would charge a budgeted key
+# its entire remaining lifetime budget for a bug of ours.
+
+_BAD_CHUNK = {
+    "id": "chatcmpl-2", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+    "created": int(time.time()), "choices": "boom",
+}
+
+
+def _content_chunk(text: str) -> dict:
+    return {
+        "id": "chatcmpl-1", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+        "created": int(time.time()),
+        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+    }
+
+
+def _budget_stream_router(fake, chunks) -> None:
+    async def _acompletion(**kwargs):
+        assert kwargs.get("stream")
+
+        async def _gen():
+            for c in chunks:
+                yield c
+
+        return _gen()
+
+    fake.acompletion = AsyncMock(side_effect=_acompletion)
+
+
+async def _log_row_for(api_key_id: str):
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        return (
+            await s.execute(select(RequestLog).where(RequestLog.api_key_id == api_key_id))
+        ).scalars().one()
+
+
+async def test_budgeted_adapter_fault_after_content_charges_delivery_not_remaining(
+    native_client,
+):
+    client, fake, _root = native_client
+    from packages.db import session as session_mod
+
+    factory = session_mod._session_factory
+    # 100 cents = 1_000_000 microcents of lifetime budget.
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+    delivered = "the quick brown fox jumps over the lazy dog. " * 200
+    _budget_stream_router(fake, [_content_chunk(delivered), _BAD_CHUNK])
+
+    r = await client.post(
+        "/v1/messages", json=_messages_payload(stream=True), headers={"x-api-key": key},
+    )
+    assert r.status_code == 200
+    await asyncio.sleep(0.1)
+
+    assert await _log_rows() == [(500, "adapter_error", True)]
+    row = await _log_row_for(key_id)
+    spent = await _get_spent(factory, key_id)
+    assert spent == row.cost_microcents  # charged == accounted
+    assert 0 < spent < 1_000_000  # priced, not the whole remaining budget
+
+
+async def test_budgeted_adapter_fault_before_content_charges_nothing(native_client):
+    """A fault with nothing delivered cost nothing, so it must bill nothing."""
+    client, fake, _root = native_client
+    from packages.db import session as session_mod
+
+    factory = session_mod._session_factory
+    key, key_id = await _make_budgeted_key(factory, budget_limit_cents=100)
+    _budget_stream_router(fake, [_BAD_CHUNK])
+
+    r = await client.post(
+        "/v1/messages", json=_messages_payload(stream=True), headers={"x-api-key": key},
+    )
+    assert r.status_code == 200
+    await asyncio.sleep(0.1)
+
+    assert await _log_rows() == [(500, "adapter_error", True)]
+    assert await _get_spent(factory, key_id) == 0
