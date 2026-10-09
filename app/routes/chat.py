@@ -209,8 +209,8 @@ async def _build_log_row(
     meta = response.get("_orca_meta", {}) or {}
     usage = response.get("usage", {}) or {}
     resolved = actual_resolved or response.get("model") or requested_model
-    input_t = usage.get("prompt_tokens", 0) or 0
-    output_t = usage.get("completion_tokens", 0) or 0
+    input_t = max(0, usage.get("prompt_tokens", 0) or 0)
+    output_t = max(0, usage.get("completion_tokens", 0) or 0)
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
