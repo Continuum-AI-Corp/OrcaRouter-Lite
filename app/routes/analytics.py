@@ -105,7 +105,13 @@ async def latency_by_provider(
 
     bucket: dict[str, list[int]] = {}
     for prov, lat in rows:
-        bucket.setdefault(prov, []).append(int(lat))
+        # Provider attribution can be None when the LiteLLM adapter
+        # fails before routing (e.g. no_providers_configured) — the
+        # request log row still gets written but with provider=NULL.
+        # Grouping null into "unknown" keeps the aggregation clean
+        # and prevents null keys from reaching the frontend.
+        key = prov or "unknown"
+        bucket.setdefault(key, []).append(int(lat))
 
     result = [
         {
