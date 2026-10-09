@@ -1158,7 +1158,6 @@ async def execute_chat(
                         # propagate.
                         try:
                             await commit_task
-                            return
                         except Exception as commit_err:
                             await _give_up_settlement(
                                 kc, row_values["trace_id"], _settlement_amount(),
@@ -1178,7 +1177,6 @@ async def execute_chat(
                                         _commit_row(retry=True)
                                     )
                                     await asyncio.shield(last_try)
-                                return
                             except BaseException as retry_err:
                                 # Nothing more can be written: the last-chance
                                 # retry failed too, whether it was cancelled or
