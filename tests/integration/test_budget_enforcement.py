@@ -342,3 +342,43 @@ async def test_a_parked_charge_counts_against_the_cap_on_the_next_request(failin
     async with factory() as s:
         seen = await budget_precheck(s, str(key_id), 1 * MICROCENTS_PER_CENT)
     assert seen >= parked[0].microcents
+
+
+async def test_an_unpriceable_completion_is_not_charged_the_whole_cap(
+    budget_app, monkeypatch
+):
+    """A model absent from the catalog has no price, but one request must not
+    consume the key's entire remaining lifetime budget."""
+    client, factory, key_id = budget_app
+
+    # Countable tokens with no price any tier can reach: the model is not in the
+    # catalog and no LiteLLM cost was attached.
+    unpriced = {
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "model": "my-private-model", "created": int(time.time()),
+        "choices": [{
+            "index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "Hello there"},
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+    }
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(side_effect=lambda **kwargs: unpriced)
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    result = await _chat(client)
+
+    assert result["status"] == 200
+    spent = await _spent(factory, key_id)
+    cap = 1 * MICROCENTS_PER_CENT
+    # Fail closed, but bounded: the cap is not consumed by a single request.
+    assert 0 < spent < cap
+    # The row records the same amount the counter moved by.
+    rows = await _log_rows(factory)
+    assert rows[0].cost_microcents == spent

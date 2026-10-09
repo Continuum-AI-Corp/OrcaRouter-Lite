@@ -679,17 +679,17 @@ async def execute_chat(
         resolved_model = candidates[0]
         body.model = candidates[0]  # mutate for downstream completion call
 
-    # Budget enforcement: `budget_limit_cents` is a hard lifetime cap. The check
-    # runs only after the request has passed every pre-dispatch validation (model
-    # allowlist, provider deployability), so a request we reject before touching
-    # an upstream never consumes budget. The real cost is only known once the
-    # upstream response/stream completes, so we record it atomically in
-    # `_settle_budget` — the `UPDATE spent = spent + actual WHERE spent + actual
-    # <= cap` guard makes this safe under concurrency and never lets the counter
-    # exceed the cap (fail-closed, never over-recorded).
-    # (cap_microcents, spent_at_precheck) for a capped key, None otherwise.
-    # Both the settle path and the charge estimate read this, so the number a
-    # request is rejected on and the number it is charged against are the same.
+    # `budget_limit_cents` is a hard lifetime cap. The check runs only after the
+    # request has passed every pre-dispatch validation (model allowlist, provider
+    # deployability), so a request we reject before touching an upstream never
+    # consumes budget. The real cost is only known once the upstream response or
+    # stream completes, so it is recorded atomically in `_settle_budget`: the
+    # `UPDATE spent = spent + actual WHERE spent + actual <= cap` guard makes
+    # this safe under concurrency and never lets the counter pass the cap.
+    #
+    # (cap_microcents, spent_at_precheck) for a capped key, None otherwise. The
+    # settle path and the charge estimate both read it, so the number a request
+    # is rejected on and the number it is charged against are the same.
     budget: tuple[int, int] | None = None
     if kc.budget_limit_cents is not None:
         cap = kc.budget_limit_cents * MICROCENTS_PER_CENT
@@ -1164,7 +1164,7 @@ async def execute_chat(
                                 kc, row_values["trace_id"], _settlement_amount(),
                                 attempt, commit_err, _durable,
                             )
-                        except BaseException as commit_cancel:
+                        except BaseException:
                             # The detached task itself was cancelled, so its
                             # write is gone and the charge died with it. Retrying
                             # outside a shield would be cancelled before it
@@ -1179,22 +1179,16 @@ async def execute_chat(
                                     )
                                     await asyncio.shield(last_try)
                                 return
-                            except Exception as retry_err:
-                                logger.warning(
-                                    "request_log_commit_failed",
-                                    error=str(retry_err), attempt=attempt,
-                                )
-                            except BaseException:
-                                # Cancelled again inside the shield: nothing can
-                                # be done. Say exactly what was lost — this PR
-                                # has no durable park yet, so the only
-                                # record of the dropped cost is this line, and
-                                # a silent swallow here would reopen the cap for
-                                # the key whose settlement failed with no trace
-                                # that it happened.
+                            except BaseException as retry_err:
+                                # Nothing more can be written: the last-chance
+                                # retry failed too, whether it was cancelled or
+                                # simply refused by the database. The charge is
+                                # parked rather than logged, because the cap is
+                                # only honest if a delivered cost somewhere still
+                                # counts against it.
                                 await _give_up_settlement(
                                     kc, row_values["trace_id"], _settlement_amount(),
-                                    attempt, commit_cancel, _durable,
+                                    attempt, retry_err, _durable,
                                 )
                         raise
 
@@ -1518,10 +1512,12 @@ async def execute_chat(
             )
         ):
             if countable_usage(response.get("usage")):
-                settle_amount = max(
-                    log.cost_microcents or 0,
-                    budget[0] - budget[1],
-                )
+                # Measured but unpriceable. The counter must not stand still
+                # while the upstream still bills us, so charge the floor: one
+                # microcent per such request exhausts the cap eventually, which
+                # is the whole point, without one request consuming the entire
+                # remaining lifetime budget.
+                settle_amount = max(log.cost_microcents or 0, 1)
             else:
                 delivered, completion_chars = blocking_delivery_chars(response)
                 charge, estimate = _unmeasured_charge(
