@@ -57,27 +57,21 @@ from packages.db.units import MICROCENTS_PER_CENT as MICROCENTS_PER_CENT
 # stops its machine whenever it goes idle: an in-memory obligation is lost on
 # the next cold start, which reopens the cap for exactly the key the failure
 # was about to protect. `_unsettled` below is the hold for when even that write
-# cannot be made — it maps `api_key_id` to `(trace_id, microcents)`, and a later
-# pre-check re-files it once a write goes through again.
+# cannot be made. Preserve each settlement's trace_id so an already-charged
+# settlement cannot cause another settlement to be discarded.
 #
 # One entry per key, not per settlement: a database outage that outlasts many
 # requests would otherwise grow this without bound, since an entry only leaves
 # when a fold commits and no fold can commit while the database is down.
-_unsettled: dict[str, tuple[str, int]] = {}
+_unsettled: dict[str, dict[str, int]] = {}
 
 
 def _hold(api_key_id: str, trace_id: str, microcents: int) -> None:
-    """Add `microcents` to the key's in-memory hold.
-
-    The first `trace_id` seen becomes the hold's identity and is kept as further
-    settlements merge in, so re-filing stays idempotent on it: a retry parks the
-    same obligation once rather than once per merged settlement.
-    """
-    held = _unsettled.get(api_key_id)
-    if held is None:
-        _unsettled[api_key_id] = (trace_id, microcents)
-    else:
-        _unsettled[api_key_id] = (held[0], held[1] + microcents)
+    """Keep each unsettled obligation separately, keyed by its trace_id."""
+    holds = _unsettled.setdefault(api_key_id, {})
+    # A trace identifies one settlement. Repeated attempts for that trace
+    # must not add the same obligation twice.
+    holds[trace_id] = max(holds.get(trace_id, 0), microcents)
 
 
 class _FoldConflict(Exception):
@@ -201,9 +195,9 @@ async def pending_parked_spend(api_key_id: str) -> int | None:
 
     key = str(api_key_id)
     factory = session_mod._session_factory
-    held = _unsettled.get(key)
+    held = _unsettled.get(key, {})
     if factory is None:
-        return held[1] if held is not None else 0
+        return sum(held.values())
     try:
         async with factory() as s:
             rows = (
@@ -215,20 +209,16 @@ async def pending_parked_spend(api_key_id: str) -> int | None:
             ).all()
     except Exception:
         return None
-    # The durable rows are read before the hold is counted: a re-file that
-    # lands while this read is in flight must not be counted a second time, so
-    # a hold whose trace_id already has a row is not counted again.
+    # Subtract only the part of each hold already represented durably.
+    # A matching trace alone does not prove the entire amount was persisted.
     durable_amounts = {
-        trace_id: int(microcents)
-        for trace_id, microcents in rows
+        trace_id: int(microcents) for trace_id, microcents in rows
     }
     stored = sum(durable_amounts.values())
 
-    # The durable row may cover only part of a merged memory hold.
-    held_amount = (
-        max(0, held[1] - durable_amounts.get(held[0], 0))
-        if held is not None
-        else 0
+    held_amount = sum(
+        max(0, amount - durable_amounts.get(trace_id, 0))
+        for trace_id, amount in held.items()
     )
     return stored + held_amount
 
@@ -268,24 +258,25 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
     factory = session_mod._session_factory
     if factory is None:
         return 0
-    # A settlement can merge into this key's hold while the park write is in
-    # flight. Pop the hold only when it is unchanged since the write; otherwise
-    # the merged amount was never persisted, so re-file the grown hold (the same
-    # `trace_id` raises the row to it) until a write lands on a stable hold.
-    while (held := _unsettled.get(key)) is not None:
-        trace_id, amount = held
+    # Re-file each obligation under its own trace. A single merged row would
+    # let the fold mistake unrelated spend for an already-charged settlement.
+    while (holds := _unsettled.get(key)):
+        trace_id, amount = next(iter(holds.items()))
         # A cancellation here propagates with the hold still in place; a later
-        # pre-check re-files it, and the stable `trace_id` keeps the retry from
-        # parking the same obligation twice.
+        # pre-check re-files it under the same trace_id.
         if not await _insert_park(
             trace_id=trace_id, api_key_id=key, microcents=amount
         ):
             break
-        if _unsettled.get(key) == held:
-            _unsettled.pop(key, None)
-            break
+        current = _unsettled.get(key)
+        if current is not None and current.get(trace_id) == amount:
+            current.pop(trace_id)
+            if not current:
+                _unsettled.pop(key, None)
+        # If the amount grew during the write, leave it in place and retry.
     move = 0
     settling: list[tuple[str, int]] = []
+    billed_amounts: dict[str, int] = {}
     trim: tuple[str, int, int] | None = None
     try:
         async with factory() as s:
@@ -331,6 +322,11 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     if trace_id in logged
                 ]
                 if already_charged:
+                    billed_amounts.update({
+                        trace_id: int(amount)
+                        for trace_id, amount in rows
+                        if trace_id in logged
+                    })
                     for trace_id, amount in already_charged:
                         cleared = await s.execute(
                             delete(BudgetPark).where(
@@ -349,15 +345,16 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         room -= microcents
                         move += microcents
                         settling.append((trace_id, microcents))
+                        billed_amounts[trace_id] = microcents
                         continue
                     if room > 0:
                         trim = (trace_id, microcents, microcents - room)
                         move += room
                     break
-                if move <= 0:
-                    # Even when nothing new is billed, we may have deleted
-                    # already_charged rows; proceed to hold reconciliation.
-                    pass
+                # Even with no spend to move, already-charged rows may have
+                # been deleted and their corresponding holds need reconciliation.
+                if move <= 0 and not already_charged:
+                    return 0
                 else:
                     charged = await s.execute(
                         update(ApiKey)
@@ -392,19 +389,22 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         raise _FoldConflict
     except _FoldConflict:
         return 0
-    # Past the commit, so everything in `settling` and `already_charged` is
-    # billed and gone from the table. Reconcile the hold: keep only the
-    # obligation not covered by the committed fold. A new trace_id prevents
-    # the remainder from colliding with a park row that was just deleted.
-    billed_amounts = dict(already_charged)
-    billed_amounts.update(dict(settling))
-    held = _unsettled.get(key)
-    if held is not None and held[0] in billed_amounts:
-        covered = billed_amounts[held[0]]
-        if held[1] <= covered:
+    # Reconcile only the amount actually covered by committed rows. A hold
+    # for another trace is never cleared just because one row was billed.
+    holds = _unsettled.get(key)
+    if holds:
+        for trace_id, covered in billed_amounts.items():
+            held_amount = holds.get(trace_id)
+            if held_amount is None:
+                continue
+            holds.pop(trace_id)
+            remainder = held_amount - covered
+            if remainder > 0:
+                # The original park was deleted. Give the remaining debt a
+                # fresh identity so re-filing cannot collide with that row.
+                holds[str(uuid.uuid4())] = remainder
+        if not holds:
             _unsettled.pop(key, None)
-        else:
-            _unsettled[key] = (str(uuid.uuid4()), held[1] - covered)
     return move
 
 
