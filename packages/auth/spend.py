@@ -32,6 +32,7 @@ non-HTTP paths (background jobs, CLI minting tools).
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -83,16 +84,10 @@ class _FoldConflict(Exception):
     """A concurrent worker folded the same park first; the loser retries later."""
 
 
-async def _park_is_durable(trace_id: str) -> bool:
-    """Whether a park row for this `trace_id` is committed.
-
-    A commit that applied but whose ack never came back raises exactly like a
-    failure, and holding a memory copy beside the durable row puts one
-    obligation in both ledgers — the double-bill the `trace_id` key exists to
-    absorb. It reads on a fresh session because the failed one is closed by the
-    time this runs, and answers False when it cannot read at all: with the
-    database truly unreachable the memory hold is all that keeps the cap honest.
-    """
+async def _park_is_durable(
+    *, trace_id: str, api_key_id: str, expected_microcents: int
+) -> bool:
+    """Whether the durable row covers the entire expected obligation."""
     from packages.db import session as session_mod
 
     factory = session_mod._session_factory
@@ -100,11 +95,16 @@ async def _park_is_durable(trace_id: str) -> bool:
         return False
     try:
         async with factory() as s:
-            return (
-                await s.scalar(
-                    select(BudgetPark.trace_id).where(BudgetPark.trace_id == trace_id)
+            amount = await s.scalar(
+                select(BudgetPark.microcents).where(
+                    BudgetPark.trace_id == trace_id,
+                    BudgetPark.api_key_id == api_key_id,
                 )
-            ) is not None
+            )
+            return (
+                amount is not None
+                and int(amount) >= expected_microcents
+            )
     except Exception:
         return False
 
@@ -154,7 +154,11 @@ async def _insert_park(*, trace_id: str, api_key_id: str, microcents: int) -> bo
     except asyncio.CancelledError:
         raise
     except Exception:
-        return await _park_is_durable(trace_id)
+        return await _park_is_durable(
+            trace_id=trace_id,
+            api_key_id=api_key_id,
+            expected_microcents=microcents,
+        )
 
 
 async def record_unsettled_spend(
@@ -214,10 +218,17 @@ async def pending_parked_spend(api_key_id: str) -> int | None:
     # The durable rows are read before the hold is counted: a re-file that
     # lands while this read is in flight must not be counted a second time, so
     # a hold whose trace_id already has a row is not counted again.
-    durable_traces = {trace_id for trace_id, _microcents in rows}
-    stored = sum(int(microcents) for _trace_id, microcents in rows)
+    durable_amounts = {
+        trace_id: int(microcents)
+        for trace_id, microcents in rows
+    }
+    stored = sum(durable_amounts.values())
+
+    # The durable row may cover only part of a merged memory hold.
     held_amount = (
-        held[1] if held is not None and held[0] not in durable_traces else 0
+        max(0, held[1] - durable_amounts.get(held[0], 0))
+        if held is not None
+        else 0
     )
     return stored + held_amount
 
@@ -274,7 +285,7 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
             _unsettled.pop(key, None)
             break
     move = 0
-    settling: list[str] = []
+    settling: list[tuple[str, int]] = []
     trim: tuple[str, int, int] | None = None
     try:
         async with factory() as s:
@@ -314,15 +325,22 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         )
                     ).all()
                 ) if rows else set()
-                already_charged = [trace_id for trace_id, _amount in rows if trace_id in logged]
+                already_charged = [
+                    (trace_id, int(amount))
+                    for trace_id, amount in rows
+                    if trace_id in logged
+                ]
                 if already_charged:
-                    cleared = await s.execute(
-                        delete(BudgetPark).where(
-                            BudgetPark.trace_id.in_(already_charged)
+                    for trace_id, amount in already_charged:
+                        cleared = await s.execute(
+                            delete(BudgetPark).where(
+                                BudgetPark.trace_id == trace_id,
+                                BudgetPark.api_key_id == key,
+                                BudgetPark.microcents == amount,
+                            )
                         )
-                    )
-                    if cleared.rowcount != len(already_charged):
-                        raise _FoldConflict
+                        if cleared.rowcount != 1:
+                            raise _FoldConflict
                     rows = [row for row in rows if row[0] not in logged]
                 room = cap_microcents - spent
                 for trace_id, microcents in rows:
@@ -330,33 +348,42 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     if microcents <= room:
                         room -= microcents
                         move += microcents
-                        settling.append(trace_id)
+                        settling.append((trace_id, microcents))
                         continue
                     if room > 0:
                         trim = (trace_id, microcents, microcents - room)
                         move += room
                     break
                 if move <= 0:
-                    return 0
-                charged = await s.execute(
-                    update(ApiKey)
-                    .where(ApiKey.id == key, ApiKey.spent_microcents == spent)
-                    .values(spent_microcents=spent + move)
-                )
-                if charged.rowcount != 1:
-                    raise _FoldConflict
-                if settling:
-                    cleared = await s.execute(
-                        delete(BudgetPark).where(BudgetPark.trace_id.in_(settling))
+                    # Even when nothing new is billed, we may have deleted
+                    # already_charged rows; proceed to hold reconciliation.
+                    pass
+                else:
+                    charged = await s.execute(
+                        update(ApiKey)
+                        .where(ApiKey.id == key, ApiKey.spent_microcents == spent)
+                        .values(spent_microcents=spent + move)
                     )
-                    if cleared.rowcount != len(settling):
+                    if charged.rowcount != 1:
                         raise _FoldConflict
+                if settling:
+                    for trace_id, amount in settling:
+                        cleared = await s.execute(
+                            delete(BudgetPark).where(
+                                BudgetPark.trace_id == trace_id,
+                                BudgetPark.api_key_id == key,
+                                BudgetPark.microcents == amount,
+                            )
+                        )
+                        if cleared.rowcount != 1:
+                            raise _FoldConflict
                 if trim is not None:
                     trace_id, whole, remainder = trim
                     trimmed = await s.execute(
                         update(BudgetPark)
                         .where(
                             BudgetPark.trace_id == trace_id,
+                            BudgetPark.api_key_id == key,
                             BudgetPark.microcents == whole,
                         )
                         .values(microcents=remainder)
@@ -365,16 +392,19 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         raise _FoldConflict
     except _FoldConflict:
         return 0
-    # Past the commit, so everything in `settling` is billed and gone from the
-    # table. A hold covering one of those rows is now worse than stale: the next
-    # pre-check re-files it as a brand-new park — the `trace_id` no longer
-    # collides, this transaction deleted the row — and the same delivery is
-    # charged twice against a cap that has no idea it moved. Only `settling`:
-    # a trimmed row is still owed, and the hold covering it has to stay.
-    billed = {*settling, *already_charged}
+    # Past the commit, so everything in `settling` and `already_charged` is
+    # billed and gone from the table. Reconcile the hold: keep only the
+    # obligation not covered by the committed fold. A new trace_id prevents
+    # the remainder from colliding with a park row that was just deleted.
+    billed_amounts = dict(already_charged)
+    billed_amounts.update(dict(settling))
     held = _unsettled.get(key)
-    if held is not None and held[0] in billed:
-        _unsettled.pop(key, None)
+    if held is not None and held[0] in billed_amounts:
+        covered = billed_amounts[held[0]]
+        if held[1] <= covered:
+            _unsettled.pop(key, None)
+        else:
+            _unsettled[key] = (str(uuid.uuid4()), held[1] - covered)
     return move
 
 
