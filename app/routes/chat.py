@@ -165,12 +165,16 @@ def _unmeasured_charge(
         return 0, None
     if effective_ending == _STREAM_COMPLETED and policy == _REMAINING:
         # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
-        # completion costs nothing. Only an unknown price falls back to the
-        # remaining allowance.
-        if _has_known_price(
-            litellm_cost_usd=None,
-            model_id=model_id,
-            fallback_model=fallback_model,
+        # completion costs nothing. Every other model pays the remaining
+        # allowance, including one that IS in the catalog at a real price —
+        # checking only for a catalog hit would price a gpt-4o-mini stream at
+        # zero, which is the "opt out of measurement and stream for free" this
+        # branch exists to prevent. An unknown price pays it too.
+        m = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
+        if (
+            m is not None
+            and not m.input_cost_per_token
+            and not m.output_cost_per_token
         ):
             return 0, None
         return max(0, cap - spent), None

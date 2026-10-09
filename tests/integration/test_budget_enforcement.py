@@ -330,32 +330,36 @@ async def test_a_settlement_that_cannot_be_recorded_is_parked(failing_app):
     assert await _log_rows(factory) == []
 
 
-async def test_a_parked_charge_counts_against_the_cap_on_the_next_request(failing_app):
-    """The park is read by the pre-check, so the next request sees the debt.
+async def test_a_parked_charge_counts_against_the_cap_on_the_next_request(budget_app):
+    """A parked obligation is read by the pre-check and blocks dispatch.
 
-    Driven through the HTTP path: the first request parks a charge larger than
-    the cap, and the second request must be refused by the pre-check in
-    execute_chat, not by a direct call into the spend library.
+    The park is created through the same public entry point the settlement path
+    uses (`record_unsettled_spend`), then a real request is sent through
+    `execute_chat`. If the pre-check did not fold the park into the key's spend,
+    this request would be served and the counter would move by only its own
+    cost — so a 200 here is the regression this test exists to catch.
     """
-    client, factory, key_id = failing_app
+    client, factory, key_id = budget_app
 
-    await _chat(client, stream=True)
+    from packages.auth.spend import record_unsettled_spend
+
+    # Larger than the key's 10,000-microcent cap, so the debt alone must refuse
+    # the request.
+    await record_unsettled_spend(
+        trace_id="parked-larger-than-cap",
+        api_key_id=str(key_id),
+        microcents=50_000,
+    )
     parked = await _park_rows(factory)
     assert len(parked) == 1
-    assert parked[0].microcents > 0
+    assert parked[0].microcents == 50_000
 
-    # The parked debt is what the pre-check reads. The counter is still zero, so
-    # a second request is served only if the pre-check sees the park: the
-    # park is a few microcents against a 10,000-microcent cap, so it does not
-    # itself exhaust the key. The assertion is that the pre-check ran, which we
-    # observe as the counter staying at zero rather than moving on the second
-    # request.
-    assert await _spent(factory, key_id) == 0
-    second = await _chat(client, stream=True)
-    assert second["status"] == 200
-    assert await _spent(factory, key_id) == 0
-    parked_after = await _park_rows(factory)
-    assert len(parked_after) == 1
+    result = await _chat(client)
+
+    assert result["status"] == 429
+    assert "budget exhausted" in result["body"]
+    # The request was never dispatched, so it recorded nothing of its own.
+    assert await _log_rows(factory) == []
 
 
 async def test_an_unpriceable_completion_is_not_charged_the_whole_cap(
