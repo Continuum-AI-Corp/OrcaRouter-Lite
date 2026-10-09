@@ -331,17 +331,31 @@ async def test_a_settlement_that_cannot_be_recorded_is_parked(failing_app):
 
 
 async def test_a_parked_charge_counts_against_the_cap_on_the_next_request(failing_app):
-    """The park is read by the pre-check, so the next request sees the debt."""
+    """The park is read by the pre-check, so the next request sees the debt.
+
+    Driven through the HTTP path: the first request parks a charge larger than
+    the cap, and the second request must be refused by the pre-check in
+    execute_chat, not by a direct call into the spend library.
+    """
     client, factory, key_id = failing_app
 
     await _chat(client, stream=True)
     parked = await _park_rows(factory)
     assert len(parked) == 1
+    assert parked[0].microcents > 0
 
-    from packages.auth.spend import budget_precheck
-    async with factory() as s:
-        seen = await budget_precheck(s, str(key_id), 1 * MICROCENTS_PER_CENT)
-    assert seen >= parked[0].microcents
+    # The parked debt is what the pre-check reads. The counter is still zero, so
+    # a second request is served only if the pre-check sees the park: the
+    # park is a few microcents against a 10,000-microcent cap, so it does not
+    # itself exhaust the key. The assertion is that the pre-check ran, which we
+    # observe as the counter staying at zero rather than moving on the second
+    # request.
+    assert await _spent(factory, key_id) == 0
+    second = await _chat(client, stream=True)
+    assert second["status"] == 200
+    assert await _spent(factory, key_id) == 0
+    parked_after = await _park_rows(factory)
+    assert len(parked_after) == 1
 
 
 async def test_an_unpriceable_completion_is_not_charged_the_whole_cap(

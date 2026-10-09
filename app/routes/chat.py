@@ -165,7 +165,14 @@ def _unmeasured_charge(
         return 0, None
     if effective_ending == _STREAM_COMPLETED and policy == _REMAINING:
         # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
-        # completion costs nothing.
+        # completion costs nothing. Only an unknown price falls back to the
+        # remaining allowance.
+        if _has_known_price(
+            litellm_cost_usd=None,
+            model_id=model_id,
+            fallback_model=fallback_model,
+        ):
+            return 0, None
         return max(0, cap - spent), None
     estimate = estimate_usage(prompt_chars, completion_chars)
     # The charge is floored at one microcent, the smallest amount the counter can
@@ -192,17 +199,20 @@ async def _settlement_is_durable(trace_id: str) -> bool:
     factory = session_mod._session_factory
     if factory is None:
         return False
-    try:
-        async with factory() as s:
-            return (
-                await s.scalar(
-                    select(RequestLog.id).where(RequestLog.trace_id == trace_id)
-                )
-            ) is not None
-    except Exception:
-        # Broad catch is deliberate: any DB error (connectivity, auth, schema)
-        # means we cannot verify durability, so fail closed (return False).
-        return False
+    # Shielded: this runs while a give-up is already unwinding a cancellation,
+    # and the probe must still answer so the charge is parked, not dropped.
+    with anyio.CancelScope(shield=True):
+        try:
+            async with factory() as s:
+                return (
+                    await s.scalar(
+                        select(RequestLog.id).where(RequestLog.trace_id == trace_id)
+                    )
+                ) is not None
+        except Exception:
+            # Broad catch is deliberate: any DB error (connectivity, auth,
+            # schema) means we cannot verify durability, so fail closed.
+            return False
 
 
 async def _give_up_settlement(
@@ -1570,7 +1580,23 @@ async def execute_chat(
                 await _settle_budget(db, settle_amount, commit=False)
                 await db.commit()
                 break
-            except Exception as commit_err:
+            except BaseException as commit_err:
+                # A cancellation (client disconnect) during the commit is not a
+                # retryable failure, but the charge must still be parked if the
+                # row did not land. Park, then let the cancellation propagate.
+                if isinstance(commit_err, asyncio.CancelledError):
+                    with anyio.CancelScope(shield=True):
+                        try:
+                            await db.rollback()
+                        except BaseException:
+                            pass
+                        await _give_up_settlement(
+                            kc, log_values["trace_id"], settle_amount,
+                            attempt, commit_err, _durable,
+                        )
+                    raise
+                if not isinstance(commit_err, Exception):
+                    raise
                 try:
                     await db.rollback()
                 except Exception:
