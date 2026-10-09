@@ -91,8 +91,8 @@ async def test_stale_identity_map_cannot_clobber_a_concurrent_charge(tmp_sqlite_
     """A session that loaded the key before a concurrent charge must not flush
     its stale value over the DB's atomic result.
 
-    #161's documented usage runs charge_budget on the same session that
-    validate_api_key already used to load the ApiKey. Without
+    The request path runs charge_budget on the same session that auth already
+    used to load the ApiKey. Without
     synchronize_session=False the ORM's 'auto' sync evaluates the SET in Python
     against that stale identity-map copy, marks it dirty, and the commit
     flushes it as a plain unguarded UPDATE — silently dropping the other
