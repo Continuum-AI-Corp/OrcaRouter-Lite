@@ -257,16 +257,22 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
     factory = session_mod._session_factory
     if factory is None:
         return 0
-    for held_key, (trace_id, amount) in list(_unsettled.items()):
-        if held_key != key:
-            continue
+    # A settlement can merge into this key's hold while the park write is in
+    # flight. Pop the hold only when it is unchanged since the write; otherwise
+    # the merged amount was never persisted, so re-file the grown hold (the same
+    # `trace_id` raises the row to it) until a write lands on a stable hold.
+    while (held := _unsettled.get(key)) is not None:
+        trace_id, amount = held
         # A cancellation here propagates with the hold still in place; a later
         # pre-check re-files it, and the stable `trace_id` keeps the retry from
         # parking the same obligation twice.
-        if await _insert_park(
+        if not await _insert_park(
             trace_id=trace_id, api_key_id=key, microcents=amount
         ):
-            _unsettled.pop(held_key, None)
+            break
+        if _unsettled.get(key) == held:
+            _unsettled.pop(key, None)
+            break
     move = 0
     settling: list[str] = []
     trim: tuple[str, int, int] | None = None
