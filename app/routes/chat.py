@@ -212,6 +212,16 @@ async def _settlement_is_durable(trace_id: str) -> bool:
         except Exception:
             # Broad catch is deliberate: any DB error (connectivity, auth,
             # schema) means we cannot verify durability, so fail closed.
+            #
+            # This is a choice between two wrongs, made knowingly. When the
+            # commit landed but its ack was lost AND this read also fails, we
+            # cannot tell "already charged" from "never written", so we park and
+            # the key is billed twice. The alternative — trusting an unreadable
+            # database to have recorded the charge — reopens the cap for exactly
+            # the key whose settlement we are unwinding, which is the failure
+            # the park exists to prevent. Over-charging a capped key is the
+            # smaller harm; under-charging it is the one that lets spend through
+            # uncounted.
             return False
 
 
