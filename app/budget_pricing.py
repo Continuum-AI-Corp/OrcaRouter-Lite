@@ -35,16 +35,26 @@ def text_chars(content) -> int:
 
 
 def countable_usage(usage) -> bool:
-    """Whether a usage dict carries at least one token total.
+    """Whether a usage dict carries a measured token total.
 
-    A truthy usage dict is not proof of measurement: some upstreams report
-    `{"total_tokens": 123}` and nothing else. Settling on that would record a
-    zero cost for a delivered completion, so anything without a countable key
-    is treated as no measurement at all.
+    A truthy usage dict is not proof of measurement. Some upstreams report
+    `{"total_tokens": 123}` and nothing else, and LiteLLM emits a frame of
+    `{"prompt_tokens": 0, "completion_tokens": 0}` when the upstream reported
+    nothing at all. Settling on either records a zero cost for a delivered
+    completion, so only a countable key holding a positive number counts as a
+    measurement — anything else is treated as no measurement at all.
+
+    `bool` is rejected explicitly: `True` is an `int` in Python, and a flag that
+    leaked into a token field is not a measurement.
     """
     if not isinstance(usage, dict) or not usage:
         return False
-    return any(usage.get(key) is not None for key in _COUNTABLE_USAGE_KEYS)
+    return any(
+        isinstance(value := usage.get(key), (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+        for key in _COUNTABLE_USAGE_KEYS
+    )
 
 
 def chars_to_tokens(chars: int) -> int:

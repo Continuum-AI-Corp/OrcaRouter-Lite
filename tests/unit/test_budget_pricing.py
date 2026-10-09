@@ -15,19 +15,40 @@ from app.budget_pricing import (
 @pytest.mark.parametrize(
     ("usage", "expected"),
     [
-        ({"prompt_tokens": 0}, True),
-        ({"completion_tokens": 0}, True),
+        ({"prompt_tokens": 5}, True),
+        ({"completion_tokens": 1}, True),
         ({"input_tokens": 5}, True),
         ({"output_tokens": 5}, True),
+        # A zero on one side is still a measurement when the other side counts.
+        ({"prompt_tokens": 0, "completion_tokens": 7}, True),
+        ({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, False),
         ({"total_tokens": 123}, False),
         ({"prompt_tokens": None}, False),
+        ({"prompt_tokens": "12"}, False),
+        ({"prompt_tokens": True}, False),
+        ({"prompt_tokens": -5}, False),
         ({}, False),
         (None, False),
         ("not a dict", False),
     ],
 )
-def test_countable_usage_requires_a_countable_key(usage, expected):
+def test_countable_usage_requires_a_positive_measurement(usage, expected):
     assert countable_usage(usage) is expected
+
+
+def test_countable_usage_rejects_a_zero_placeholder_frame():
+    """The frame LiteLLM emits when the upstream reported nothing.
+
+    A delivered completion settled on this records a zero cost, which is the
+    bypass the guard exists to prevent.
+    """
+    assert countable_usage({"prompt_tokens": 0, "completion_tokens": 0}) is False
+    assert (
+        countable_usage(
+            {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(
