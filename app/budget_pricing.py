@@ -45,8 +45,12 @@ def _part_texts(part) -> list[str]:
 def text_chars(content) -> int:
     """Character count of message content, for a str or a list of content parts.
 
-    Counts the same strings `blocking_delivery_chars` counts for a completion,
-    so a prompt prices the same characters the delivery path would.
+    Counts every character of the text it is given, whitespace included. The
+    prompt is billed for all of it. This is deliberately not `blocking_delivery_chars`'
+    rule: that function drops whitespace-only values from a completion, which is
+    right for deciding whether something was delivered, but the streaming path
+    also prices each delta through here, and a whitespace-only delta is real
+    output that must not be dropped.
     """
     if isinstance(content, str):
         return len(content)

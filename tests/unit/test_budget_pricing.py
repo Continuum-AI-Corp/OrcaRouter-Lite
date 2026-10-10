@@ -85,6 +85,18 @@ def test_text_chars_counts_bare_string_parts():
     assert text_chars([{"text": "ab"}, "cd", {"no": "text"}, 42]) == 4
 
 
+def test_text_chars_keeps_whitespace_so_streamed_deltas_are_not_undercounted():
+    """Whitespace-only deltas are real streamed output and must be priced.
+
+    The delivery path skips whitespace-only values when deciding whether a
+    completion delivered anything; `text_chars` must not, or streamed spaces
+    between words would be dropped from the count.
+    """
+    assert text_chars(" ") == 1
+    assert text_chars("   ") == 3
+    assert text_chars(["  ", "x"]) == 3
+
+
 def test_tool_call_text_counts_names_and_string_arguments():
     calls = [
         {"function": {"name": "search", "arguments": '{"q":"x"}'}},
