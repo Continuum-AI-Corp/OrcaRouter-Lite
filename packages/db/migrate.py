@@ -14,26 +14,33 @@ earlier boot applied only halfway.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from sqlalchemy import BigInteger, inspect, text
 from sqlalchemy.exc import DBAPIError
 
+from packages.db.models.budget_park import BudgetPark
 from packages.db.units import MICROCENTS_PER_CENT
 
 
 def _already_applied(err: DBAPIError) -> bool:
     """Whether a DDL failure means someone else applied the change first."""
     msg = str(err).lower()
+    if "already exists" in msg or "duplicate column" in msg:
+        return True
+    # Two concurrent CREATE TABLE are serialised by the catalog rather than by
+    # the wording of a complaint, so the loser gets a unique violation on
+    # pg_class/pg_type (`*_relname_nsp_index`, `*_typname_nsp_index`) instead of
+    # "already exists". Same meaning: the object is there now.
     return (
-        "already exists" in msg
-        or "duplicate column" in msg
-        # Concurrent CREATE INDEX on Postgres can lose the race at the catalog
-        # insert rather than the IF NOT EXISTS probe, surfacing as a verror on
-        # pg_class's unique index instead of the usual "already exists".
-        or "pg_class_relname_nsp_index" in msg
+        "duplicate key value" in msg
+        and "nsp_index" in msg
+        and ("relname" in msg or "typname" in msg)
     )
 
 
-async def _apply_ddl(conn, statement: str) -> None:
+async def _apply_ddl(conn, statement: str | Callable[..., Any]) -> None:
     """Run one startup DDL statement, tolerating a boot that raced us to it.
 
     Every worker runs this in its lifespan, so the first boot after an upgrade
@@ -43,10 +50,16 @@ async def _apply_ddl(conn, statement: str) -> None:
     from here, not a reason to keep the worker from booting. The failure is
     caught inside a SAVEPOINT because on Postgres an error would otherwise abort
     the whole transaction and take the rest of the startup with it.
+
+    `statement` is raw SQL, or a callable handed to `run_sync` for DDL that only
+    the dialect's own generator can emit (a `Table.create`).
     """
     try:
         async with conn.begin_nested():
-            await conn.execute(text(statement))
+            if callable(statement):
+                await conn.run_sync(statement)
+            else:
+                await conn.execute(text(statement))
     except DBAPIError as err:
         if not _already_applied(err):
             raise
@@ -61,15 +74,35 @@ async def ensure_budget_columns(engine) -> None:
     Postgres (the column is scaled into microcents for every comparison against
     spend, and an int4 ceiling is about 214,748 dollars of lifetime budget) and
     creates the `ix_requests_log_api_key_spend` index that create_all only builds
-    on fresh databases. Each step costs nothing on a database that needs none of
-    it — there the repair is a single indexed UPDATE that matches no row.
+    on fresh databases, and creates `budget_parks` for deployments that predate
+    the durable-recovery release — a lost settlement needs somewhere every
+    worker, and every reboot, can see it. Each step costs nothing on a database
+    that needs none of it — there the repair is a single indexed UPDATE that
+    matches no row.
     """
     async with engine.begin() as conn:
+        tables = set(
+            await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+        )
         cols = {
             c["name"]: c["type"]
             for c in await conn.run_sync(lambda sync: inspect(sync).get_columns("api_keys"))
         }
         is_postgres = engine.dialect.name == "postgresql"
+
+        if BudgetPark.__tablename__ not in tables:
+            # The only creator of this table at boot: app/main.py's create_all
+            # skips it, so fresh databases and upgrades both come through here.
+            # `checkfirst` re-reads the catalog, and
+            # that read cannot see another boot's uncommitted CREATE — so two
+            # workers both get here and one loses anyway. It goes through
+            # `_apply_ddl` for the same reason the ALTER does: losing that race
+            # has to count as having won, and the savepoint is what keeps the
+            # error from aborting the transaction the rest of startup runs in.
+            await _apply_ddl(
+                conn,
+                lambda sync: BudgetPark.__table__.create(sync, checkfirst=True),
+            )
 
         # The model declares ix_requests_log_api_key_spend (api_key_id,
         # is_deleted); create_all only builds it on fresh databases, so an
@@ -110,8 +143,8 @@ async def ensure_budget_columns(engine) -> None:
         # Not a one-shot `= 0` backfill but a monotonic, cap-clamped repair run
         # every boot: the counter rises to max(current, log total) and is never
         # written past budget_limit_cents scaled to microcents or below its
-        # current value. Until #161 wires the per-request charge, request logs
-        # are the only recorded spend, so a counter seeded at an earlier boot
+        # current value. Request logs are the only spend record the counter can
+        # be rebuilt from, so a counter seeded at an earlier boot
         # goes stale as traffic flows and only re-aggregating closes the gap.
         # Afterwards the clamp keeps this a no-op on correct state: a key whose
         # final charge was clamped deliberately under-reports its log total, and
