@@ -13,36 +13,62 @@ from __future__ import annotations
 # did not measure.
 CHARS_PER_TOKEN = 4
 
-_COUNTABLE_USAGE_KEYS = (
-    "prompt_tokens",
-    "completion_tokens",
-    "input_tokens",
-    "output_tokens",
-)
+_PROMPT_USAGE_KEYS = ("prompt_tokens", "input_tokens")
+_COMPLETION_USAGE_KEYS = ("completion_tokens", "output_tokens")
+_COUNTABLE_USAGE_KEYS = _PROMPT_USAGE_KEYS + _COMPLETION_USAGE_KEYS
+
+
+def _part_texts(part) -> list[str]:
+    """The character-bearing strings one content part carries.
+
+    A part is a bare string, a `{"text": ...}` dict, or an Anthropic
+    `{"type": "tool_use", "name": ..., "input": ...}` block. A tool_use block
+    is delivered content the upstream bills for: its name and any string-valued
+    input count, mirroring `tool_call_text`. Object-valued input has no honest
+    character count and contributes nothing.
+    """
+    if isinstance(part, str):
+        return [part]
+    if not isinstance(part, dict):
+        return []
+    texts: list[str] = []
+    if isinstance(part.get("text"), str):
+        texts.append(part["text"])
+    if part.get("type") == "tool_use":
+        for key in ("name", "input"):
+            value = part.get(key)
+            if isinstance(value, str):
+                texts.append(value)
+    return texts
 
 
 def text_chars(content) -> int:
-    """Character count of message content, for a str or a list of text parts.
+    """Character count of message content, for a str or a list of content parts.
 
-    Anthropic-style content may be either a plain string or a list of parts,
-    where each part may be a dict (`{"text": "..."}`) or a plain `str`. Both
-    shapes are counted so a prompt prices the same characters the completion
-    delivery path (`blocking_delivery_chars`) would count.
+    Counts the same strings `blocking_delivery_chars` counts for a completion,
+    so a prompt prices the same characters the delivery path would.
     """
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
-        total = 0
-        for part in content:
-            if isinstance(part, str):
-                total += len(part)
-            elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                total += len(part["text"])
-        return total
+        return sum(len(text) for part in content for text in _part_texts(part))
     return 0
 
 
-def countable_usage(usage) -> bool:
+def message_chars(content, tool_calls=None) -> int:
+    """Character count of one prompt message: its content plus its tool calls.
+
+    An assistant turn that only called tools has `content` of None and its
+    billable text in `tool_calls`; pricing content alone would charge it zero.
+    """
+    return text_chars(content) + len(tool_call_text(tool_calls))
+
+
+def _positive_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def countable_usage(usage, *, delivered: bool = False) -> bool:
     """Whether a usage dict carries a measured token total.
 
     A truthy usage dict is not proof of measurement. Some upstreams report
@@ -50,19 +76,21 @@ def countable_usage(usage) -> bool:
     `{"prompt_tokens": 0, "completion_tokens": 0}` when the upstream reported
     nothing at all. Settling on either records a zero cost for a delivered
     completion, so only a countable key holding a positive number counts as a
-    measurement — anything else is treated as no measurement at all.
+    measurement.
+
+    When `delivered` is True the frame must also carry a positive completion-side
+    count. A prompt-only frame such as `{"prompt_tokens": 100,
+    "completion_tokens": 0}` would otherwise settle a delivered completion at
+    zero. A delivered completion that really cost tokens always reports them.
 
     `bool` is rejected explicitly: `True` is an `int` in Python, and a flag that
     leaked into a token field is not a measurement.
     """
     if not isinstance(usage, dict) or not usage:
         return False
-    return any(
-        isinstance(value := usage.get(key), (int, float))
-        and not isinstance(value, bool)
-        and value > 0
-        for key in _COUNTABLE_USAGE_KEYS
-    )
+    if delivered:
+        return any(_positive_number(usage.get(key)) for key in _COMPLETION_USAGE_KEYS)
+    return any(_positive_number(usage.get(key)) for key in _COUNTABLE_USAGE_KEYS)
 
 
 def chars_to_tokens(chars: int) -> int:
@@ -132,10 +160,7 @@ def blocking_delivery_chars(response: dict) -> tuple[bool, int]:
                 candidates.append(content)
             elif isinstance(content, list):
                 for part in content:
-                    if isinstance(part, str):
-                        candidates.append(part)
-                    elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                        candidates.append(part["text"])
+                    candidates.extend(_part_texts(part))
             candidates.append(tool_call_text(message.get("tool_calls")))
         for value in candidates:
             if not value.strip():
