@@ -244,3 +244,36 @@ def test_image_only_prompt_is_not_priced_at_zero():
     """A vision prompt with no text still sent billed input. It must floor to a token."""
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
     assert chars_to_tokens(text_chars(content)) == 1
+
+
+def test_tool_result_string_content_counts_its_real_length():
+    """A tool output is billed text. It must not price as one marker character."""
+    part = {"type": "tool_result", "tool_use_id": "t1", "content": "x" * 400}
+    assert text_chars([part]) == 400
+
+
+def test_tool_result_list_content_counts_its_text_parts():
+    part = {
+        "type": "tool_result",
+        "tool_use_id": "t1",
+        "content": [{"type": "text", "text": "abc"}, {"type": "text", "text": "de"}],
+    }
+    assert text_chars([part]) == len("abc") + len("de")
+
+
+def test_tool_result_with_an_image_inside_still_floors_the_image():
+    part = {
+        "type": "tool_result",
+        "tool_use_id": "t1",
+        "content": [{"type": "image", "source": {"data": "AAAA"}}],
+    }
+    assert text_chars([part]) == 1
+
+
+def test_tool_result_without_content_counts_nothing():
+    assert text_chars([{"type": "tool_result", "tool_use_id": "t1"}]) == 0
+
+
+def test_image_part_still_floors_to_one_character_on_the_prompt_side():
+    """An image is billed; it has no honest character count, so it floors to one."""
+    assert text_chars([{"type": "image_url", "image_url": {"url": "data:x"}}]) == 1

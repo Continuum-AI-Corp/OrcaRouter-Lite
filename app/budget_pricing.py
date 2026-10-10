@@ -51,12 +51,29 @@ def _part_texts(part) -> list[str]:
         return texts
     if isinstance(part.get("text"), str):
         return [part["text"]]
+    if part.get("type") == "tool_result":
+        # A tool result's billable text is its `content`: a string, or a list of
+        # parts in the same shape a message's content takes. Count that text,
+        # not a single marker character for the whole tool output.
+        return _content_texts(part.get("content"))
     if part.get("type") in (None, "text"):
         return []
-    # A non-text part (image, audio, tool_result, ...) has no honest character
-    # count, but it was sent or delivered and is billed. Count it as one
-    # character, so it floors to a token and never prices at zero.
+    # A non-text part (image, audio, ...) has no honest character count, but it
+    # was sent or delivered and is billed. Count it as one character, so it
+    # floors to a token and never prices at zero.
     return [_OPAQUE_PART_MARKER]
+
+
+def _content_texts(content) -> list[str]:
+    """Text strings of a content value: a bare string, or a list of parts."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        texts: list[str] = []
+        for part in content:
+            texts.extend(_part_texts(part))
+        return texts
+    return []
 
 
 def text_chars(content) -> int:
