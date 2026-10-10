@@ -294,3 +294,40 @@ async def test_cancel_before_any_commit_still_holds_the_amount(factory, monkeypa
     with pytest.raises(asyncio.CancelledError):
         await record_unsettled_spend(trace_id="t", api_key_id="k", microcents=600)
     assert spend._unsettled.get("k") == {"t": 600}
+
+
+async def test_second_cancel_during_the_durability_probe_still_decides_the_hold(
+    factory, monkeypatch
+):
+    """A cancel can arrive again while the cancel-path probe is in flight.
+
+    The probe must still reach its decision, so a durable row is not held and an
+    absent row is held, rather than the cancellation abandoning the decision.
+    """
+    await _make_key(factory, key_id="k", spent=0)
+
+    async def insert_cancelled(**kw):
+        raise asyncio.CancelledError()
+
+    slow_probe_started = asyncio.Event()
+
+    real_probe = spend._park_is_durable
+
+    async def slow_probe(**kw):
+        slow_probe_started.set()
+        await asyncio.sleep(0.05)
+        return await real_probe(**kw)
+
+    monkeypatch.setattr(spend, "_insert_park", insert_cancelled)
+    monkeypatch.setattr(spend, "_park_is_durable", slow_probe)
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError):
+            await spend.record_unsettled_spend(trace_id="t", api_key_id="k", microcents=600)
+
+    task = asyncio.create_task(run())
+    await slow_probe_started.wait()
+    task.cancel()  # second cancel while the probe is in flight
+    await task
+    # No durable row exists, so the probe decided "not durable" and the amount is held.
+    assert spend._unsettled.get("k") == {"t": 600}

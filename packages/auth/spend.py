@@ -180,15 +180,27 @@ async def record_unsettled_spend(
         # The cancellation can land after the park commit already applied. Hold
         # only if the row is not durable: a durable row with a memory hold on
         # top lets another worker fold the row and this worker re-file the same
-        # obligation later, billing it twice. The probe is shielded so the
-        # cancellation that brought us here cannot cut it short.
-        durable = await asyncio.shield(
+        # obligation later, billing it twice.
+        #
+        # The probe must reach a decision even if the task is cancelled again
+        # while it runs. `asyncio.shield` does not guarantee that: a second
+        # cancel interrupts the await, and the amount would be neither held nor
+        # confirmed. The probe runs as its own task, awaited until it finishes,
+        # and the cancellation is re-raised afterwards.
+        probe = asyncio.ensure_future(
             _park_is_durable(
                 trace_id=str(trace_id),
                 api_key_id=key,
                 expected_microcents=microcents,
             )
         )
+        while not probe.done():
+            try:
+                await asyncio.shield(probe)
+            except asyncio.CancelledError:
+                # Another cancel while waiting: keep waiting for the decision.
+                continue
+        durable = not probe.cancelled() and probe.exception() is None and bool(probe.result())
         if not durable:
             _hold(key, str(trace_id), microcents)
         raise
