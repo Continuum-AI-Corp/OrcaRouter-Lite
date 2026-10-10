@@ -7,6 +7,7 @@ from app.budget_pricing import (
     chars_to_tokens,
     countable_usage,
     estimate_usage,
+    message_chars,
     text_chars,
     tool_call_text,
 )
@@ -129,3 +130,58 @@ def test_blocking_delivery_reads_legacy_text_and_part_lists():
 def test_blocking_delivery_empty_or_malformed_response():
     assert blocking_delivery_chars({}) == (False, 0)
     assert blocking_delivery_chars({"choices": "nope"}) == (False, 0)
+
+
+def test_message_chars_counts_tool_calls_on_an_assistant_turn():
+    """An assistant turn with content None and only tool_calls must not price at zero."""
+    calls = [{"function": {"name": "search", "arguments": '{"q":"x"}'}}]
+    assert message_chars(None, calls) == len('search{"q":"x"}')
+    assert message_chars("hi", calls) == len("hi") + len('search{"q":"x"}')
+    assert message_chars("hi") == 2
+
+
+def test_prompt_and_completion_price_the_same_tool_call_characters():
+    """A tool-call turn in the prompt and the same turn delivered must agree."""
+    calls = [{"function": {"name": "search", "arguments": '{"q":"x"}'}}]
+    prompt_side = message_chars(None, calls)
+    _, delivered_side = blocking_delivery_chars(
+        {"choices": [{"message": {"content": None, "tool_calls": calls}}]}
+    )
+    assert prompt_side == delivered_side > 0
+
+
+def test_prompt_only_frame_is_not_countable_when_content_was_delivered():
+    """A prompt-measured frame with a zero completion would settle a delivered completion at zero."""
+    frame = {"prompt_tokens": 100, "completion_tokens": 0}
+    assert countable_usage(frame) is True
+    assert countable_usage(frame, delivered=True) is False
+
+
+def test_delivered_frame_with_positive_completion_is_countable():
+    assert countable_usage({"prompt_tokens": 100, "completion_tokens": 7}, delivered=True) is True
+    assert countable_usage({"output_tokens": 7}, delivered=True) is True
+
+
+def test_anthropic_tool_use_part_is_counted_as_delivered_content():
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "search", "input": '{"q":"x"}'},
+                    ]
+                }
+            }
+        ]
+    }
+    assert blocking_delivery_chars(response) == (True, len("search") + len('{"q":"x"}'))
+
+
+def test_tool_use_part_with_object_input_counts_only_its_name():
+    part = {"type": "tool_use", "name": "search", "input": {"q": "x"}}
+    assert text_chars([part]) == len("search")
+
+
+def test_tool_use_only_completion_is_a_delivery_not_zero():
+    response = {"choices": [{"message": {"content": [{"type": "tool_use", "name": "f"}]}}]}
+    assert blocking_delivery_chars(response) == (True, 1)
