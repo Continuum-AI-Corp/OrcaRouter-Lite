@@ -189,11 +189,51 @@ def test_anthropic_tool_use_part_is_counted_as_delivered_content():
     assert blocking_delivery_chars(response) == (True, len("search") + len('{"q":"x"}'))
 
 
-def test_tool_use_part_with_object_input_counts_only_its_name():
-    part = {"type": "tool_use", "name": "search", "input": {"q": "x"}}
-    assert text_chars([part]) == len("search")
+def test_tool_use_part_with_object_input_counts_name_and_serialized_input():
+    """Anthropic tool input is an object on the wire. The translators bill it as
+    json.dumps(input), so the prompt must count that same serialization."""
+    part = {"type": "tool_use", "name": "get_weather", "input": {"city": "SF"}}
+    assert text_chars([part]) == len("get_weather") + len('{"city": "SF"}')
+
+
+def test_tool_use_object_input_matches_the_translator_serialization():
+    from app.protocols.anthropic import _translate_assistant_message
+
+    blocks = [{"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "SF"}}]
+    translated = _translate_assistant_message(blocks)
+    billed = len(translated["tool_calls"][0]["function"]["name"]) + len(
+        translated["tool_calls"][0]["function"]["arguments"]
+    )
+    assert text_chars([blocks[0]]) == billed
+
+
+def test_tool_use_with_missing_input_counts_empty_object():
+    part = {"type": "tool_use", "name": "ping"}
+    assert text_chars([part]) == len("ping") + len("{}")
 
 
 def test_tool_use_only_completion_is_a_delivery_not_zero():
     response = {"choices": [{"message": {"content": [{"type": "tool_use", "name": "f"}]}}]}
-    assert blocking_delivery_chars(response) == (True, 1)
+    # The tool name plus the empty object a missing input serializes to.
+    assert blocking_delivery_chars(response) == (True, len("f") + len("{}"))
+
+
+def test_refusal_with_no_content_is_a_delivery():
+    """A moderation refusal reaches the client as output and must not settle at zero."""
+    response = {"choices": [{"message": {"content": None, "refusal": "I can't help with that."}}]}
+    assert blocking_delivery_chars(response) == (True, len("I can't help with that."))
+
+
+def test_non_text_delivered_part_counts_as_one_character_not_zero():
+    """An image or audio part was delivered and billed; it has no character
+    count, so it counts as one character, which floors to one token."""
+    response = {"choices": [{"message": {"content": [{"type": "image_url", "image_url": {"url": "x"}}]}}]}
+    delivered, chars = blocking_delivery_chars(response)
+    assert delivered is True
+    assert chars == 1
+    assert chars_to_tokens(chars) == 1
+
+
+def test_text_and_tool_use_parts_are_not_treated_as_opaque():
+    parts = [{"type": "text", "text": "hi"}, {"type": "tool_use", "name": "f", "input": {}}]
+    assert text_chars(parts) == len("hi") + len("f") + len("{}")

@@ -9,6 +9,8 @@ has no database, no FastAPI, and no route state.
 
 from __future__ import annotations
 
+import json
+
 # Crude character-to-token divisor, used only to price a delivery the provider
 # did not measure.
 CHARS_PER_TOKEN = 4
@@ -17,28 +19,51 @@ _PROMPT_USAGE_KEYS = ("prompt_tokens", "input_tokens")
 _COMPLETION_USAGE_KEYS = ("completion_tokens", "output_tokens")
 _COUNTABLE_USAGE_KEYS = _PROMPT_USAGE_KEYS + _COMPLETION_USAGE_KEYS
 
+# Stands in for a delivered part with no character count (an image, an audio
+# clip). One character: enough to be a delivery, floored to one token.
+_OPAQUE_PART_MARKER = "?"
+
 
 def _part_texts(part) -> list[str]:
     """The character-bearing strings one content part carries.
 
-    A part is a bare string, a `{"text": ...}` dict, or an Anthropic
-    `{"type": "tool_use", "name": ..., "input": ...}` block. A tool_use block
-    is delivered content the upstream bills for: its name and any string-valued
-    input count, mirroring `tool_call_text`. Object-valued input has no honest
-    character count and contributes nothing.
+    A part is a bare string, a `{"text": ...}` dict, an Anthropic
+    `{"type": "tool_use", "name": ..., "input": ...}` block, or some other
+    non-text part (an image, an audio clip, a b64 payload).
+
+    A tool_use block is billed as its name plus its input serialized the same
+    way the translators serialize it (`json.dumps(input or {})`), so an object
+    input is counted in full, not dropped. A non-text part has no honest
+    character count, but it was delivered, so it counts as one character: that
+    keeps it from settling at zero while `chars_to_tokens` floors it to a token.
     """
     if isinstance(part, str):
         return [part]
     if not isinstance(part, dict):
         return []
-    texts: list[str] = []
-    if isinstance(part.get("text"), str):
-        texts.append(part["text"])
     if part.get("type") == "tool_use":
-        for key in ("name", "input"):
-            value = part.get(key)
-            if isinstance(value, str):
-                texts.append(value)
+        texts = [part["name"]] if isinstance(part.get("name"), str) else []
+        raw_input = part.get("input")
+        if isinstance(raw_input, str):
+            texts.append(raw_input)
+        else:
+            texts.append(json.dumps(raw_input or {}, separators=(", ", ": ")))
+        return texts
+    if isinstance(part.get("text"), str):
+        return [part["text"]]
+    return []
+
+
+def _delivered_part_texts(part) -> list[str]:
+    """`_part_texts`, plus the one-character floor for a delivered opaque part.
+
+    Only the delivery path uses this. A non-text part in a completion was billed
+    as output, so it must not settle at zero. A prompt image is counted exactly
+    by `text_chars`, which gives it no characters.
+    """
+    texts = _part_texts(part)
+    if not texts and isinstance(part, dict) and part.get("type") not in (None, "text"):
+        return [_OPAQUE_PART_MARKER]
     return texts
 
 
@@ -164,7 +189,12 @@ def blocking_delivery_chars(response: dict) -> tuple[bool, int]:
                 candidates.append(content)
             elif isinstance(content, list):
                 for part in content:
-                    candidates.extend(_part_texts(part))
+                    candidates.extend(_delivered_part_texts(part))
+            # A refusal is the completion itself when content is None: it
+            # reached the client, so it is billed output.
+            refusal = message.get("refusal")
+            if isinstance(refusal, str):
+                candidates.append(refusal)
             candidates.append(tool_call_text(message.get("tool_calls")))
         for value in candidates:
             if not value.strip():
