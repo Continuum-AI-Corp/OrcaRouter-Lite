@@ -82,10 +82,6 @@ _STREAM_CLIENT_DISCONNECT = "client_disconnect"
 _STREAM_UPSTREAM_ERROR = "upstream_error"
 _STREAM_ADAPTER_ERROR = "adapter_error"
 
-# How an unmeasured-but-delivered request is charged when it ended normally.
-_REMAINING = "remaining"
-_ESTIMATE = "estimate"
-
 
 def _cost_of_usage(
     usage: dict,
@@ -109,9 +105,6 @@ def _unmeasured_charge(
     ending: str,
     prompt_chars: int,
     completion_chars: int,
-    policy: str,
-    cap: int,
-    spent: int,
     model_id: str | None,
     fallback_model: str | None = None,
 ) -> tuple[int, dict | None]:
@@ -124,13 +117,17 @@ def _unmeasured_charge(
       cost nothing measurable and settles at zero; a client that hung up
       before the first byte still caused the prompt to go upstream, so it pays
       the prompt estimate.
-    - Content delivered and the stream ended normally: charged the remaining
-      allowance (`policy=_REMAINING`). A stream that completed without ever
-      reporting usage is anomalous, and a client must not be able to opt out of
-      measurement and keep streaming for free.
-    - Content delivered and the ending was a hangup or a fault on either side:
-      priced from the delivery estimate, which is the most we can honestly know
-      about a delivery nobody measured.
+    - Content delivered on a known-free model: charged nothing.
+    - Content delivered otherwise: priced from the delivery estimate, which is
+      the most we can honestly know about a delivery nobody measured. This is
+      the same price whether the stream ended normally or faulted — the ending
+      does not change what the client received, so it does not change the bill.
+
+    Every delivered byte is counted (`completion_chars`), so pricing per
+    character already stops a client from opting out of measurement and
+    streaming for free. Charging the whole remaining allowance on top of that
+    would not fail closed more safely; it would let one request from a provider
+    that omits token counts consume a key's entire lifetime budget.
 
     A disconnect *after* a completed stream is not a separate ending: `ending`
     is already `_STREAM_COMPLETED` by then, so where the client chose to hang up
@@ -138,14 +135,11 @@ def _unmeasured_charge(
 
     Returns the charge together with the token counts it was derived from, so
     the request-log row explains its own `cost_microcents` instead of recording
-    a cost with zero tokens behind it. The counts are `None` for the branches
-    that charge nothing and for the fail-closed raise, where no honest token
-    estimate exists.
+    a cost with zero tokens behind it. The counts are `None` for the branch
+    that charges nothing, where no honest token estimate exists.
     """
     # A settlement that ran without an ending recorded can only mean the
-    # consumer left before the provider finished. Priced as the hangup it is:
-    # treating it as a normal completion would charge the whole remaining
-    # allowance.
+    # consumer left before the provider finished. Priced as the hangup it is.
     effective_ending = (
         _STREAM_CLIENT_DISCONNECT
         if ending == _STREAM_IN_FLIGHT
@@ -163,13 +157,9 @@ def _unmeasured_charge(
                 estimate,
             )
         return 0, None
-    if effective_ending == _STREAM_COMPLETED and policy == _REMAINING:
+    if effective_ending == _STREAM_COMPLETED:
         # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
-        # completion costs nothing. Every other model pays the remaining
-        # allowance, including one that IS in the catalog at a real price —
-        # checking only for a catalog hit would price a gpt-4o-mini stream at
-        # zero, which is the "opt out of measurement and stream for free" this
-        # branch exists to prevent. An unknown price pays it too.
+        # completion costs nothing.
         m = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
         if (
             m is not None
@@ -177,7 +167,6 @@ def _unmeasured_charge(
             and not m.output_cost_per_token
         ):
             return 0, None
-        return max(0, cap - spent), None
     estimate = estimate_usage(prompt_chars, completion_chars)
     # The charge is floored at one microcent, the smallest amount the counter can
     # represent: a short answer estimates below that and would truncate to zero,
@@ -924,15 +913,6 @@ async def execute_chat(
             # (`_unmeasured_charge`), so a handler cannot price its own ending
             # differently from a sibling.
             stream_ending = _STREAM_IN_FLIGHT
-            # Whether this request asked the provider for a usage frame. We ask
-            # unless the client explicitly opted out. The distinction decides
-            # what an unmeasured completion costs: a provider that ignored our
-            # request is failing to measure something we needed (fail closed),
-            # while a client that declined usage told us up front, and is then
-            # charged for what it actually received.
-            usage_requested = bool(
-                (completion_kwargs.get("stream_options") or {}).get("include_usage")
-            )
 
             async def _finalize() -> None:
                 """Write the request log row exactly once.
@@ -1043,10 +1023,10 @@ async def execute_chat(
                     never from which exception handler happened to run. The
                     rules that matters here:
 
-                    - we asked for usage and the provider sent none: the
-                      completed delivery is charged the remaining allowance
-                      (fail-closed), because that is an upstream failing to
-                      report what the cap needs;
+                    - we asked for usage and the provider sent none: priced
+                      from the delivery, the same as every other unmeasured
+                      ending — the client received those characters, so they
+                      are what gets charged;
                     - the client declined usage frames up front: priced from
                       the delivery, since we were told not to ask;
                     - a hangup or a fault on either side: priced from what
@@ -1068,9 +1048,6 @@ async def execute_chat(
                                 text_chars(m.content) for m in body.messages
                             ),
                             completion_chars=agg_output_chars,
-                            policy=_REMAINING if usage_requested else _ESTIMATE,
-                            cap=budget[0],
-                            spent=budget[1],
                             model_id=row_values.get("model_resolved"),
                             fallback_model=row_values.get("model_requested"),
                         )
@@ -1490,14 +1467,12 @@ async def execute_chat(
         settle_amount = log.cost_microcents
         # A budgeted key whose successful response carries no countable usage
         # (a provider that answered without token counts, or with a frame that
-        # has none) has an unknown cost. Unlike the streaming path — where a
-        # stream that completed without ever reporting usage is anomalous and
-        # priced fail-closed — a blocking response is here in full, so what it
-        # actually returned can be priced: the same delivery-estimate the fault
-        # endings use. Charging the whole remaining allowance here would bill a
-        # customer their lifetime budget for one ordinary request whose upstream
-        # omits a field, which is a far worse failure than the one the rule
-        # exists to prevent.
+        # has none) has an unknown cost. The response is here in full, so what
+        # it actually returned can be priced: the same delivery-estimate every
+        # unmeasured ending uses. Charging the whole remaining allowance would
+        # bill a customer their lifetime budget for one ordinary request whose
+        # upstream omits a field, which is a far worse failure than the one the
+        # rule exists to prevent.
         #
         # Gated on a delivered completion dict AND delivered content: a request
         # that failed before the upstream answered (response == {}, e.g. the
@@ -1549,12 +1524,6 @@ async def execute_chat(
                     ),
                     prompt_chars=sum(text_chars(m.content) for m in body.messages),
                     completion_chars=completion_chars,
-                    # A delivered blocking completion is priced from what it
-                    # returned; `_REMAINING` is the streaming path's rule for a
-                    # stream that completed without ever reporting usage.
-                    policy=_ESTIMATE,
-                    cap=budget[0],
-                    spent=budget[1],
                     model_id=log.model_resolved,
                     fallback_model=log.model_requested,
                 )
