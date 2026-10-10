@@ -22,15 +22,23 @@ _COUNTABLE_USAGE_KEYS = (
 
 
 def text_chars(content) -> int:
-    """Character count of message content, for a str or a list of text parts."""
+    """Character count of message content, for a str or a list of text parts.
+
+    Anthropic-style content may be either a plain string or a list of parts,
+    where each part may be a dict (`{"text": "..."}`) or a plain `str`. Both
+    shapes are counted so a prompt prices the same characters the completion
+    delivery path (`blocking_delivery_chars`) would count.
+    """
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
-        return sum(
-            len(part["text"])
-            for part in content
-            if isinstance(part, dict) and isinstance(part.get("text"), str)
-        )
+        total = 0
+        for part in content:
+            if isinstance(part, str):
+                total += len(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                total += len(part["text"])
+        return total
     return 0
 
 
