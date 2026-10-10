@@ -91,8 +91,9 @@ async def ensure_budget_columns(engine) -> None:
         is_postgres = engine.dialect.name == "postgresql"
 
         if BudgetPark.__tablename__ not in tables:
-            # `create_all` covers fresh databases; this covers upgrades whose
-            # schema predates the table. `checkfirst` re-reads the catalog, and
+            # The only creator of this table at boot: app/main.py's create_all
+            # skips it, so fresh databases and upgrades both come through here.
+            # `checkfirst` re-reads the catalog, and
             # that read cannot see another boot's uncommitted CREATE — so two
             # workers both get here and one loses anyway. It goes through
             # `_apply_ddl` for the same reason the ALTER does: losing that race

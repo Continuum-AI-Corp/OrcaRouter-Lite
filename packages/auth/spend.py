@@ -183,10 +183,10 @@ async def record_unsettled_spend(
         # obligation later, billing it twice.
         #
         # The probe must reach a decision even if the task is cancelled again
-        # while it runs. `asyncio.shield` does not guarantee that: a second
-        # cancel interrupts the await, and the amount would be neither held nor
-        # confirmed. The probe runs as its own task, awaited until it finishes,
-        # and the cancellation is re-raised afterwards.
+        # while it runs. Shielding it alone is not enough: a second cancel
+        # interrupts the await, and the amount would be neither held nor
+        # confirmed. So the loop keeps waiting on the probe task until it
+        # finishes, and the cancellation is re-raised afterwards.
         probe = asyncio.ensure_future(
             _park_is_durable(
                 trace_id=str(trace_id),
