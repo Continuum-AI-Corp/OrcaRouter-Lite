@@ -57,8 +57,7 @@ from packages.db.units import MICROCENTS_PER_CENT as MICROCENTS_PER_CENT
 # stops its machine whenever it goes idle: an in-memory obligation is lost on
 # the next cold start, which reopens the cap for exactly the key the failure
 # was about to protect. `_unsettled` below is the hold for when even that write
-# cannot be made. Preserve each settlement's trace_id so an already-charged
-# settlement cannot cause another settlement to be discarded.
+# cannot be made.
 #
 # One entry is retained per settlement trace: an already-charged settlement
 # must not clear the hold of another trace, so each trace_id gets its own

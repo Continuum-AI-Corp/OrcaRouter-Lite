@@ -157,16 +157,16 @@ def _unmeasured_charge(
                 estimate,
             )
         return 0, None
-    if effective_ending == _STREAM_COMPLETED:
-        # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
-        # completion costs nothing.
-        m = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
-        if (
-            m is not None
-            and not m.input_cost_per_token
-            and not m.output_cost_per_token
-        ):
-            return 0, None
+    # A catalog entry priced 0.0 in and 0.0 out is a known-free model: the
+    # completion costs nothing, regardless of how it ended. The ending does not
+    # change what the upstream agreed to bill for that delivery.
+    m = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
+    if (
+        m is not None
+        and not m.input_cost_per_token
+        and not m.output_cost_per_token
+    ):
+        return 0, None
     estimate = estimate_usage(prompt_chars, completion_chars)
     # The charge is floored at one microcent, the smallest amount the counter can
     # represent: a short answer estimates below that and would truncate to zero,
