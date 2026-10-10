@@ -66,8 +66,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     engine = get_engine(settings.database_url)
 
+    # budget_parks and budget_folded are created only by
+    # ensure_budget_columns, through the race-tolerant _apply_ddl path. Every
+    # worker runs this at boot, so an unguarded CREATE here would let two
+    # workers race on the same table and crash the loser's lifespan on a
+    # duplicate pg_class/pg_type entry.
+    from packages.db.models.budget_folded import BudgetFolded
+    from packages.db.models.budget_park import BudgetPark
+
+    deferred = {BudgetPark.__table__, BudgetFolded.__table__}
+    boot_tables = [
+        table for table in Base.metadata.sorted_tables
+        if table not in deferred
+    ]
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(
+            lambda sync: Base.metadata.create_all(sync, tables=boot_tables)
+        )
 
     # create_all only makes missing tables, never alters existing ones. Bring
     # existing deployments (SQLite volume, Postgres) up to date with columns added

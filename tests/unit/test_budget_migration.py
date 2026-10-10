@@ -60,6 +60,10 @@ async def _legacy_deploy_engine(tmp_sqlite_url):
     async with engine.begin() as conn:
         await conn.execute(text("DROP INDEX IF EXISTS ix_requests_log_api_key_spend"))
         await conn.execute(text("ALTER TABLE api_keys DROP COLUMN spent_microcents"))
+        # The durable park table is newer still: the last release had no
+        # budget_parks, so the upgrade has to create it.
+        await conn.execute(text("DROP TABLE IF EXISTS budget_parks"))
+        await conn.execute(text("DROP TABLE IF EXISTS budget_folded"))
     await engine.dispose()
     return build_engine(tmp_sqlite_url)
 
@@ -239,10 +243,9 @@ async def test_ensure_budget_columns_survives_a_racing_boot(tmp_sqlite_url, monk
 async def test_repair_raises_a_counter_staled_by_traffic(tmp_sqlite_url):
     """Traffic logged after one boot's seed is counted by the next.
 
-    Until #161 wires the per-request charge, the counter only moves at boot:
-    requests keep landing in requests_log while a seeded key's spent_microcents
-    sits frozen, so a counter from an earlier boot is stale by everything that
-    flowed since. A seed gated on `= 0` can never see that traffic (the counter
+    The counter is rebuilt at boot from request logs: requests keep landing in
+    requests_log while a seeded key's spent_microcents sits frozen, so a counter
+    from an earlier boot is stale by everything that flowed since. A seed gated on `= 0` can never see that traffic (the counter
     is already nonzero), and the undercount is permanent; the every-boot
     monotonic repair re-aggregates and closes the window at each restart.
     """
@@ -268,7 +271,7 @@ async def test_repair_raises_a_counter_staled_by_traffic(tmp_sqlite_url):
 async def test_repair_clamps_to_the_budget_cap(tmp_sqlite_url):
     """Re-aggregating never writes spend past the lifetime cap.
 
-    charge_budget (once #161 wires it) deliberately clamps a breaching request's
+    charge_budget deliberately clamps a breaching request's
     counter to the cap while the log row records the true, larger cost — so
     `SUM(logs) > cap` is correct steady state, and an unclamped re-seed would
     both overshoot the cap and undo that clamp on every boot. w1's cap is 100
@@ -357,3 +360,44 @@ async def test_cap_scale_follows_the_shared_constant(tmp_sqlite_url, monkeypatch
     finally:
         await engine.dispose()
 
+
+
+async def test_budget_parks_is_created_by_the_guarded_path_on_upgrade(tmp_sqlite_url):
+    """An upgrade must create budget_parks through ensure_budget_columns.
+
+    The boot-time create_all skips the table, so the guarded branch is the only
+    creator. Creating it unguarded there would let racing workers crash the
+    loser on a duplicate catalog entry.
+    """
+    from packages.db.models.base import Base
+    from packages.db.models.budget_folded import BudgetFolded
+    from packages.db.models.budget_park import BudgetPark
+
+    engine = await _legacy_deploy_engine(tmp_sqlite_url)
+    try:
+        assert "budget_parks" not in await _table_names(engine)
+        assert "budget_folded" not in await _table_names(engine)
+
+        # Mirror app.main: create_all with the ledger tables excluded.
+        deferred = {BudgetPark.__table__, BudgetFolded.__table__}
+        boot_tables = [t for t in Base.metadata.sorted_tables if t not in deferred]
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=boot_tables))
+        assert "budget_parks" not in await _table_names(engine)
+        assert "budget_folded" not in await _table_names(engine)
+
+        await ensure_budget_columns(engine)
+        assert "budget_parks" in await _table_names(engine)
+        assert "budget_folded" in await _table_names(engine)
+
+        # A worker that races the same boot must not fail on the existing tables.
+        await ensure_budget_columns(engine)
+        assert "budget_parks" in await _table_names(engine)
+        assert "budget_folded" in await _table_names(engine)
+    finally:
+        await engine.dispose()
+
+
+async def _table_names(engine) -> set[str]:
+    async with engine.connect() as conn:
+        return set(await conn.run_sync(lambda sync: sa_inspect(sync).get_table_names()))

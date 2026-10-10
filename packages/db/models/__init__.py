@@ -2,6 +2,8 @@
 
 from packages.db.models.api_key import ApiKey
 from packages.db.models.base import Base, SoftDeleteMixin, TimestampMixin, UUIDMixin
+from packages.db.models.budget_folded import BudgetFolded
+from packages.db.models.budget_park import BudgetPark
 from packages.db.models.provider_key import ProviderKey
 from packages.db.models.quality_score_override import QualityScoreOverride
 from packages.db.models.quality_score_snapshot import QualityScoreSnapshot
@@ -15,6 +17,8 @@ __all__ = [
     "TimestampMixin",
     "UUIDMixin",
     "ApiKey",
+    "BudgetFolded",
+    "BudgetPark",
     "ProviderKey",
     "QualityScoreOverride",
     "QualityScoreSnapshot",
