@@ -1,0 +1,7 @@
+{
+  "$comment": "OrcaCode Review local settings. block_on: severities that count as blocking (\"P0,P1\", or \"\" for none). language: en | zh | ja | ko. exclude: extra globs never to review. rules: [{ path, rule | rule_file, replace? }] extra checklists per file pattern.",
+  "block_on": "P0,P1",
+  "language": "en",
+  "exclude": [],
+  "rules": []
+}
