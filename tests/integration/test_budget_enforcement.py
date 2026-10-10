@@ -492,3 +492,62 @@ async def test_unmeasured_streaming_delivery_is_priced_not_wholesaled(
     assert 0 < spent < cap
     rows = await _log_rows(factory)
     assert rows[0].cost_microcents == spent
+
+
+async def test_measured_but_unpriceable_stream_is_floored_not_zero(
+    budget_app, monkeypatch
+):
+    """A stream with countable tokens but no priceable model charges the floor.
+
+    Regression for the P1: the streaming settlement returned the row's 0 cost
+    untouched when usage was countable, so a custom/unlisted model streamed at
+    zero recorded cost forever. The blocking twin floors such completions at 1
+    microcent; the stream must do the same.
+    """
+    client, factory, key_id = budget_app
+
+    now = int(time.time())
+    chunks = [
+        {
+            "id": "chatcmpl-1", "object": "chat.completion.chunk",
+            "model": "my-private-model", "created": now,
+            "choices": [{"index": 0, "delta": {"content": "Hello there"},
+                         "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-1", "object": "chat.completion.chunk",
+            "model": "my-private-model", "created": now,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20,
+                      "total_tokens": 30},
+        },
+    ]
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(return_value=_stream_iter_from(chunks))
+
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    # Request the unlisted model directly: both the requested and the served
+    # id must miss the catalog, or Tier 2 prices the request normally and the
+    # floor is never exercised.
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "my-private-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert r.status_code == 200
+    spent = await _spent(factory, key_id)
+    cap = 1 * MICROCENTS_PER_CENT
+    # Fail closed, but bounded: the cap advances without being consumed whole.
+    assert 0 < spent < cap
+    rows = await _log_rows(factory)
+    assert rows[0].cost_microcents == spent

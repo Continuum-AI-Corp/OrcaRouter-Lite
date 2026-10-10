@@ -1042,6 +1042,25 @@ async def execute_chat(
                     accounts for.
                     """
                     actual = row_values.get("cost_microcents") or 0
+                    if (
+                        budget is not None
+                        and countable_usage(
+                            agg_usage, delivered=agg_output_chars > 0
+                        )
+                        and not actual
+                        and not _has_known_price(
+                            litellm_cost_usd=(agg_usage or {}).get("cost_usd"),
+                            model_id=row_values.get("model_resolved"),
+                            fallback_model=row_values.get("model_requested"),
+                        )
+                    ):
+                        # Measured but unpriceable, same as the blocking twin:
+                        # tokens with no price any tier can honour (a custom
+                        # upstream cannot cost, or the model is absent from the
+                        # catalog). Fail closed — the counter must not stand
+                        # still while the upstream still bills us.
+                        actual = 1
+                        row_values["cost_microcents"] = actual
                     if budget is not None and not countable_usage(
                         agg_usage, delivered=agg_output_chars > 0
                     ):
