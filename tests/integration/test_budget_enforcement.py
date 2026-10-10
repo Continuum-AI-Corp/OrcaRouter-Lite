@@ -400,3 +400,95 @@ async def test_an_unpriceable_completion_is_not_charged_the_whole_cap(
     # The row records the same amount the counter moved by.
     rows = await _log_rows(factory)
     assert rows[0].cost_microcents == spent
+
+
+def _unmeasured_chunks(*, content: str, tool_calls: list | None = None) -> list[dict]:
+    """A stream with no `usage` frame — the delivery is the only pricing signal.
+
+    This is the path `_unmeasured_charge` owns: the provider sent characters
+    through `delta.content` (and optionally `delta.tool_calls`) and then ended
+    with `finish_reason: "stop"` — no token counts ever arrived, so the charge
+    is computed from what the client was delivered, exactly as the blocking
+    path does.
+    """
+    now = int(time.time())
+    frames: list[dict] = []
+    if content:
+        frames.append({
+            "id": "chatcmpl-1", "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini", "created": now,
+            "choices": [{"index": 0, "delta": {"content": content},
+                         "finish_reason": None}],
+        })
+    if tool_calls:
+        frames.append({
+            "id": "chatcmpl-1", "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini", "created": now,
+            "choices": [{"index": 0, "delta": {"tool_calls": tool_calls},
+                         "finish_reason": None}],
+        })
+    frames.append({
+        "id": "chatcmpl-1", "object": "chat.completion.chunk",
+        "model": "gpt-4o-mini", "created": now,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    })
+    return frames
+
+
+async def _stream_iter_from(chunks):
+    for c in chunks:
+        yield c
+
+
+@pytest.mark.parametrize(
+    "chunks_fixture",
+    [
+        pytest.param(
+            lambda: _unmeasured_chunks(content="Hello there"),
+            id="content-only",
+        ),
+        pytest.param(
+            lambda: _unmeasured_chunks(
+                content="Tool call: ",
+                tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                             "function": {"name": "who", "arguments": ""}}],
+            ),
+            id="content-plus-tool-call",
+        ),
+    ],
+)
+async def test_unmeasured_streaming_delivery_is_priced_not_wholesaled(
+    budget_app, monkeypatch, chunks_fixture
+):
+    """A streamed delivery that carries no usage frame must be priced per the
+    characters the client received — never the whole remaining budget.
+
+    Regression for the P1: the old whole-remainder charge (`cap - spent`)
+    would consume the entire key on a single request. The P2: streamed
+    tool-call arguments were not counted as delivered content. Both are fixed
+    in `app/routes/chat.py` (`_unmeasured_charge` + the streaming delta loop),
+    and this locks the behavior at the integration boundary.
+    """
+    client, factory, key_id = budget_app
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(
+        return_value=_stream_iter_from(chunks_fixture())
+    )
+
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    result = await _chat(client, stream=True)
+
+    assert result["status"] == 200
+    spent = await _spent(factory, key_id)
+    cap = 1 * MICROCENTS_PER_CENT
+    # Bounded: the charge is proportional to delivery size, not cap size.
+    assert 0 < spent < cap
+    rows = await _log_rows(factory)
+    assert rows[0].cost_microcents == spent
