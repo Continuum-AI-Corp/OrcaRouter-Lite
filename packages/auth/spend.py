@@ -60,9 +60,12 @@ from packages.db.units import MICROCENTS_PER_CENT as MICROCENTS_PER_CENT
 # cannot be made. Preserve each settlement's trace_id so an already-charged
 # settlement cannot cause another settlement to be discarded.
 #
-# One entry per key, not per settlement: a database outage that outlasts many
-# requests would otherwise grow this without bound, since an entry only leaves
-# when a fold commits and no fold can commit while the database is down.
+# One entry is retained per settlement trace: an already-charged settlement
+# must not clear the hold of another trace, so each trace_id gets its own
+# obligation rather than being merged into a single per-key total. That leaves
+# a trace per settled trace retained in process memory while the database stays
+# down — bounded by the in-flight settlement rate, not capped. A cap that
+# merges traces reintroduces the race this structure exists to close.
 _unsettled: dict[str, dict[str, int]] = {}
 
 
@@ -350,6 +353,12 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                     if room > 0:
                         trim = (trace_id, microcents, microcents - room)
                         move += room
+                        # Record the full original row amount so reconciliation
+                        # credits the coexisting memory hold in full. The row
+                        # below is only trimmed to the remainder, so the hold
+                        # counts the trimmed remainder: original hold minus what
+                        # the fold actually moved.
+                        billed_amounts[trace_id] = microcents
                     break
                 # Even with no spend to move, already-charged rows may have
                 # been deleted and their corresponding holds need reconciliation.
