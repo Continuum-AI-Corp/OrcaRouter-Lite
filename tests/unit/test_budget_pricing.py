@@ -70,7 +70,8 @@ def test_estimate_usage_prices_both_sides_from_characters():
 
 def test_text_chars_across_str_and_content_parts():
     assert text_chars("hello") == 5
-    assert text_chars([{"type": "text", "text": "ab"}, {"type": "image_url"}]) == 2
+    # A non-text part is billed, so it counts as one character, not zero.
+    assert text_chars([{"type": "text", "text": "ab"}, {"type": "image_url"}]) == 3
     assert text_chars(None) == 0
 
 
@@ -237,3 +238,9 @@ def test_non_text_delivered_part_counts_as_one_character_not_zero():
 def test_text_and_tool_use_parts_are_not_treated_as_opaque():
     parts = [{"type": "text", "text": "hi"}, {"type": "tool_use", "name": "f", "input": {}}]
     assert text_chars(parts) == len("hi") + len("f") + len("{}")
+
+
+def test_image_only_prompt_is_not_priced_at_zero():
+    """A vision prompt with no text still sent billed input. It must floor to a token."""
+    content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+    assert chars_to_tokens(text_chars(content)) == 1

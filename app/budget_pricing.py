@@ -51,20 +51,12 @@ def _part_texts(part) -> list[str]:
         return texts
     if isinstance(part.get("text"), str):
         return [part["text"]]
-    return []
-
-
-def _delivered_part_texts(part) -> list[str]:
-    """`_part_texts`, plus the one-character floor for a delivered opaque part.
-
-    Only the delivery path uses this. A non-text part in a completion was billed
-    as output, so it must not settle at zero. A prompt image is counted exactly
-    by `text_chars`, which gives it no characters.
-    """
-    texts = _part_texts(part)
-    if not texts and isinstance(part, dict) and part.get("type") not in (None, "text"):
-        return [_OPAQUE_PART_MARKER]
-    return texts
+    if part.get("type") in (None, "text"):
+        return []
+    # A non-text part (image, audio, tool_result, ...) has no honest character
+    # count, but it was sent or delivered and is billed. Count it as one
+    # character, so it floors to a token and never prices at zero.
+    return [_OPAQUE_PART_MARKER]
 
 
 def text_chars(content) -> int:
@@ -189,7 +181,7 @@ def blocking_delivery_chars(response: dict) -> tuple[bool, int]:
                 candidates.append(content)
             elif isinstance(content, list):
                 for part in content:
-                    candidates.extend(_delivered_part_texts(part))
+                    candidates.extend(_part_texts(part))
             # A refusal is the completion itself when content is None: it
             # reached the client, so it is billed output.
             refusal = message.get("refusal")
