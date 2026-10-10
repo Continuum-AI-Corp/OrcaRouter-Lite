@@ -32,6 +32,7 @@ from app.budget_pricing import (
     blocking_delivery_chars,
     countable_usage,
     estimate_usage,
+    message_chars,
     text_chars,
     tool_call_text,
 )
@@ -1041,12 +1042,15 @@ async def execute_chat(
                     accounts for.
                     """
                     actual = row_values.get("cost_microcents") or 0
-                    if budget is not None and not countable_usage(agg_usage):
+                    if budget is not None and not countable_usage(
+                        agg_usage, delivered=agg_output_chars > 0
+                    ):
                         charge, estimate = _unmeasured_charge(
                             delivered=agg_output_chars > 0,
                             ending=stream_ending,
                             prompt_chars=sum(
-                                text_chars(m.content) for m in body.messages
+                                message_chars(m.content, m.tool_calls)
+                                for m in body.messages
                             ),
                             completion_chars=agg_output_chars,
                             model_id=row_values.get("model_resolved"),
@@ -1217,7 +1221,7 @@ async def execute_chat(
                             # tool_call_text so both paths price the same
                             # delivery consistently. Arguments sent as an object
                             # rather than a string have no honest character count.
-                            chars += tool_call_text(delta.get("tool_calls"))
+                            chars += len(tool_call_text(delta.get("tool_calls")))
                             agg_output_chars += chars
                     last_d = d
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
@@ -1497,7 +1501,10 @@ async def execute_chat(
                 # Unmeasured: no countable usage at all. Priced from what the
                 # response returned, which is in full here.
                 (
-                    not countable_usage(response.get("usage"))
+                    not countable_usage(
+                        response.get("usage"),
+                        delivered=blocking_delivery_chars(response)[0],
+                    )
                     and blocking_delivery_chars(response)[0]
                 )
                 or (
@@ -1516,7 +1523,10 @@ async def execute_chat(
                 )
             )
         ):
-            if countable_usage(response.get("usage")):
+            if countable_usage(
+                response.get("usage"),
+                delivered=blocking_delivery_chars(response)[0],
+            ):
                 # Measured but unpriceable. The counter must not stand still
                 # while the upstream still bills us, so charge the floor: one
                 # microcent per such request exhausts the cap eventually, which
@@ -1530,7 +1540,9 @@ async def execute_chat(
                     ending=(
                         _STREAM_COMPLETED if delivered else _STREAM_UPSTREAM_ERROR
                     ),
-                    prompt_chars=sum(text_chars(m.content) for m in body.messages),
+                    prompt_chars=sum(
+                        message_chars(m.content, m.tool_calls) for m in body.messages
+                    ),
                     completion_chars=completion_chars,
                     model_id=log.model_resolved,
                     fallback_model=log.model_requested,
