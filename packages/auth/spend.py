@@ -177,9 +177,20 @@ async def record_unsettled_spend(
         ):
             return
     except asyncio.CancelledError:
-        # `_insert_park` only raises the cancellation unwinding the caller —
-        # and the amount still has to be held before it propagates.
-        _hold(key, str(trace_id), microcents)
+        # The cancellation can land after the park commit already applied. Hold
+        # only if the row is not durable: a durable row with a memory hold on
+        # top lets another worker fold the row and this worker re-file the same
+        # obligation later, billing it twice. The probe is shielded so the
+        # cancellation that brought us here cannot cut it short.
+        durable = await asyncio.shield(
+            _park_is_durable(
+                trace_id=str(trace_id),
+                api_key_id=key,
+                expected_microcents=microcents,
+            )
+        )
+        if not durable:
+            _hold(key, str(trace_id), microcents)
         raise
     _hold(key, str(trace_id), microcents)
 

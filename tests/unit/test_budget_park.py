@@ -7,6 +7,7 @@ oldest debt first and never double-bills, and a row already present in the
 request log is cleared instead of billed twice.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -256,3 +257,40 @@ async def test_precheck_treats_an_unreadable_ledger_as_full_debt(factory, monkey
     monkeypatch.setattr(spend, "pending_parked_spend", _unreadable)
     async with factory() as s:
         assert await budget_precheck(s, "k1", cap_microcents=777) == 777
+
+
+async def test_cancel_after_a_landed_park_commit_leaves_no_hold(factory, monkeypatch):
+    """A commit that landed before the cancellation is durable: no memory hold.
+
+    A hold alongside the durable row lets another worker fold the row and this
+    worker re-file the same obligation later, billing it twice.
+    """
+    await _make_key(factory, key_id="k", spent=0)
+    real_insert = spend._insert_park
+
+    async def insert_then_cancel(**kw):
+        assert await real_insert(**kw)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(spend, "_insert_park", insert_then_cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await record_unsettled_spend(trace_id="t", api_key_id="k", microcents=600)
+    monkeypatch.setattr(spend, "_insert_park", real_insert)
+
+    assert spend._unsettled.get("k") in (None, {})
+    await settle_parked_spend("k", cap_microcents=10_000)
+    await settle_parked_spend("k", cap_microcents=10_000)
+    assert await _spent(factory, "k") == 600
+
+
+async def test_cancel_before_any_commit_still_holds_the_amount(factory, monkeypatch):
+    """If the park never landed, a cancellation must still hold the obligation."""
+    await _make_key(factory, key_id="k", spent=0)
+
+    async def insert_cancelled(**kw):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(spend, "_insert_park", insert_cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await record_unsettled_spend(trace_id="t", api_key_id="k", microcents=600)
+    assert spend._unsettled.get("k") == {"t": 600}
