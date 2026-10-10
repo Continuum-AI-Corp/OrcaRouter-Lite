@@ -73,6 +73,17 @@ def test_text_chars_across_str_and_content_parts():
     assert text_chars(None) == 0
 
 
+def test_text_chars_counts_bare_string_parts():
+    """Anthropic-style content may be a list of plain strings, not just dicts.
+
+    Mirrors `blocking_delivery_chars`, which accepts a bare `str` part: a
+    prompt and a completion carrying the same bare-string content must price
+    the same characters rather than the prompt pricing at zero.
+    """
+    assert text_chars(["hello", "world"]) == 10
+    assert text_chars([{"text": "ab"}, "cd", {"no": "text"}, 42]) == 4
+
+
 def test_tool_call_text_counts_names_and_string_arguments():
     calls = [
         {"function": {"name": "search", "arguments": '{"q":"x"}'}},
