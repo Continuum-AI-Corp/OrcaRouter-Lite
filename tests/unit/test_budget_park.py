@@ -331,3 +331,109 @@ async def test_second_cancel_during_the_durability_probe_still_decides_the_hold(
     await task
     # No durable row exists, so the probe decided "not durable" and the amount is held.
     assert spend._unsettled.get("k") == {"t": 600}
+
+
+async def test_folded_trace_is_never_rebilled_across_workers(factory):
+    """Worker A holds T while worker B folds T's row: no double charge.
+
+    The commit landed but the ack was lost, so A's hold coexists with its
+    durable row. B's fold bills the row and leaves a tombstone; A's next
+    pre-check must drop the stale hold instead of re-filing it.
+    """
+    from packages.db.models.budget_folded import BudgetFolded
+
+    await _make_key(factory, key_id="k", spent=0)
+    async with factory() as s:
+        s.add(BudgetPark(trace_id="T", api_key_id="k", microcents=100))
+        await s.commit()
+    # A's view: the hold survived beside its durable row.
+    spend._hold("k", "T", 100)
+    # B's fold (B never saw the hold): bills 100, deletes the row.
+    holds = spend._unsettled.pop("k")
+    assert await settle_parked_spend("k", cap_microcents=10_000) == 100
+    spend._unsettled["k"] = holds
+    # A's pre-check: the tombstone drops the hold, nothing is re-filed.
+    assert await settle_parked_spend("k", cap_microcents=10_000) == 0
+    assert await _spent(factory, "k") == 100
+    assert await _park_rows(factory, "k") == []
+    assert spend._unsettled.get("k") in (None, {})
+    async with factory() as s:
+        tombstoned = (
+            await s.execute(
+                select(BudgetFolded.trace_id).where(BudgetFolded.api_key_id == "k")
+            )
+        ).scalars().all()
+    assert list(tombstoned) == ["T"]
+
+
+async def test_tombstoned_hold_is_not_counted_in_pending(factory):
+    """A hold whose trace was already folded is spent, not outstanding."""
+    from packages.db.models.budget_folded import BudgetFolded
+
+    await _make_key(factory, key_id="k", spent=100)
+    async with factory() as s:
+        s.add(BudgetFolded(trace_id="T", api_key_id="k", microcents=100))
+        await s.commit()
+    spend._hold("k", "T", 100)
+    assert await pending_parked_spend("k") == 0
+
+
+async def test_stale_refiled_row_is_deleted_unbilled(factory):
+    """A row re-filed after its trace was tombstoned is removed, not billed.
+
+    The race window: A re-inserts T after B's fold tombstoned it but before
+    A's fold reads. The fold must delete the stale row without moving the
+    counter a second time.
+    """
+    from packages.db.models.budget_folded import BudgetFolded
+
+    await _make_key(factory, key_id="k", spent=100)
+    async with factory() as s:
+        s.add(BudgetFolded(trace_id="T", api_key_id="k", microcents=100))
+        s.add(BudgetPark(trace_id="T", api_key_id="k", microcents=100))
+        await s.commit()
+    assert await settle_parked_spend("k", cap_microcents=10_000) == 0
+    assert await _spent(factory, "k") == 100
+    assert await _park_rows(factory, "k") == []
+
+
+async def test_second_cancel_during_probe_with_a_durable_row_leaves_no_hold(
+    factory, monkeypatch
+):
+    """A second cancel during the probe must still honor a durable row.
+
+    Twin of the absent-row case: the probe runs to its decision either way,
+    so a landed commit never leaves a hold behind even under repeated
+    cancellation.
+    """
+    await _make_key(factory, key_id="k", spent=0)
+    async with factory() as s:
+        s.add(BudgetPark(trace_id="t", api_key_id="k", microcents=600))
+        await s.commit()
+
+    async def insert_cancelled(**kw):
+        raise asyncio.CancelledError()
+
+    slow_probe_started = asyncio.Event()
+
+    real_probe = spend._park_is_durable
+
+    async def slow_probe(**kw):
+        slow_probe_started.set()
+        await asyncio.sleep(0.05)
+        return await real_probe(**kw)
+
+    monkeypatch.setattr(spend, "_insert_park", insert_cancelled)
+    monkeypatch.setattr(spend, "_park_is_durable", slow_probe)
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError):
+            await spend.record_unsettled_spend(trace_id="t", api_key_id="k", microcents=600)
+
+    task = asyncio.create_task(run())
+    await slow_probe_started.wait()
+    task.cancel()  # second cancel while the probe is in flight
+    await task
+    assert spend._unsettled.get("k") in (None, {})
+    await settle_parked_spend("k", cap_microcents=10_000)
+    assert await _spent(factory, "k") == 600

@@ -39,6 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.db.models.api_key import ApiKey
+from packages.db.models.budget_folded import BudgetFolded
 from packages.db.models.budget_park import BudgetPark
 from packages.db.models.request_log import RequestLog
 
@@ -233,6 +234,19 @@ async def pending_parked_spend(api_key_id: str) -> int | None:
                     )
                 )
             ).all()
+            # A tombstoned trace was already folded into the counter by some
+            # worker: neither its rows nor its holds are outstanding anymore.
+            # A stale re-filed row for one still sits in the table until a
+            # fold deletes it unbilled.
+            folded = set(
+                (
+                    await s.execute(
+                        select(BudgetFolded.trace_id).where(
+                            BudgetFolded.api_key_id == key
+                        )
+                    )
+                ).scalars().all()
+            )
     except Exception:
         return None
     # Subtract only the part of each hold already represented durably.
@@ -240,11 +254,16 @@ async def pending_parked_spend(api_key_id: str) -> int | None:
     durable_amounts = {
         trace_id: int(microcents) for trace_id, microcents in rows
     }
-    stored = sum(durable_amounts.values())
+    stored = sum(
+        microcents
+        for trace_id, microcents in durable_amounts.items()
+        if trace_id not in folded
+    )
 
     held_amount = sum(
         max(0, amount - durable_amounts.get(trace_id, 0))
         for trace_id, amount in held.items()
+        if trace_id not in folded
     )
     return stored + held_amount
 
@@ -277,6 +296,12 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
     guards on each: two workers folding the same park cannot double-bill it,
     because the loser's UPDATE or DELETE matches nothing and its next request
     folds what the winner left.
+
+    Every fully-billed trace also leaves a tombstone (`budget_folded`) in the
+    same transaction. A memory hold that outlives another worker's fold — the
+    hold is process-local, the ledger is shared — is dropped at re-file time
+    instead of being re-inserted, and a row re-filed in the race window is
+    deleted unbilled here. Either way the obligation is counted exactly once.
     """
     from packages.db import session as session_mod
 
@@ -286,20 +311,50 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
         return 0
     # Re-file each obligation under its own trace. A single merged row would
     # let the fold mistake unrelated spend for an already-charged settlement.
-    while (holds := _unsettled.get(key)):
-        trace_id, amount = next(iter(holds.items()))
-        # A cancellation here propagates with the hold still in place; a later
-        # pre-check re-files it under the same trace_id.
-        if not await _insert_park(
-            trace_id=trace_id, api_key_id=key, microcents=amount
+    # Bounded to the holds present on entry: an amount that grows during the
+    # write stays for the next pre-check instead of spinning here.
+    holds = _unsettled.get(key)
+    if holds:
+        try:
+            async with factory() as _s:
+                folded_traces = set(
+                    (
+                        await _s.execute(
+                            select(BudgetFolded.trace_id).where(
+                                BudgetFolded.api_key_id == key
+                            )
+                        )
+                    ).scalars().all()
+                )
+        except Exception:
+            # Tombstones unreadable: leave every hold for a later pre-check
+            # rather than risk re-filing an obligation another worker folded.
+            folded_traces = None
+        for trace_id, amount in (
+            list(holds.items()) if folded_traces is not None else []
         ):
-            break
-        current = _unsettled.get(key)
-        if current is not None and current.get(trace_id) == amount:
-            current.pop(trace_id)
-            if not current:
-                _unsettled.pop(key, None)
-        # If the amount grew during the write, leave it in place and retry.
+            if trace_id in folded_traces:
+                # Another worker already folded this obligation into the
+                # counter: drop the stale hold instead of re-inserting it.
+                current = _unsettled.get(key)
+                if current is not None and current.get(trace_id) == amount:
+                    current.pop(trace_id)
+                    if not current:
+                        _unsettled.pop(key, None)
+                continue
+            # A cancellation here propagates with the hold still in place; a later
+            # pre-check re-files it under the same trace_id.
+            if not await _insert_park(
+                trace_id=trace_id, api_key_id=key, microcents=amount
+            ):
+                break
+            current = _unsettled.get(key)
+            if current is not None and current.get(trace_id) == amount:
+                current.pop(trace_id)
+                if not current:
+                    _unsettled.pop(key, None)
+            # If the amount grew during the write, leave it in place for the
+            # next pre-check.
     move = 0
     settling: list[tuple[str, int]] = []
     billed_amounts: dict[str, int] = {}
@@ -342,6 +397,34 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         )
                     ).all()
                 ) if rows else set()
+                # Traces some worker already folded: a row for one is a stale
+                # re-file that landed after the tombstone. It was already
+                # billed once — delete it without billing, or the same
+                # obligation is charged twice.
+                folded = set(
+                    (
+                        await s.scalars(
+                            select(BudgetFolded.trace_id).where(
+                                BudgetFolded.api_key_id == key
+                            )
+                        )
+                    ).all()
+                )
+                stale = [
+                    (trace_id, int(amount))
+                    for trace_id, amount in rows
+                    if trace_id in folded
+                ]
+                for trace_id, _amount in stale:
+                    cleared = await s.execute(
+                        delete(BudgetPark).where(
+                            BudgetPark.trace_id == trace_id,
+                            BudgetPark.api_key_id == key,
+                        )
+                    )
+                    if cleared.rowcount != 1:
+                        raise _FoldConflict
+                rows = [row for row in rows if row[0] not in folded]
                 already_charged = [
                     (trace_id, int(amount))
                     for trace_id, amount in rows
@@ -363,6 +446,11 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         )
                         if cleared.rowcount != 1:
                             raise _FoldConflict
+                        s.add(BudgetFolded(
+                            trace_id=trace_id,
+                            api_key_id=key,
+                            microcents=amount,
+                        ))
                     rows = [row for row in rows if row[0] not in logged]
                 room = cap_microcents - spent
                 for trace_id, microcents in rows:
@@ -406,6 +494,11 @@ async def settle_parked_spend(api_key_id: str, cap_microcents: int) -> int:
                         )
                         if cleared.rowcount != 1:
                             raise _FoldConflict
+                        s.add(BudgetFolded(
+                            trace_id=trace_id,
+                            api_key_id=key,
+                            microcents=amount,
+                        ))
                 if trim is not None:
                     trace_id, whole, remainder = trim
                     trimmed = await s.execute(

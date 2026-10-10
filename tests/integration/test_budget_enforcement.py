@@ -551,3 +551,190 @@ async def test_measured_but_unpriceable_stream_is_floored_not_zero(
     assert 0 < spent < cap
     rows = await _log_rows(factory)
     assert rows[0].cost_microcents == spent
+
+
+def _blocking_response_with(*, model: str, content: str | None, usage: dict) -> dict:
+    now = int(time.time())
+    return {
+        "id": "chatcmpl-1", "object": "chat.completion",
+        "model": model, "created": now,
+        "choices": [{
+            "index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": content},
+        }],
+        "usage": usage,
+    }
+
+
+async def _chat_with_model(client, model: str, *, stream: bool = False) -> dict:
+    r = await client.post(
+        "/v1/chat/completions",
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        },
+    )
+    return {"status": r.status_code, "body": r.text}
+
+
+async def test_zero_usage_with_delivered_content_is_estimated(budget_app, monkeypatch):
+    """Zero usage frames with real content fall back to the estimator.
+
+    Settlement matrix cell: a provider that reports `0` tokens for a delivered
+    completion must not settle at zero — the charge comes from the delivery.
+    """
+    client, factory, key_id = budget_app
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(
+        return_value=_blocking_response_with(
+            model="gpt-4o-mini", content="Hello there",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+    )
+
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    result = await _chat(client)
+
+    assert result["status"] == 200
+    spent = await _spent(factory, key_id)
+    cap = 1 * MICROCENTS_PER_CENT
+    assert 0 < spent < cap
+    rows = await _log_rows(factory)
+    assert rows[0].cost_microcents == spent
+
+
+async def test_empty_completion_with_zero_usage_charges_nothing(budget_app, monkeypatch):
+    """Zero usage with a genuinely empty completion settles at zero.
+
+    Settlement matrix cell: nothing delivered means nothing to charge. The
+    estimator must not invent a completion from an empty response.
+    """
+    client, factory, key_id = budget_app
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(
+        return_value=_blocking_response_with(
+            model="gpt-4o-mini", content="",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+    )
+
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    result = await _chat(client)
+
+    assert result["status"] == 200
+    assert await _spent(factory, key_id) == 0
+
+
+async def test_upstream_failure_before_delivery_charges_nothing(budget_app, monkeypatch):
+    """A fault that delivered nothing charges nothing.
+
+    Settlement matrix cell: failures before any content are not billable, for
+    either path. The prompt may have gone upstream, but with no delivery and
+    no measurement there is no honest charge.
+    """
+    client, factory, key_id = budget_app
+
+    from app import router_cache
+
+    fake = AsyncMock()
+    fake.acompletion = AsyncMock(side_effect=RuntimeError("upstream down"))
+
+    async def _fake_get_router(_session):
+        return fake
+
+    monkeypatch.setattr(router_cache, "get_router", _fake_get_router)
+
+    for stream in (False, True):
+        result = await _chat(client, stream=stream)
+        assert result["status"] != 200
+    assert await _spent(factory, key_id) == 0
+
+
+async def test_zero_cap_rejects_everything(budget_app):
+    """A zero budget limit rejects all requests, including free models.
+
+    Product contract: `budget_limit_cents=0` means no lifetime spend is
+    authorized, so dispatch is refused up front. A negative limit behaves the
+    same (it authorizes even less); an absent limit means uncapped.
+    """
+    client, factory, key_id = budget_app
+
+    async with factory() as s:
+        row = await s.get(ApiKey, key_id)
+        row.budget_limit_cents = 0
+        await s.commit()
+
+    assert (await _chat(client))["status"] == 429
+    assert (await _chat(client, stream=True))["status"] == 429
+
+    async with factory() as s:
+        row = await s.get(ApiKey, key_id)
+        row.budget_limit_cents = -5
+        await s.commit()
+
+    assert (await _chat(client))["status"] == 429
+
+    async with factory() as s:
+        row = await s.get(ApiKey, key_id)
+        row.budget_limit_cents = None
+        await s.commit()
+
+    assert (await _chat(client))["status"] == 200
+
+
+async def test_unmeasured_charge_covers_every_ending():
+    """Unit matrix for `_unmeasured_charge`: every ending has a defined charge.
+
+    - Client disconnect with nothing delivered: the prompt went upstream, so
+      the prompt estimate is charged.
+    - Upstream fault with nothing delivered: zero.
+    - Fault after a delivery: the delivery price, same as a clean completion.
+    """
+    from app.routes.chat import (
+        _STREAM_CLIENT_DISCONNECT,
+        _STREAM_COMPLETED,
+        _STREAM_UPSTREAM_ERROR,
+        _unmeasured_charge,
+    )
+
+    charge, estimate = _unmeasured_charge(
+        delivered=False, ending=_STREAM_CLIENT_DISCONNECT,
+        prompt_chars=400, completion_chars=0,
+        model_id="gpt-4o-mini", fallback_model="gpt-4o-mini",
+    )
+    assert charge > 0
+    assert estimate == {"prompt_tokens": 100, "completion_tokens": 0}
+
+    charge, estimate = _unmeasured_charge(
+        delivered=False, ending=_STREAM_UPSTREAM_ERROR,
+        prompt_chars=400, completion_chars=0,
+        model_id="gpt-4o-mini", fallback_model="gpt-4o-mini",
+    )
+    assert (charge, estimate) == (0, None)
+
+    faulted, _ = _unmeasured_charge(
+        delivered=True, ending=_STREAM_UPSTREAM_ERROR,
+        prompt_chars=400, completion_chars=40,
+        model_id="gpt-4o-mini", fallback_model="gpt-4o-mini",
+    )
+    clean, _ = _unmeasured_charge(
+        delivered=True, ending=_STREAM_COMPLETED,
+        prompt_chars=400, completion_chars=40,
+        model_id="gpt-4o-mini", fallback_model="gpt-4o-mini",
+    )
+    assert faulted == clean > 0

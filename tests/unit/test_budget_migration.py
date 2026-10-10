@@ -63,6 +63,7 @@ async def _legacy_deploy_engine(tmp_sqlite_url):
         # The durable park table is newer still: the last release had no
         # budget_parks, so the upgrade has to create it.
         await conn.execute(text("DROP TABLE IF EXISTS budget_parks"))
+        await conn.execute(text("DROP TABLE IF EXISTS budget_folded"))
     await engine.dispose()
     return build_engine(tmp_sqlite_url)
 
@@ -369,24 +370,30 @@ async def test_budget_parks_is_created_by_the_guarded_path_on_upgrade(tmp_sqlite
     loser on a duplicate catalog entry.
     """
     from packages.db.models.base import Base
+    from packages.db.models.budget_folded import BudgetFolded
     from packages.db.models.budget_park import BudgetPark
 
     engine = await _legacy_deploy_engine(tmp_sqlite_url)
     try:
         assert "budget_parks" not in await _table_names(engine)
+        assert "budget_folded" not in await _table_names(engine)
 
-        # Mirror app.main: create_all with the park table excluded.
-        boot_tables = [t for t in Base.metadata.sorted_tables if t is not BudgetPark.__table__]
+        # Mirror app.main: create_all with the ledger tables excluded.
+        deferred = {BudgetPark.__table__, BudgetFolded.__table__}
+        boot_tables = [t for t in Base.metadata.sorted_tables if t not in deferred]
         async with engine.begin() as conn:
             await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=boot_tables))
         assert "budget_parks" not in await _table_names(engine)
+        assert "budget_folded" not in await _table_names(engine)
 
         await ensure_budget_columns(engine)
         assert "budget_parks" in await _table_names(engine)
+        assert "budget_folded" in await _table_names(engine)
 
-        # A worker that races the same boot must not fail on the existing table.
+        # A worker that races the same boot must not fail on the existing tables.
         await ensure_budget_columns(engine)
         assert "budget_parks" in await _table_names(engine)
+        assert "budget_folded" in await _table_names(engine)
     finally:
         await engine.dispose()
 

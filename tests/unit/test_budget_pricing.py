@@ -277,3 +277,34 @@ def test_tool_result_without_content_counts_nothing():
 def test_image_part_still_floors_to_one_character_on_the_prompt_side():
     """An image is billed; it has no honest character count, so it floors to one."""
     assert text_chars([{"type": "image_url", "image_url": {"url": "data:x"}}]) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "hello",
+        ["hello", "world"],
+        [{"type": "text", "text": "ab"}, "cd"],
+        [{"type": "tool_use", "name": "get_weather", "input": {"city": "SF"}}],
+        [{"type": "tool_result", "tool_use_id": "t1", "content": "tool output here"}],
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}],
+    ],
+)
+def test_prompt_and_delivery_price_the_same_characters(content):
+    """Blocking and streaming price content through the same part reader.
+
+    The prompt side (`text_chars`) and the delivery side
+    (`blocking_delivery_chars`) must agree for every part shape, so one path
+    cannot undercharge what the other bills.
+    """
+    _, delivered = blocking_delivery_chars({"choices": [{"message": {"content": content}}]})
+    assert text_chars(content) == delivered
+
+
+def test_whitespace_divergence_between_prompt_and_delivery_is_pinned():
+    """Whitespace is the one documented divergence: the prompt counts every
+    character (streamed deltas are priced through `text_chars`), while the
+    delivery path skips whitespace-only values when deciding anything arrived.
+    """
+    assert text_chars("   ") == 3
+    assert blocking_delivery_chars({"choices": [{"message": {"content": "   "}}]}) == (False, 0)

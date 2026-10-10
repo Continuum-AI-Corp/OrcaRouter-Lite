@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import BigInteger, inspect, text
 from sqlalchemy.exc import DBAPIError
 
+from packages.db.models.budget_folded import BudgetFolded
 from packages.db.models.budget_park import BudgetPark
 from packages.db.units import MICROCENTS_PER_CENT
 
@@ -102,6 +103,15 @@ async def ensure_budget_columns(engine) -> None:
             await _apply_ddl(
                 conn,
                 lambda sync: BudgetPark.__table__.create(sync, checkfirst=True),
+            )
+
+        if BudgetFolded.__tablename__ not in tables:
+            # Same guarded path as budget_parks: the fold's tombstones must
+            # exist before any pre-check can rely on them, and two workers
+            # racing the first boot after the upgrade must both survive.
+            await _apply_ddl(
+                conn,
+                lambda sync: BudgetFolded.__table__.create(sync, checkfirst=True),
             )
 
         # The model declares ix_requests_log_api_key_spend (api_key_id,

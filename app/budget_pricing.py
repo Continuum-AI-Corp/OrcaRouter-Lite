@@ -33,9 +33,16 @@ def _part_texts(part) -> list[str]:
 
     A tool_use block is billed as its name plus its input serialized the same
     way the translators serialize it (`json.dumps(input or {})`), so an object
-    input is counted in full, not dropped. A non-text part has no honest
-    character count, but it was delivered, so it counts as one character: that
-    keeps it from settling at zero while `chars_to_tokens` floors it to a token.
+    input is counted in full, not dropped. A non-text part (image, audio) has
+    no honest character count, but it was delivered, so it counts as one
+    character: that keeps it from settling at zero while `chars_to_tokens`
+    floors it to a token.
+
+    The one-character floor is deliberately approximate, not an exact cost: a
+    provider can bill an image for far more than one token, but its
+    tokenization is unknowable here, and counting base64 payload bytes would
+    overcharge by orders of magnitude more. The floor's job is only to keep a
+    delivered multimodal completion from settling at zero.
     """
     if isinstance(part, str):
         return [part]
