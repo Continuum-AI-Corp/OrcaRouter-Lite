@@ -33,6 +33,7 @@ from app.budget_pricing import (
     countable_usage,
     estimate_usage,
     text_chars,
+    tool_call_text,
 )
 from app.config import get_settings
 from app.deps import get_db, get_key_context
@@ -1210,7 +1211,14 @@ async def execute_chat(
                     for choice in d.get("choices") or []:
                         if isinstance(choice, dict):
                             delta = choice.get("delta") or {}
-                            agg_output_chars += text_chars(delta.get("content"))
+                            chars = text_chars(delta.get("content")) or 0
+                            # Tool calls are delivered content the upstream bills
+                            # for; count them like the blocking path does via
+                            # tool_call_text so both paths price the same
+                            # delivery consistently. Arguments sent as an object
+                            # rather than a string have no honest character count.
+                            chars += tool_call_text(delta.get("tool_calls"))
+                            agg_output_chars += chars
                     last_d = d
                     yield f"data: {json.dumps(d, separators=(',', ':'))}\n\n"
                 # The provider's stream is done: everything after this point is
