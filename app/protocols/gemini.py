@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.protocols import clamp_stop_sequences, require_text
 from app.protocols.anthropic import _args_complete, _parse_json_object, flatten_openai_content
 from app.protocols.sse import finish_quietly
+from app.protocols.usage import cache_components
 
 logger = structlog.get_logger()
 
@@ -500,13 +501,18 @@ _FINISH_REASON_MAP = {
 
 
 def _usage_metadata(usage: dict) -> dict:
-    prompt = usage.get("prompt_tokens", 0) or 0
+    prompt = usage.get("prompt_tokens")
+    prompt = prompt if type(prompt) is int and prompt >= 0 else 0
     completion = usage.get("completion_tokens", 0) or 0
-    return {
+    result = {
         "promptTokenCount": prompt,
         "candidatesTokenCount": completion,
         "totalTokenCount": usage.get("total_tokens") or (prompt + completion),
     }
+    cache = cache_components(usage)
+    if "cache_read_input_tokens" in cache:
+        result["cachedContentTokenCount"] = cache["cache_read_input_tokens"]
+    return result
 
 
 def to_gemini_response(resp: dict) -> dict:

@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.protocols import clamp_stop_sequences, require_text
 from app.protocols.sse import finish_quietly
+from app.protocols.usage import cache_components
 
 logger = structlog.get_logger()
 
@@ -409,6 +410,17 @@ def _message_id(raw: str | None) -> str:
     return f"msg_{raw or uuid.uuid4().hex}"
 
 
+def _anthropic_usage(usage: dict) -> dict:
+    cache = cache_components(usage)
+    prompt = usage.get("prompt_tokens")
+    prompt = prompt if type(prompt) is int and prompt >= 0 else 0
+    return {
+        "input_tokens": prompt - sum(cache.values()),
+        "output_tokens": usage.get("completion_tokens", 0) or 0,
+        **cache,
+    }
+
+
 def to_anthropic_response(resp: dict) -> dict:
     choices = resp.get("choices") or [{}]
     choice = choices[0] if choices else {}
@@ -436,10 +448,7 @@ def to_anthropic_response(resp: dict) -> dict:
         "content": content,
         "stop_reason": _STOP_REASON_MAP.get(choice.get("finish_reason"), "end_turn"),
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0) or 0,
-            "output_tokens": usage.get("completion_tokens", 0) or 0,
-        },
+        "usage": _anthropic_usage(usage),
     }
 
 
@@ -690,9 +699,10 @@ async def stream_events(
             yield _block_stop()
         for ev in _tool_block_events():
             yield ev
-        delta_usage: dict = {"output_tokens": usage.get("completion_tokens", 0) or 0}
-        if usage.get("prompt_tokens"):
-            delta_usage["input_tokens"] = usage["prompt_tokens"]
+        delta_usage = _anthropic_usage(usage)
+        if usage.get("prompt_tokens") is None:
+            # No measured count: do not overwrite message_start's estimate.
+            delta_usage.pop("input_tokens")
         yield _ev("message_delta", {
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason or "end_turn", "stop_sequence": None},

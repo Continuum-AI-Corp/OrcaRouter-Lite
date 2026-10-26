@@ -15,6 +15,36 @@ from unittest.mock import AsyncMock
 import pytest
 
 
+@pytest.mark.parametrize("action", ["generateContent", "streamGenerateContent"])
+async def test_cached_usage_reaches_native_http_response(native_client, action):
+    from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexGeminiConfig
+
+    client, fake, key = native_client
+    usage = VertexGeminiConfig.calculate_usage({"usageMetadata": {
+        "promptTokenCount": 100, "candidatesTokenCount": 2,
+        "totalTokenCount": 102, "cachedContentTokenCount": 90,
+    }}).model_dump(exclude_none=True)
+
+    async def chunks():
+        for chunk in _stream_chunks():
+            if "usage" in chunk:
+                chunk["usage"] = usage
+            yield chunk
+
+    async def upstream(**kwargs):
+        if kwargs.get("stream"):
+            return chunks()
+        return {**_openai_response(), "usage": usage}
+
+    fake.acompletion.side_effect = upstream
+    response = await client.post(f"/v1beta/models/gemini-1.5-flash:{action}",
+                                 json={"contents": "hi"}, headers={"x-goog-api-key": key})
+    assert response.status_code == 200
+    body = response.json()[-1] if action == "streamGenerateContent" else response.json()
+    assert body["usageMetadata"] == {"promptTokenCount": 100, "candidatesTokenCount": 2,
+                                     "totalTokenCount": 102, "cachedContentTokenCount": 90}
+
+
 def _openai_response(**kwargs) -> dict:
     return {
         "id": "chatcmpl-1",
