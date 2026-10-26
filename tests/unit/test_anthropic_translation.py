@@ -65,12 +65,95 @@ def test_system_string_becomes_leading_system_message():
     assert out["messages"][1]["role"] == "user"
 
 
-def test_system_blocks_join_text_and_drop_cache_control():
+def test_system_blocks_preserve_cache_control_and_boundaries():
     out = to_openai_request(_req(system=[
         {"type": "text", "text": "part one", "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": "part two"},
     ]))
+    assert out["messages"][0] == {"role": "system", "content": [
+        {"type": "text", "text": "part one", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "part two"},
+    ]}
+
+
+def test_unmarked_system_blocks_still_join_text():
+    out = to_openai_request(_req(system=[
+        {"type": "text", "text": "part one"}, {"type": "text", "text": "part two"},
+    ]))
     assert out["messages"][0] == {"role": "system", "content": "part one\n\npart two"}
+
+
+@pytest.mark.parametrize("last_type", ["text", "tool_use", "tool_result"])
+def test_automatic_policy_marks_last_cacheable_block_without_mutating_input(last_type):
+    block = {
+        "text": {"type": "text", "text": "answer"},
+        "tool_use": {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}},
+        "tool_result": {"type": "tool_result", "tool_use_id": "toolu_1", "content": "result"},
+    }[last_type]
+    role = "user" if last_type == "tool_result" else "assistant"
+    req = _req(cache_control={"type": "ephemeral", "ttl": "1h"}, messages=[
+        {"role": role, "content": [block, {"type": "thinking", "thinking": "hidden"}]},
+    ])
+    before = req.model_dump()
+    out = to_openai_request(req)
+    assert req.model_dump() == before
+    last = out["messages"][-1]
+    if last_type == "tool_use":
+        marked = last["tool_calls"][0]
+    elif last_type == "tool_result":
+        marked = last
+    else:
+        marked = last["content"][0]
+    assert marked["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_automatic_policy_keeps_matching_explicit_marker():
+    out = to_openai_request(_req(cache_control={"type": "ephemeral", "ttl": "5m"}, messages=[
+        {"role": "user", "content": [
+            {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+        ]},
+    ]))
+    assert out["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_automatic_policy_rejects_conflicting_last_marker_ttl():
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(cache_control={"type": "ephemeral", "ttl": "1h"}, messages=[
+            {"role": "user", "content": [
+                {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+            ]},
+        ]))
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("existing,allowed", [(3, True), (4, False)])
+def test_automatic_policy_respects_breakpoint_slots(existing, allowed):
+    req = _req(cache_control={"type": "ephemeral"}, system=[
+        {"type": "text", "text": str(i), "cache_control": {"type": "ephemeral"}}
+        for i in range(existing)
+    ])
+    if allowed:
+        out = to_openai_request(req)
+        assert out["messages"][-1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    else:
+        with pytest.raises(HTTPException) as exc:
+            to_openai_request(req)
+        assert exc.value.status_code == 400
+
+
+def test_automatic_policy_skips_when_no_cacheable_content():
+    out = to_openai_request(_req(cache_control={"type": "ephemeral"}, messages=[
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hidden"}]},
+    ]))
+    assert out["messages"] == [{"role": "assistant", "content": ""}]
+
+
+def test_cache_marker_does_not_enable_unsupported_document_block():
+    with pytest.raises(HTTPException) as exc:
+        to_openai_request(_req(messages=[{"role": "user", "content": [
+            {"type": "document", "cache_control": {"type": "ephemeral"}},
+        ]}]))
+    assert exc.value.status_code == 400
 
 
 def test_image_base64_block_becomes_data_uri_part():

@@ -36,6 +36,13 @@ print(message.content[0].text)
 
 Streaming (`client.messages.stream(...)`) and tool use work as usual.
 
+`cache_control` markers and their TTLs are preserved on supported system,
+text, image, custom-tool, tool-use and tool-result blocks. A top-level
+automatic policy becomes the equivalent explicit marker on the last
+cacheable block, preserving existing breakpoints. Provider caching still
+depends on the selected provider/model and LiteLLM version; these markers
+do not enable Anthropic caching on other providers.
+
 ## Known limitations (v1)
 
 - `thinking` (extended thinking) is accepted but **dropped** — the request
@@ -46,10 +53,10 @@ Streaming (`client.messages.stream(...)`) and tool use work as usual.
   `max_tokens` must be >= 1, likewise.
 - `stop_sequences` beyond the OpenAI wire cap of 4 are truncated to the
   first 4 (a `structlog` warning is emitted).
-- Images inside a `tool_result` are forwarded as a user message following
-  the tool result, since the internal format's tool messages are
-  text-only. Non-text blocks in `system` (which the API itself does not
-  allow) are dropped with a warning.
+- Images inside an unmarked `tool_result` are forwarded as a user message
+  following the tool result. Marked multipart results stay together until
+  LiteLLM converts them for the selected provider. Non-text blocks in
+  `system` (which the API itself does not allow) are dropped with a warning.
 - Streaming `message_start.usage.input_tokens` is the same estimate
   `/v1/messages/count_tokens` returns — the upstream only reports the
   exact count at end-of-stream, where it is sent in `message_delta`.

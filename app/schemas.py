@@ -15,6 +15,8 @@ class ChatMessage(BaseModel):
     name: str | None = None
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
+    # LiteLLM uses a tool-message marker on the native tool_result block.
+    cache_control: dict | None = None
 
 
 class ChatCompletionRequest(BaseModel):
