@@ -543,7 +543,7 @@ async def execute_chat(
             response={
                 "model": cached_model,
                 "usage": cache_hit_response.get("usage", {}),
-                "_orca_meta": {"provider": "cache", "latency_ms": 0},
+                "_orca_meta": {"provider": "cache"},
             },
             status_code=200, error_type=None, started_perf=started_perf,
             strategy=strategy,
