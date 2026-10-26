@@ -279,6 +279,17 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 
 `GET /v1/analytics/savings?baseline=gpt-4o&days=7` reports what your traffic would have cost on always-GPT-4 vs what it actually cost. The dashboard shows it as a tile.
 
+Request logs prefer an explicit nonnegative upstream `usage.cost_usd` (including
+a billed zero), followed by a positive adapter-reported estimate. Streaming
+cost recovered from earlier usage must match the final prompt/completion counts
+without conflicting known cache-read/write counts. Otherwise they estimate
+cost from the local LiteLLM catalog, applying an explicit cache-read rate to
+valid cached tokens within the inclusive prompt count. Missing rates or
+invalid cache counters keep the ordinary input estimate; discounts are not
+borrowed from guessed model versions or the originally requested model.
+This fallback does not price cache-write TTL premiums, tiered/context pricing,
+modalities, or invoice adjustments. Gateway response-cache hits stay at $0.
+
 ### Integrations
 
 Drop-in configs for [Claude Code](./integrations/claude-code.md), [Gemini SDK](./integrations/gemini-sdk.md), [Continue.dev](./integrations/continue.json), [Aider](./integrations/aider.md), [Cursor](./integrations/cursor.md), [LangChain](./integrations/langchain_orcarouter.py), [LlamaIndex](./integrations/llamaindex_orcarouter.py), [Vercel AI SDK](./integrations/vercel_ai.ts), and any tool that speaks the OpenAI Chat Completions protocol — plus native Anthropic and Gemini wire formats. See [`integrations/`](./integrations/).

@@ -7,11 +7,9 @@ falsely inflated the savings-vs-baseline percentage on
 
 Current implementation is two-tier:
 
-  Tier 1 — `litellm_cost_usd` plumbed through the response's `_orca_meta`.
-  This is LiteLLM's `_hidden_params.response_cost`, computed at the moment
-  the Router knew which provider it actually called. Authoritative because
-  it knows about Anthropic prompt caching, OpenAI reasoning tokens, audio
-  pricing, and provider aliasing.
+  Tier 1 — nonnegative upstream usage.cost_usd, then LiteLLM's estimate from
+  `_orca_meta`. The upstream billed cost wins when both are present.
+  The adapter estimate knows about cache usage and provider aliasing.
 
   Tier 2 — `tokens × catalog price` fallback. Used when LiteLLM didn't
   attach a cost (cache hits served from our prompt cache, exception paths,
@@ -22,6 +20,138 @@ pass a non-None value to exercise tier 1.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+
+@pytest.mark.parametrize("upstream,expected", [
+    (0.123, 123000), (0.000125, 125),
+    (None, 500), (0, 0), (-1, 500), (float("nan"), 500),
+    (float("inf"), 500), (True, 500), ("0.123", 500),
+])
+async def test_log_prefers_valid_upstream_cost_then_adapter_estimate(upstream, expected):
+    import time
+
+    from app.routes.chat import _build_log_row
+    from app.schemas import ChatCompletionRequest
+    from packages.auth.types import KeyContext
+
+    row = await _build_log_row(
+        body=ChatCompletionRequest(model="gpt-5", messages=[{"role": "user", "content": "hi"}]),
+        kc=KeyContext(key_id="test-key", workspace_id="test-workspace", name="test"),
+        response={"model": "gpt-5", "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost_usd": upstream},
+                  "_orca_meta": {"provider": "orcarouter", "cost_usd": 0.0005}},
+        status_code=200, error_type=None, started_perf=time.perf_counter(),
+        strategy="balanced", requested_model="gpt-5",
+    )
+    assert row.cost_microcents == expected
+
+
+async def test_zero_adapter_estimate_remains_unknown_for_catalog_fallback(monkeypatch):
+    import time
+
+    from app.routes.chat import _build_log_row
+    from app.schemas import ChatCompletionRequest
+    from packages.auth.types import KeyContext
+    from packages.litellm_adapter.catalog import CATALOG_BY_ID
+
+    monkeypatch.setitem(CATALOG_BY_ID, "test-zero-estimate", SimpleNamespace(
+        input_cost_per_token=1e-6, output_cost_per_token=2e-6,
+        cache_read_input_token_cost=None, provider="openai",
+    ))
+    row = await _build_log_row(
+        body=ChatCompletionRequest(model="test-zero-estimate", messages=[{"role": "user", "content": "hi"}]),
+        kc=KeyContext(key_id="test-key", workspace_id="test-workspace", name="test"),
+        response={"model": "test-zero-estimate", "usage": {"prompt_tokens": 1000, "completion_tokens": 100},
+                  "_orca_meta": {"provider": "openai", "cost_usd": 0}},
+        status_code=200, error_type=None, started_perf=time.perf_counter(),
+        strategy="balanced", requested_model="test-zero-estimate",
+    )
+    assert row.cost_microcents == 1200
+
+
+@pytest.mark.parametrize("history,expected", [
+    (None, None), ({}, None), ([], None), ([None, {}, {"usage": None}], None),
+    ([{"usage": {"cost": 0.123}}], None),
+    ([{"usage": {"cost_usd": -1}}], None),
+    # Unassociated historical costs cannot establish the final bill.
+    ([{"usage": {"cost_usd": 0.123}}], None),
+    ([SimpleNamespace(usage=SimpleNamespace(cost_usd=0.123))], None),
+])
+def test_retained_stream_history_requires_associated_upstream_cost(history, expected):
+    from app.routes.chat import _retained_upstream_cost_usd
+
+    usage = {"prompt_tokens": 1000, "completion_tokens": 100}
+    assert _retained_upstream_cost_usd(SimpleNamespace(chunks=history), usage) == expected
+    assert _retained_upstream_cost_usd(object(), usage) is None
+
+
+@pytest.mark.parametrize("details,top,rate,provider,expected", [
+    ({"cached_tokens": 9000}, None, 1.25e-6, "openai", 14750),
+    ({"cached_tokens": 9000, "cache_write_tokens": 500}, None, 1.25e-6, "openai", 14750),
+    ({"cached_tokens": 9000, "cache_write_tokens": 1001}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 9000, "cache_write_tokens": -1}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 9000, "cache_write_tokens": 1, "cache_creation_tokens": 2}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 0}, None, 1.25e-6, "openai", 26000),
+    ({}, 9000, 1.25e-6, "openai", 14750),
+    ({"cached_tokens": 9000}, 9000, 1.25e-6, "openai", 14750),
+    ({"cached_tokens": 9000}, 8000, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 9000}, None, None, "openai", 26000),
+    ({"cached_tokens": 9000}, None, 0.0, "openai", 3500),
+    ({"cached_tokens": 9000}, None, 1.25e-6, "orcarouter", 26000),
+    ({"cached_tokens": 9000}, None, 1.25e-6, "unknown", 14750),
+    ({"cached_tokens": -1}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 10001}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": True}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": "9000"}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": 9000.5}, None, 1.25e-6, "openai", 26000),
+    ({"cached_tokens": None}, None, 1.25e-6, "openai", 26000),
+])
+def test_cache_read_fallback_uses_only_known_bounded_read_tokens(monkeypatch, details, top, rate, provider, expected):
+    from app.routes.chat import _compute_cost_microcents
+    from packages.litellm_adapter.catalog import CATALOG_BY_ID
+
+    model = SimpleNamespace(**{**vars(CATALOG_BY_ID["gpt-4o"]),
+                              "input_cost_per_token": 2.5e-6, "output_cost_per_token": 1e-5,
+                              "cache_read_input_token_cost": rate})
+    monkeypatch.setitem(CATALOG_BY_ID, "gpt-4o", model)
+    usage = {"prompt_tokens_details": details}
+    if top is not None:
+        usage["cache_read_input_tokens"] = top
+    assert _compute_cost_microcents(
+        litellm_cost_usd=None, model_id="openai/gpt-4o", input_tokens=10000,
+        output_tokens=100, usage=usage, provider=provider,
+    ) == expected
+
+
+@pytest.mark.parametrize("rate", [-1.0, float("nan"), float("inf"), "unknown", True])
+def test_catalog_omits_unusable_cache_read_rates(monkeypatch, rate):
+    import litellm
+
+    from packages.litellm_adapter.catalog import _build_catalog_from_litellm
+
+    monkeypatch.setattr(litellm, "model_cost", {"invalid-cache-rate": {
+        "litellm_provider": "openai", "mode": "chat", "cache_read_input_token_cost": rate,
+    }})
+    model = next(m for m in _build_catalog_from_litellm() if m.id == "invalid-cache-rate")
+    assert model.cache_read_input_token_cost is None
+
+
+@pytest.mark.parametrize("resolved", ["unpriced-rebrand", "gpt-4o-20991231"])
+def test_requested_or_version_guessed_model_does_not_establish_cache_read_rate(monkeypatch, resolved):
+    from app.routes.chat import _compute_cost_microcents
+    from packages.litellm_adapter.catalog import CATALOG_BY_ID
+
+    model = SimpleNamespace(**{**vars(CATALOG_BY_ID["gpt-4o"]),
+                              "input_cost_per_token": 2.5e-6, "output_cost_per_token": 1e-5,
+                              "cache_read_input_token_cost": 1.25e-6})
+    monkeypatch.setitem(CATALOG_BY_ID, "gpt-4o", model)
+    assert _compute_cost_microcents(
+        litellm_cost_usd=None, model_id=resolved, fallback_model="gpt-4o",
+        input_tokens=10000, output_tokens=100, usage={"prompt_tokens_details": {"cached_tokens": 9000}},
+    ) == 26000
 
 # ── Tier 1: LiteLLM's pre-computed cost takes priority ──────────────────
 

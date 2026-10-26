@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Callable
+from copy import deepcopy
 
 import anyio
 import structlog
@@ -211,6 +213,7 @@ async def _build_log_row(
     resolved = actual_resolved or response.get("model") or requested_model
     input_t = usage.get("prompt_tokens", 0) or 0
     output_t = usage.get("completion_tokens", 0) or 0
+    upstream_cost = _reported_cost_usd(usage.get("cost_usd"))
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
@@ -222,18 +225,114 @@ async def _build_log_row(
         fallback_level=1 if meta.get("fallback") else 0,
         input_tokens=input_t,
         output_tokens=output_t,
-        cost_microcents=_compute_cost_microcents(
-            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
+        # A provider's explicit zero is a known free bill. An SDK estimate
+        # of zero still means unpriced and keeps the catalog fallback.
+        cost_microcents=0 if upstream_cost == 0 else _compute_cost_microcents(
+            litellm_cost_usd=upstream_cost if upstream_cost is not None else _positive_cost_usd(meta.get("cost_usd")),
             model_id=resolved,
             input_tokens=input_t,
             output_tokens=output_t,
             fallback_model=requested_model,
+            usage=usage,
+            provider=meta.get("provider"),
         ),
         latency_ms=meta.get("latency_ms", latency_ms),
         status_code=status_code,
         error_type=error_type,
         is_streaming=body.stream,
     )
+
+
+def _reported_cost_usd(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _positive_cost_usd(value) -> float | None:
+    cost = _reported_cost_usd(value)
+    return cost if cost is not None and cost > 0 else None
+
+
+def _usage_field(usage: object, name: str):
+    return usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+
+
+def _usage_cost_counters(usage: object) -> tuple[int, int, int | None, int | None] | None:
+    """Evidence for associating a recovered bill, preserving unknown cache counts."""
+    prompt = _usage_field(usage, "prompt_tokens")
+    completion = _usage_field(usage, "completion_tokens")
+    if any(type(value) is not int or value < 0 for value in (prompt, completion)):
+        return None
+    details = _usage_field(usage, "prompt_tokens_details")
+    cache_counts = []
+    for aliases in (
+        (_usage_field(details, "cached_tokens"), _usage_field(usage, "cache_read_input_tokens")),
+        (_usage_field(details, "cache_write_tokens"), _usage_field(details, "cache_creation_tokens"),
+         _usage_field(details, "cache_creation_input_tokens"), _usage_field(usage, "cache_creation_input_tokens")),
+    ):
+        values = [value for value in aliases if value is not None]
+        if any(type(value) is not int or not 0 <= value <= prompt for value in values):
+            return None
+        if values and any(value != values[0] for value in values):
+            return None
+        cache_counts.append(values[0] if values else None)
+    if sum(value or 0 for value in cache_counts) > prompt:
+        return None
+    return prompt, completion, *cache_counts
+
+
+def _matching_upstream_cost_usd(cost_usage: object, final_usage: dict) -> float | None:
+    cost = _reported_cost_usd(_usage_field(cost_usage, "cost_usd"))
+    previous = _usage_cost_counters(cost_usage)
+    final = _usage_cost_counters(final_usage)
+    if cost is None or previous is None or final is None or previous[:2] != final[:2]:
+        return None
+    if any(left is not None and right is not None and left != right
+           for left, right in zip(previous[2:], final[2:], strict=True)):
+        return None
+    return cost
+
+
+def _retained_upstream_cost_usd(stream_obj: object, final_usage: dict) -> float | None:
+    """LiteLLM may omit upstream extensions when rebuilding terminal usage.
+
+    Recover only the latest explicit usage.cost_usd when its counters match
+    final usage, never locally computed usage.cost. A newer invalid or
+    mismatched bill must not revive an older one. Wrappers without this
+    optional history continue through the usual fallback.
+    """
+    chunks = getattr(stream_obj, "chunks", None)
+    if not isinstance(chunks, (list, tuple)):
+        return None
+    for chunk in reversed(chunks):
+        usage = _usage_field(chunk, "usage")
+        if _usage_field(usage, "cost_usd") is not None:
+            return _matching_upstream_cost_usd(usage, final_usage)
+    return None
+
+
+def _cache_read_tokens(usage: dict, input_tokens: int) -> int:
+    """Reads are a subset of inclusive input, never additive to it.
+
+    A missing or malformed counter cannot justify a discounted estimate.
+    Top-level Anthropic aliases and normalized details must agree.
+    """
+    details = usage.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    counts = []
+    for candidates in (
+        (details.get("cached_tokens"), usage.get("cache_read_input_tokens")),
+        (details.get("cache_write_tokens"), details.get("cache_creation_tokens"),
+         details.get("cache_creation_input_tokens"), usage.get("cache_creation_input_tokens")),
+    ):
+        values = [value for value in candidates if value is not None]
+        if any(type(value) is not int or not 0 <= value <= input_tokens for value in values):
+            return 0
+        if values and any(value != values[0] for value in values):
+            return 0
+        counts.append(values[0] if values else 0)
+    return counts[0] if sum(counts) <= input_tokens else 0
 
 
 def _compute_cost_microcents(
@@ -243,17 +342,18 @@ def _compute_cost_microcents(
     input_tokens: int,
     output_tokens: int,
     fallback_model: str | None = None,
+    usage: dict | None = None,
+    provider: str | None = None,
 ) -> int:
     """Cost in microcents (1 USD = 1,000,000).
 
     Two-tier strategy:
 
-      Tier 1 — `litellm_cost_usd` from the response's _orca_meta. This is
-      LiteLLM's own `_hidden_params.response_cost`, computed in the adapter
-      at the moment LiteLLM Router knew which provider it actually called.
-      Authoritative because it includes:
-        - Anthropic prompt caching (cache_creation = 1.25x base,
-          cache_read = 0.1x base)
+      Tier 1 — upstream usage.cost_usd (explicit zero handled by the caller), then the adapter's estimate
+      from _orca_meta. The latter is LiteLLM's `_hidden_params.response_cost`,
+      computed when Router knew which provider it actually called. Its
+      estimate can account for more than our catalog fallback:
+        - Anthropic cache read/write pricing
         - OpenAI o1/o3 reasoning tokens (priced separately from output)
         - Audio input/output token pricing
         - Provider-specific aliasing — no name-matching guesswork needed
@@ -262,28 +362,42 @@ def _compute_cost_microcents(
       Anthropic/Gemini bare names ("Provider NOT provided" or
       "model isn't mapped"), so reverse-lookup is unreliable.
 
-      Tier 2 — `tokens × catalog price` fallback. Used when LiteLLM didn't
-      attach a cost (cache hit served from our prompt cache, exception
+      Tier 2 — catalog fallback with a cache-read rate when explicitly known.
+      Cache reads are a subset of prompt_tokens. Writes remain at the base
+      input rate here: this estimate does not cover TTL-dependent write
+      premiums, modalities, tiered pricing, or provider invoice adjustments.
+      Used when LiteLLM didn't attach a cost (exception
       paths where `_orca_meta` is absent, custom upstreams). Walks four
       catalog id shapes: as-is, prefix-stripped, version-suffix-stripped,
       then the original requested model id.
 
-    Returns 0 only when both tiers miss. Negative tokens / negative cost
-    are clamped to 0 (defensive against malformed upstream usage data).
+    Returns 0 when neither tier can price, or usage is zero/invalid.
+    Negative tokens return 0; nonpositive/nonfinite costs use the fallback.
     """
     if input_tokens < 0 or output_tokens < 0:
         return 0
 
-    # Tier 1: LiteLLM's authoritative number, plumbed through _orca_meta.
-    if litellm_cost_usd is not None and litellm_cost_usd > 0:
+    # Tier 1: the selected positive reported cost.
+    if _positive_cost_usd(litellm_cost_usd) is not None:
         return max(0, int(litellm_cost_usd * 1_000_000))
 
     # Tier 2: catalog × tokens fallback.
     m = _lookup_priced_model(model_id) or _lookup_priced_model(fallback_model)
     if m is None:
         return 0
+    cached = 0
+    # Only exact or provider-prefix aliases establish a cache rate. Keep
+    # the historical base-price fallback for guessed versions/rebrands,
+    # without borrowing a discount from a different requested model.
+    exact = CATALOG_BY_ID.get(model_id) if model_id else None
+    if exact is None and model_id and "/" in model_id:
+        exact = CATALOG_BY_ID.get(model_id.split("/", 1)[1])
+    read_rate = exact.cache_read_input_token_cost if exact is not None else None
+    if read_rate is not None and provider in (None, "unknown", m.provider):
+        cached = _cache_read_tokens(usage or {}, input_tokens)
     cost_usd = (
-        input_tokens * m.input_cost_per_token
+        (input_tokens - cached) * m.input_cost_per_token
+        + cached * (read_rate if read_rate is not None else 0)
         + output_tokens * m.output_cost_per_token
     )
     return max(0, int(cost_usd * 1_000_000))
@@ -649,6 +763,8 @@ async def execute_chat(
             agg_provider = "unknown"
             agg_fallback = False
             agg_latency = 0
+            agg_cost_usd: float | None = None
+            agg_upstream_usage: dict | None = None
             # The first chunk's `model` field tells us what LiteLLM actually
             # served (could be a cascaded fallback, not the resolved primary).
             agg_model: str | None = None
@@ -699,10 +815,25 @@ async def execute_chat(
                             if agg_model in (d.litellm_model, d.model_name) or bare_served == d.model_name:
                                 agg_provider = d.provider
                                 break
+                usage_for_log = dict(agg_usage)
+                # Explicit final billing (including zero or invalid data) is
+                # never replaced by an earlier frame. Only a missing bill
+                # can be recovered, and only for the same usage evidence.
+                if agg_usage.get("cost_usd") is None:
+                    upstream_cost = (
+                        _matching_upstream_cost_usd(agg_upstream_usage, agg_usage)
+                        if agg_upstream_usage is not None
+                        else _retained_upstream_cost_usd(stream_obj, agg_usage)
+                    )
+                    if upstream_cost is not None:
+                        usage_for_log["cost_usd"] = upstream_cost
                 synthetic = {
                     "model": agg_model or resolved_model,
-                    "usage": agg_usage,
-                    "_orca_meta": {"provider": agg_provider},
+                    "usage": usage_for_log,
+                    "_orca_meta": {
+                        "provider": agg_provider,
+                        "cost_usd": _positive_cost_usd(hidden_params_of(stream_obj).get("response_cost")) or agg_cost_usd,
+                    },
                 }
                 if agg_fallback:
                     synthetic["_orca_meta"]["fallback"] = True
@@ -855,6 +986,10 @@ async def execute_chat(
             last_d: dict = {}
             try:
                 async for chunk in _aiter(stream_obj):
+                    # Capture private cost before model_dump drops it.
+                    chunk_cost = _positive_cost_usd(hidden_params_of(chunk).get("response_cost"))
+                    if chunk_cost is not None:
+                        agg_cost_usd = chunk_cost
                     d = _chunk_to_dict(chunk)
                     # Hoist orca-internal metadata onto the request log without
                     # leaking it into the SSE stream.
@@ -862,10 +997,15 @@ async def execute_chat(
                         meta = d.pop("_orca_meta") or {}
                         agg_provider = meta.get("provider", agg_provider)
                         agg_latency = meta.get("latency_ms", agg_latency)
+                        meta_cost = _positive_cost_usd(meta.get("cost_usd"))
+                        if meta_cost is not None:
+                            agg_cost_usd = meta_cost
                         if meta.get("fallback"):
                             agg_fallback = True
                     if "usage" in d and d["usage"]:
                         agg_usage = d["usage"]
+                        if agg_usage.get("cost_usd") is not None:
+                            agg_upstream_usage = deepcopy(agg_usage)
                     if d.get("model"):
                         agg_model = d["model"]
                     last_d = d
