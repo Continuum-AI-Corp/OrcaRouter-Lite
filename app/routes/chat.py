@@ -519,6 +519,7 @@ async def execute_chat(
             max_completion_tokens=completion_kwargs.get("max_completion_tokens"),
             stop=completion_kwargs.get("stop"),
             tool_choice=completion_kwargs.get("tool_choice"),
+            parallel_tool_calls=completion_kwargs.get("parallel_tool_calls"),
             top_p=completion_kwargs.get("top_p"),
             n=completion_kwargs.get("n"),
             presence_penalty=completion_kwargs.get("presence_penalty"),

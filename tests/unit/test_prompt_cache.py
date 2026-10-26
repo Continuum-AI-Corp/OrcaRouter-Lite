@@ -113,6 +113,55 @@ def test_cache_key_distinguishes_absent_temperature_from_explicit_zero():
     assert cache_key(**base, temperature=None) != cache_key(**base, temperature=0.0)
 
 
+@pytest.mark.parametrize("first,second", [(None, False), (None, True), (False, True)])
+def test_cache_key_distinguishes_parallel_tool_call_settings(first, second):
+    """A caller disabling parallel calls must not receive a parallel result."""
+    from app.prompt_cache import cache_key
+
+    base = dict(
+        model="m", messages=[{"role": "user", "content": "hi"}],
+        temperature=0.0, tools=None, response_format=None, seed=None,
+    )
+    assert cache_key(**base, parallel_tool_calls=first) != cache_key(
+        **base, parallel_tool_calls=second,
+    )
+
+
+def test_cache_key_invalidates_v2_entries_without_parallel_tool_call_setting():
+    """Entries written before this setting was keyed cannot be reused."""
+    import hashlib
+    import json
+
+    from app.prompt_cache import cache_key
+
+    messages = [{"role": "user", "content": "hi"}]
+    legacy_payload = {
+        "v": 2,
+        "model": "m",
+        "messages": messages,
+        "temperature": 0.0,
+        "tools": None,
+        "response_format": None,
+        "seed": None,
+        "max_tokens": None,
+        "max_completion_tokens": None,
+        "stop": None,
+        "tool_choice": None,
+        "top_p": None,
+        "n": None,
+        "presence_penalty": None,
+        "frequency_penalty": None,
+        "logit_bias": None,
+    }
+    legacy_key = hashlib.sha256(
+        json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert cache_key(
+        model="m", messages=messages, temperature=0.0,
+        tools=None, response_format=None, seed=None,
+    ) != legacy_key
+
+
 def test_cache_key_ignores_user_identifier():
     """`user` is an abuse-monitoring hint that does not change the
     completion; keying on it would fragment the cache per caller."""
