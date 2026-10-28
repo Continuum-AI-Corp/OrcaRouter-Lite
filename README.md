@@ -221,6 +221,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 | Platform | One-click |
 |---|---|
 | Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Light Cloud | [![Deploy to Light Cloud](https://light-cloud.com/button.svg)](https://console.light-cloud.com/new?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Connect repo, root dir = `.` |
 | Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image coming soon) |
