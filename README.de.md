@@ -214,7 +214,7 @@ Beim Start werden über 100 Chat-Modelle aus [LiteLLMs von der Community gepfleg
 
 | Plattform | One-Click |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Repo verbinden, Root-Verzeichnis = `.` |
 | Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (Image folgt) |

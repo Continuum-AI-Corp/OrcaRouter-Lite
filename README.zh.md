@@ -214,7 +214,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 | 平台 | 一键部署 |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | 连接代码仓库，根目录 = `.` |
 | 裸 Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...`（镜像即将发布）|

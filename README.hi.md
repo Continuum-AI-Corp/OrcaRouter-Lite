@@ -214,7 +214,7 @@ Requests को एज पर उसी आंतरिक पाइपलाइ
 
 | प्लेटफ़ॉर्म | वन-क्लिक |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | रेपो कनेक्ट करें, root dir = `.` |
 | बेयर Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (इमेज जल्द आ रही है) |

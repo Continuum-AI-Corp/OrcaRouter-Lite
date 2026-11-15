@@ -214,7 +214,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 | Платформа | One-click |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Подключите репо, корневая директория = `.` |
 | Голый Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (образ скоро) |

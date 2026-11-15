@@ -214,7 +214,7 @@ Hơn 100 mô hình chat được nạp khi khởi động từ [cơ sở dữ li
 
 | Nền tảng | One-click |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Kết nối repo, root dir = `.` |
 | Docker thuần | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image sắp ra mắt) |

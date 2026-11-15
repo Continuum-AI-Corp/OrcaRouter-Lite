@@ -214,7 +214,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 |プラットフォーム |ワンクリック |
 |---|---|
-|鉄道 | [![鉄道へのデプロイ](https://railway.app/button.svg)](https://railway.app/new/template) |
+|鉄道 | [![鉄道へのデプロイ](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 |フライアイオ | `フライ起動 --dockerfile Dockerfile` |
 |レンダリング |リポジトリに接続します。ルート ディレクトリ = `.` |
 |ベア・ドッカー | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (イメージは近日公開予定) |

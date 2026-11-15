@@ -214,7 +214,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 | 플랫폼 | 원클릭 |
 |---|---|
-| 철도 | [![철도에 배포](https://railway.app/button.svg)](https://railway.app/new/template) |
+| 철도 | [![철도에 배포](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | 렌더링 | 저장소 연결, 루트 디렉토리 = `.` |
 | 베어 도커 | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (이미지 제공 예정) |

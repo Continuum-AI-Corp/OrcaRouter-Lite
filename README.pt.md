@@ -214,7 +214,7 @@ Mais de 100 modelos de chat são carregados na inicialização a partir do [banc
 
 | Plataforma | One-click |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Conecte o repo, root dir = `.` |
 | Docker puro | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (imagem em breve) |
