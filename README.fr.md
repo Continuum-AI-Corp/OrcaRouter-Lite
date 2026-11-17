@@ -214,7 +214,7 @@ Plus de 100 modèles de chat sont chargés au démarrage depuis la [base de donn
 
 | Plateforme | One-click |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | Connectez le repo, répertoire racine = `.` |
 | Docker brut | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image bientôt) |
