@@ -41,8 +41,7 @@ def litellm_data_args() -> list[str]:
 def main() -> int:
     work = ROOT / "build" / "orca-engine"
     dist = work / "dist"
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
+    args = [
         "--onefile", "--noconfirm", "--clean",
         "--name", "orca-engine",
         "--distpath", str(dist), "--workpath", str(work / "build"), "--specpath", str(work),
@@ -66,7 +65,12 @@ def main() -> int:
         *litellm_data_args(),
         str(ROOT / "desktop" / "engine" / "orca_engine.py"),
     ]
-    subprocess.run(cmd, check=True, cwd=ROOT)
+    # In-process rather than a subprocess: one --add-data per LiteLLM data file
+    # overflows Windows' 32,767-character command-line limit.
+    import PyInstaller.__main__
+
+    os.chdir(ROOT)
+    PyInstaller.__main__.run(args)
     exe = ".exe" if os.name == "nt" else ""
     out = ROOT / "desktop" / "src-tauri" / "binaries" / f"orca-engine-{target_triple()}{exe}"
     out.parent.mkdir(parents=True, exist_ok=True)
