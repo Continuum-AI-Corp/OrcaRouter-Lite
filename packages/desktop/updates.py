@@ -39,8 +39,20 @@ def is_newer(current: str, latest: str) -> bool:
     return bool(cur and new and new > cur)
 
 
+class _CheckFailed(Exception):
+    pass
+
+
 async def check(current: str, *, transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
     """{"version", "url"} when a newer stable release exists, else None."""
+    try:
+        return await _fetch(current, transport)
+    except _CheckFailed:
+        return None
+
+
+async def _fetch(current: str, transport) -> dict | None:
+    """Like check(), but raises _CheckFailed when GitHub couldn't be asked."""
     try:
         async with httpx.AsyncClient(transport=transport, timeout=10) as client:
             resp = await client.get(
@@ -48,10 +60,10 @@ async def check(current: str, *, transport: httpx.AsyncBaseTransport | None = No
                 headers={"Accept": "application/vnd.github+json", "User-Agent": f"orcarouter-lite/{current}"},
             )
         if resp.status_code != 200:
-            return None
+            raise _CheckFailed(f"HTTP {resp.status_code}")
         data = resp.json()
-    except (httpx.HTTPError, ValueError):
-        return None
+    except (httpx.HTTPError, ValueError) as exc:
+        raise _CheckFailed(str(exc)) from exc
     if not isinstance(data, dict) or data.get("draft") or data.get("prerelease"):
         return None
     tag, url = data.get("tag_name"), data.get("html_url")
@@ -75,7 +87,12 @@ class UpdateChecker:
     async def refresh(self) -> None:
         if not self.enabled():
             return
-        found = await check(self.current, transport=self._transport)
+        try:
+            found = await _fetch(self.current, self._transport)
+        except Exception as exc:  # never let the daily check die
+            # A blip keeps what we knew; it's asked again tomorrow.
+            log.info("update_check_failed", error=str(exc))
+            return
         if found != self.latest:
             log.info("update_available" if found else "update_cleared", **(found or {}))
         self.latest = found

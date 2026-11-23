@@ -104,3 +104,32 @@ async def test_run_forever_checks_then_waits_a_day(monkeypatch):
         await checker.run_forever()
     assert checker.latest == {"version": "0.3.0", "url": PAGE}
     assert sleeps == [24 * 60 * 60]
+
+
+async def test_a_failed_check_keeps_the_last_known_release(monkeypatch):
+    monkeypatch.delenv("ORCA_NO_UPDATE_CHECK", raising=False)
+    checker = updates.UpdateChecker("0.2.0", transport=_transport())
+    await checker.refresh()
+    checker._transport = _transport(status=500)  # a network blip a day later
+    await checker.refresh()
+    assert checker.latest == {"version": "0.3.0", "url": PAGE}
+
+
+async def test_an_unexpected_error_never_ends_the_daily_check(monkeypatch):
+    monkeypatch.delenv("ORCA_NO_UPDATE_CHECK", raising=False)
+
+    def broken(_request):
+        raise OSError("bad SSL_CERT_FILE")
+
+    checker = updates.UpdateChecker("0.2.0", transport=httpx.MockTransport(broken))
+    await checker.refresh()  # must not raise
+    assert checker.latest is None
+
+
+async def test_once_up_to_date_the_notice_clears(monkeypatch):
+    monkeypatch.delenv("ORCA_NO_UPDATE_CHECK", raising=False)
+    checker = updates.UpdateChecker("0.2.0", transport=_transport())
+    await checker.refresh()
+    checker.current = "0.3.0"  # the user updated
+    await checker.refresh()
+    assert checker.latest is None

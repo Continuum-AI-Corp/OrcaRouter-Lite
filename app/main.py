@@ -172,8 +172,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     log.info("lite_shutting_down")
     if update_task is not None:
         update_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await update_task
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await update_task  # its failures must not skip the shutdown below
     await cache_invalidation_bus.stop_invalidation_listener()
     await dispose_engine()
 
