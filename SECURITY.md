@@ -97,6 +97,10 @@ person on one computer:
   backed up first in `~/.orcarouter-lite/agents/` (mode 0600, because it may
   contain earlier credentials). Disconnecting restores it, and keeps any change
   you made in the meantime.
+- **Team gateways only over https.** `orca login` and "Join my company's
+  gateway" accept an https address, or plain http only to a loopback or
+  private-network address, and check the key against the gateway before any
+  agent setting changes. The team key is never shown back in the app.
 - **The engine stops with the app.** The app holds a pipe to the engine; when
   the app exits for any reason, the engine exits too.
 - **No telemetry.** Prompts and request logs stay in

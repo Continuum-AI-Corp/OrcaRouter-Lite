@@ -33,6 +33,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes its installer builds.
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: desktop tests
@@ -75,7 +80,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: macOS Apple silicon, os: macos-14 }
+          - { name: macOS Apple silicon, os: macos-15 }
           - { name: macOS Intel, os: macos-15-intel }
           - { name: Linux, os: ubuntu-22.04 }
           - { name: Windows, os: windows-2022 }
@@ -170,3 +175,28 @@ jobs:
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage \
             desktop/src-tauri/target/release/bundle/msi/*.msi \
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+  homebrew-cask:
+    name: homebrew cask
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orcarouter-lite-macos-*
+          path: dmgs
+          merge-multiple: true
+      - name: render and attach the cask
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          arm=$(ls dmgs/*_"$v"_aarch64.dmg)
+          x64=$(ls dmgs/*_"$v"_x64.dmg)
+          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" --x64 "$x64" > orcarouter-lite.rb
+          cat orcarouter-lite.rb
+          gh release upload "$GITHUB_REF_NAME" orcarouter-lite.rb --clobber

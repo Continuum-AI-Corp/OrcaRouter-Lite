@@ -24,6 +24,20 @@ def target_triple() -> str:
     return next(line.split(": ", 1)[1] for line in out.splitlines() if line.startswith("host: "))
 
 
+# LiteLLM ships its proxy server's web UI and Swagger assets as package data.
+# Lite never runs LiteLLM's proxy, so those stay out of the engine.
+LITELLM_DATA_EXCLUDES = ["proxy/_experimental/**", "proxy/swagger/**"]
+
+
+def litellm_data_args() -> list[str]:
+    from PyInstaller.utils.hooks import collect_data_files
+
+    args: list[str] = []
+    for src, dest in collect_data_files("litellm", excludes=LITELLM_DATA_EXCLUDES):
+        args += ["--add-data", f"{src}{SEP}{dest}"]
+    return args
+
+
 def main() -> int:
     work = ROOT / "build" / "orca-engine"
     dist = work / "dist"
@@ -46,10 +60,10 @@ def main() -> int:
         "--collect-submodules", "app",
         "--collect-submodules", "packages",
         "--collect-submodules", "uvicorn",
-        "--collect-data", "litellm",
         "--collect-submodules", "litellm",
         "--collect-submodules", "tiktoken_ext",
         "--copy-metadata", "orcarouter-lite",
+        *litellm_data_args(),
         str(ROOT / "desktop" / "engine" / "orca_engine.py"),
     ]
     subprocess.run(cmd, check=True, cwd=ROOT)

@@ -39,10 +39,11 @@ The Orca app lives in your menu bar. It runs the router on `127.0.0.1`, connects
 coding agents to it, and shows what they spend.
 
 - **Spend today, per agent.** Today's total sits next to the clock; the panel splits it by agent.
-- **A daily budget.** Notifications at 80% and 100% of the amount you set. Agents keep working; Orca alerts rather than blocks.
+- **A daily budget.** Notifications at 80% and 100% of the amount you set. Alerts only by default; tick one box and Orca pauses your coding agents once it's reached.
 - **One-click connect.** Orca edits the agent's own settings, keeps a backup, and restores it when you disconnect.
 - **Never down.** When a provider fails or rate-limits you, requests fall back to another provider or to hosted OrcaRouter, and the app counts how many it rescued.
 - **Private by default.** Prompts go straight from your agents to the provider you choose. No telemetry.
+- **Works with your team's gateway.** `orca login https://ai-gw.example.com --key …` (or "Join my company's gateway" in setup) points your agents at the gateway your platform team runs; `orca logout` restores them.
 
 **Install.** Installers (`.dmg`, `.deb`, `.AppImage`, `.msi`) are built by
 [`desktop.yml`](./.github/workflows/desktop.yml) and attached to each release, starting with
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up` serves the panel at `http://127.0.0.1:8765/desktop/panel.html`; to build the
-menu-bar app itself, see [`desktop/`](./desktop/README.md).
+menu-bar app itself, see [`desktop/`](./desktop/README.md). Once the first release is out,
+macOS users can also `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+
+Today's spend in Claude Code's status bar: add this to `~/.claude/settings.json`.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` prints the week as Markdown (or `--format csv`) to paste into a chat or a sheet.
 
 | Agent | How it connects |
 |---|---|
@@ -391,9 +401,10 @@ packages/
 - [x] Cross-provider prompt cache
 - [x] Desktop app: menu-bar spend, daily budget alerts, one-click agent connect
 - [x] Signed releases with provenance and SBOM; hash-locked dependencies
+- [x] Daily budget that alerts, or pauses coding agents at the limit
+- [x] `orca login` / "Join my company's gateway": use a team's gateway from the app
 - [ ] `/v1/responses` so Codex can connect
-- [ ] Hard per-developer budget caps (alerts ship today)
-- [ ] `orca login`: join a team's gateway from the app
+- [ ] Per-developer budgets enforced on a shared team gateway
 - [ ] Embeddings, Ollama/vLLM providers, custom fallback chains
 
 See [DEMO.md](./DEMO.md) for the failover demo.

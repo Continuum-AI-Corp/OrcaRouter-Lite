@@ -111,3 +111,13 @@ def test_desktop_engine_build_tools_are_hash_locked():
     wf = (ROOT / ".github" / "workflows" / "desktop.yml").read_text()
     assert "requirements-build.lock" in wf
     assert '"pyinstaller>=' not in wf
+
+
+def test_every_artifact_carries_the_same_version():
+    import json
+
+    py = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    tauri = json.loads((ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text())["version"]
+    cargo = tomllib.loads((ROOT / "desktop" / "src-tauri" / "Cargo.toml").read_text())["package"]["version"]
+    npm = json.loads((ROOT / "desktop" / "package.json").read_text())["version"]
+    assert py == tauri == cargo == npm, f"pyproject {py}, tauri {tauri}, cargo {cargo}, npm {npm}"
