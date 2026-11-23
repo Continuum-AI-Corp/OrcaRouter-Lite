@@ -44,7 +44,9 @@ COPY scripts/ scripts/
 RUN useradd -m orca \
     && mkdir -p /data \
     && chown -R orca:orca /app /data
-USER orca
+# Starts as root only to hand a platform volume mounted over /data to `orca`,
+# then drops to `orca` before the server starts (see the script).
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 
 EXPOSE 8000
 

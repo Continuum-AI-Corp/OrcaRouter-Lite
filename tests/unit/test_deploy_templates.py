@@ -74,3 +74,12 @@ def test_readme_offers_working_deploy_buttons_and_no_placeholder():
     assert "fly launch" in readme
     assert "railway up" in readme
     assert "Template coming" not in readme
+
+
+def test_platforms_run_the_images_entrypoint():
+    # A custom start command can bypass the entrypoint that makes a mounted
+    # /data volume writable; let the image's ENTRYPOINT and CMD run.
+    rw = json.loads((ROOT / "railway.json").read_text())
+    assert "startCommand" not in rw["deploy"]
+    [svc] = _render()["services"]
+    assert "dockerCommand" not in svc
