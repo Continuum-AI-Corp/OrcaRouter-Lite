@@ -3,9 +3,10 @@ name: desktop
 # The Orca menu-bar app: tests on every change, installers on tags.
 #
 #   test     node --test (view logic) + cargo test (tray/notification rules)
-#   bundle   on v* tags and manual runs: freeze the engine with PyInstaller,
-#            then `tauri build` → .dmg (macOS), .deb/.AppImage (Linux),
-#            .msi/.exe (Windows); attached to the GitHub release on tags.
+#   bundle   on pull requests, v* tags and manual runs: freeze the engine with
+#            PyInstaller, then `tauri build` → .dmg (macOS), .deb/.AppImage
+#            (Linux), .msi/.exe (Windows). Pull requests get unsigned
+#            artifacts; tags attach signed installers to the GitHub release.
 #
 # macOS signing and notarisation run only when the APPLE_* secrets exist;
 # without them the .dmg is built unsigned (Gatekeeper will warn on first open).
@@ -66,7 +67,10 @@ jobs:
   bundle:
     name: installer (${{ matrix.name }})
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Tags build release installers; pull requests build the same installers
+    # unsigned, as downloadable artifacts, so every platform is proven before
+    # a release. Nothing is published from a pull request.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
