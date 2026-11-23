@@ -50,6 +50,9 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
 
     "orjson>=3.10.0",
+
+    # The desktop engine keeps its encryption key in the OS keychain.
+    "keyring>=25.7.0",
 ]
 
 [project.optional-dependencies]

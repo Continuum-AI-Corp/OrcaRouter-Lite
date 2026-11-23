@@ -73,6 +73,13 @@ person on one computer:
 - **Loopback only.** It listens on `127.0.0.1`; `orca up --host 0.0.0.0` is
   refused, and an engine started in desktop mode on any other host doesn't
   mount the desktop API at all.
+- **Encryption key in the OS keychain.** Provider keys you save are encrypted
+  (AES-256-GCM) with a key the engine keeps in the macOS Keychain, Windows
+  Credential Manager or the Linux Secret Service. Where there's no keychain
+  (headless Linux, or `ORCA_KEYCHAIN=0`) it's in
+  `~/.orcarouter-lite/secrets.json` with mode 0600. A secrets file from an
+  earlier version moves into the keychain and is deleted only after the
+  keychain returns the same values.
 - **Desktop API, desktop key.** The `/v1/app/*` endpoints that read and edit
   coding-agent settings exist only in desktop mode, and only the desktop app's
   own key (`~/.orcarouter-lite/app.key`, mode 0600) may call them. A server

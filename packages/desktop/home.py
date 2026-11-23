@@ -2,7 +2,10 @@
 
 Holds everything a desktop install needs so the user never touches a `.env`:
 
-  secrets.json   encryption key + key pepper, generated once (0600)
+  (keychain)     encryption key + key pepper, generated once, kept in the OS
+                 keychain (macOS Keychain, Windows Credential Manager, Linux
+                 Secret Service)
+  secrets.json   the same secrets where no keychain works (0600)
   orca.db        the SQLite database
   app.key        the key the desktop app and `orca` CLI use (0600)
   engine.json    where the running engine listens (0600)
@@ -11,15 +14,20 @@ Holds everything a desktop install needs so the user never touches a `.env`:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets as _secrets
-import time
+import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+log = structlog.get_logger()
 
 APP_KEY_NAME = "desktop-app"
 DEFAULT_PORT = 8765
@@ -43,35 +51,144 @@ def _write_private(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def prepare_home(home: Path) -> dict[str, str]:
+KEYCHAIN_SERVICE = "OrcaRouter Lite"
+_DEFAULT = object()
+_HOME_LOCK = threading.Lock()
+
+
+def keychain_name(home: Path) -> str:
+    return f"secrets:{Path(home).expanduser().resolve()}"
+
+
+class _SystemKeychain:
+    def __init__(self, backend):
+        self._backend = backend
+
+    def get(self, name: str) -> str | None:
+        return self._backend.get_password(KEYCHAIN_SERVICE, name)
+
+    def set(self, name: str, value: str) -> None:
+        self._backend.set_password(KEYCHAIN_SERVICE, name, value)
+
+
+def system_keychain():
+    """The OS keychain, or None where there isn't a usable one.
+
+    ORCA_KEYCHAIN=0 switches it off. On Linux it needs a desktop session bus
+    (Secret Service); headless machines keep the private file.
+    """
+    if os.environ.get("ORCA_KEYCHAIN", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if sys.platform.startswith("linux") and not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return None
+    try:
+        import keyring
+        from keyring.backends import fail
+    except ImportError:  # pragma: no cover - keyring is a dependency
+        return None
+    try:
+        backend = keyring.get_keyring()
+    except Exception:
+        return None
+    if isinstance(backend, fail.Keyring) or getattr(backend, "priority", 1) <= 0:
+        return None
+    return _SystemKeychain(backend)
+
+
+def _complete(data) -> bool:
+    return isinstance(data, dict) and bool(data.get("credential_encryption_key")) and bool(data.get("api_key_pepper"))
+
+
+@contextlib.contextmanager
+def _home_lock(home: Path):
+    """Serialise first runs across threads and processes."""
+    with _HOME_LOCK:
+        fd = os.open(home / ".secrets.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.name == "nt":  # pragma: no cover - Windows
+                import msvcrt
+
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+
+def _read_secrets_file(path: Path) -> dict[str, str] | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if _complete(data) else None
+
+
+def _keychain_get(keychain, name: str) -> tuple[bool, dict[str, str] | None]:
+    """(keychain works, secrets stored there)."""
+    try:
+        raw = keychain.get(name)
+    except Exception as exc:
+        log.warning("keychain_unavailable", error=str(exc))
+        return False, None
+    if raw is None:
+        return True, None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return True, None
+    return True, data if _complete(data) else None
+
+
+def _keychain_put(keychain, name: str, data: dict[str, str]) -> bool:
+    """Store and read back; True only if the keychain returns the same values."""
+    try:
+        keychain.set(name, json.dumps(data))
+    except Exception as exc:
+        log.warning("keychain_write_failed", error=str(exc))
+        return False
+    return _keychain_get(keychain, name) == (True, data)
+
+
+def prepare_home(home: Path, *, keychain=_DEFAULT) -> dict[str, str]:
     """Create the folder (0700) and its secrets on first run; return the secrets.
 
-    Creation is exclusive (O_EXCL), so two first runs racing each other end up
-    with the same secrets instead of one overwriting the other's.
+    The secrets go to the OS keychain when one works; a secrets.json written by
+    an earlier version moves there and is deleted once the keychain returns
+    the same values. Otherwise they stay in secrets.json (0600). First runs are
+    serialised by a lock, so racing launches share one set of secrets.
     """
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
     os.chmod(home, 0o700)
+    if keychain is _DEFAULT:
+        keychain = system_keychain()
     path = home / "secrets.json"
-    data = {
-        "credential_encryption_key": _secrets.token_hex(32),
-        "api_key_pepper": _secrets.token_urlsafe(32),
-    }
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        for _ in range(50):  # the winner may still be writing
-            try:
-                existing = json.loads(path.read_text())
-                if existing.get("credential_encryption_key") and existing.get("api_key_pepper"):
-                    return existing
-            except (OSError, ValueError):
-                pass
-            time.sleep(0.02)
-        raise
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(data, indent=2))
-    return data
+    name = keychain_name(home)
+    with _home_lock(home):
+        on_disk = _read_secrets_file(path)
+        works, stored = _keychain_get(keychain, name) if keychain is not None else (False, None)
+        if on_disk is not None:
+            if stored is not None and stored != on_disk:
+                # A restored backup or a manual edit: the file is what the
+                # database was last used with, so keep it and leave both.
+                log.warning("keychain_secrets_differ_from_file", file=str(path))
+                return on_disk
+            if works and (stored == on_disk or _keychain_put(keychain, name, on_disk)):
+                path.unlink()
+            return on_disk
+        if stored is not None:
+            return stored
+        data = {
+            "credential_encryption_key": _secrets.token_hex(32),
+            "api_key_pepper": _secrets.token_urlsafe(32),
+        }
+        if works and _keychain_put(keychain, name, data):
+            return data
+        _write_private(path, json.dumps(data, indent=2))
+        return data
 
 
 def desktop_env(home: Path, *, port: int = DEFAULT_PORT) -> dict[str, str]:

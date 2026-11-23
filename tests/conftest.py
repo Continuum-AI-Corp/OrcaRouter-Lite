@@ -76,6 +76,12 @@ def _no_update_check(monkeypatch):
     monkeypatch.setenv("ORCA_NO_UPDATE_CHECK", "1")
 
 
+@pytest.fixture(autouse=True)
+def _no_system_keychain(monkeypatch):
+    """Tests never read or write the machine's real keychain."""
+    monkeypatch.setenv("ORCA_KEYCHAIN", "0")
+
+
 @pytest.fixture
 def isolated_env(monkeypatch) -> Generator[None, None, None]:
     """Strip every ORCA_*/OPENAI_*/ANTHROPIC_*/etc env var before a test.

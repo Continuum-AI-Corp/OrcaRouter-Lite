@@ -62,6 +62,9 @@ def main() -> int:
         "--collect-submodules", "litellm",
         "--collect-submodules", "tiktoken_ext",
         "--copy-metadata", "orcarouter-lite",
+        # keyring finds its OS backends through entry points.
+        "--copy-metadata", "keyring",
+        "--collect-submodules", "keyring.backends",
         *litellm_data_args(),
         str(ROOT / "desktop" / "engine" / "orca_engine.py"),
     ]
