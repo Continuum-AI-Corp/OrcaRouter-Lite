@@ -165,3 +165,57 @@ def test_desktop_env_uses_the_keychain(tmp_path, monkeypatch):
     env = dh.desktop_env(tmp_path / "orca")
     assert env["CREDENTIAL_ENCRYPTION_KEY"] == json.loads(next(iter(kc.items.values())))["credential_encryption_key"]
     assert not _file(tmp_path / "orca").exists()
+
+
+# ── never mint new secrets over an existing database ────────────────────
+# The database's provider keys and API key hashes depend on these secrets.
+# If they were moved to the keychain and the keychain is later unavailable
+# (locked, ORCA_KEYCHAIN=0, no Secret Service), generating fresh ones would
+# silently make every stored key unusable. Refuse instead.
+
+
+def _existing_install_in_keychain(tmp_path):
+    home, kc = tmp_path / "orca", FakeKeychain()
+    original = dh.prepare_home(home, keychain=kc)
+    (home / "orca.db").write_bytes(b"sqlite data encrypted with the original key")
+    return home, kc, original
+
+
+def test_keychain_switched_off_later_refuses_instead_of_new_secrets(tmp_path):
+    home, _kc, _original = _existing_install_in_keychain(tmp_path)
+    with pytest.raises(dh.SecretsUnavailable, match="keychain"):
+        dh.prepare_home(home, keychain=None)
+    assert not _file(home).exists()
+
+
+def test_keychain_failing_later_refuses_instead_of_new_secrets(tmp_path):
+    home, kc, _original = _existing_install_in_keychain(tmp_path)
+    kc.fail_get = True
+    with pytest.raises(dh.SecretsUnavailable):
+        dh.prepare_home(home, keychain=kc)
+    assert not _file(home).exists()
+
+
+def test_keychain_back_again_returns_the_original_secrets(tmp_path):
+    home, kc, original = _existing_install_in_keychain(tmp_path)
+    with pytest.raises(dh.SecretsUnavailable):
+        dh.prepare_home(home, keychain=None)
+    assert dh.prepare_home(home, keychain=kc) == original
+
+
+def test_a_fresh_install_still_gets_new_secrets_without_a_keychain(tmp_path):
+    secrets = dh.prepare_home(tmp_path / "orca", keychain=None)
+    assert _valid(secrets)
+
+
+def test_orca_up_explains_and_exits_when_secrets_are_unavailable(tmp_path, monkeypatch, capsys):
+    from app import orca_cli
+
+    home, _kc, _original = _existing_install_in_keychain(tmp_path)
+    monkeypatch.setenv("ORCA_HOME", str(home))
+
+    def never(**_kw):  # pragma: no cover - must not start
+        raise AssertionError("server must not start")
+
+    assert orca_cli.main(["up", "--port", "8797"], run_server=never) == 1
+    assert "keychain" in capsys.readouterr().err

@@ -325,7 +325,11 @@ def main(
             return 2
         home = dh.default_home()
         instance_secret = secrets.token_urlsafe(32)
-        env = dh.desktop_env(home, port=port)
+        try:
+            env = dh.desktop_env(home, port=port)
+        except dh.SecretsUnavailable as exc:
+            _err(str(exc))
+            return 1
         env["ORCA_INSTANCE_SECRET"] = instance_secret
         dh.write_engine_info(home, base_url=f"http://127.0.0.1:{port}", pid=os.getpid(), secret=instance_secret)
         if args.exit_with_stdin:

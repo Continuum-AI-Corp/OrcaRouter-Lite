@@ -37,6 +37,10 @@ class EngineNotRunning(Exception):
     pass
 
 
+class SecretsUnavailable(Exception):
+    """The Orca folder has data, but the secrets it was created with can't be read."""
+
+
 def default_home() -> Path:
     env = os.environ.get("ORCA_HOME")
     return Path(env).expanduser() if env else Path.home() / ".orcarouter-lite"
@@ -152,6 +156,22 @@ def _keychain_put(keychain, name: str, data: dict[str, str]) -> bool:
     return _keychain_get(keychain, name) == (True, data)
 
 
+def _unavailable_reason(keychain, works: bool, home: Path) -> str:
+    keep = ("Orca won't create a new one, because that would make your saved provider keys "
+            "and API keys unusable.")
+    if keychain is None:
+        why = ("the OS keychain is switched off (ORCA_KEYCHAIN=0)"
+               if os.environ.get("ORCA_KEYCHAIN", "1").strip().lower() in ("0", "false", "no", "off")
+               else "no OS keychain is available here (on Linux it needs a desktop session)")
+        return (f"Orca's encryption key for {home} is kept in the OS keychain, but {why}. {keep} "
+                "Run Orca where the keychain is available and try again.")
+    if not works:
+        return (f"Orca couldn't read its encryption key for {home} from the OS keychain; it may be locked. "
+                f"{keep} Unlock the keychain and try again.")
+    return (f"Orca's encryption key for {home} is missing from the OS keychain and from secrets.json. {keep} "
+            f"If the key is gone for good, move {home / 'orca.db'} aside to start fresh.")
+
+
 def prepare_home(home: Path, *, keychain=_DEFAULT) -> dict[str, str]:
     """Create the folder (0700) and its secrets on first run; return the secrets.
 
@@ -159,6 +179,10 @@ def prepare_home(home: Path, *, keychain=_DEFAULT) -> dict[str, str]:
     an earlier version moves there and is deleted once the keychain returns
     the same values. Otherwise they stay in secrets.json (0600). First runs are
     serialised by a lock, so racing launches share one set of secrets.
+
+    New secrets are made only for a fresh folder. If orca.db exists but its
+    secrets can't be read (keychain locked, switched off or missing), this
+    raises SecretsUnavailable rather than orphan the data.
     """
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
@@ -181,6 +205,11 @@ def prepare_home(home: Path, *, keychain=_DEFAULT) -> dict[str, str]:
             return on_disk
         if stored is not None:
             return stored
+        if (home / "orca.db").exists():
+            # Existing data was encrypted and hashed with secrets we can't
+            # read right now. New ones would make every saved provider key
+            # and API key unusable, so stop and say why.
+            raise SecretsUnavailable(_unavailable_reason(keychain, works, home))
         data = {
             "credential_encryption_key": _secrets.token_hex(32),
             "api_key_pepper": _secrets.token_urlsafe(32),

@@ -79,7 +79,9 @@ person on one computer:
   (headless Linux, or `ORCA_KEYCHAIN=0`) it's in
   `~/.orcarouter-lite/secrets.json` with mode 0600. A secrets file from an
   earlier version moves into the keychain and is deleted only after the
-  keychain returns the same values.
+  keychain returns the same values. If the keychain later can't be read
+  (locked, switched off, no desktop session), the engine refuses to start
+  rather than create a new key that would orphan your saved keys.
 - **Desktop API, desktop key.** The `/v1/app/*` endpoints that read and edit
   coding-agent settings exist only in desktop mode, and only the desktop app's
   own key (`~/.orcarouter-lite/app.key`, mode 0600) may call them. A server
