@@ -1,7 +1,7 @@
 // First-run setup: pick agents, choose where requests go, set a daily alert.
 // Also reopened later from the menu, so it starts from the current settings.
 import { createEngine, native } from "./api.js";
-import { AGENT_COLORS, agentRows } from "./lib.js";
+import { AGENT_COLORS, agentNote, agentRows } from "./lib.js";
 
 const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", orcarouter: "OrcaRouter" };
 const TICK =
@@ -49,11 +49,11 @@ function agentItem(row, agent) {
   if (row.state === "connected") small.textContent = "Already connected";
   else if (row.setup === "manual") small.textContent = "Connect from the menu: one paste step";
   else if (row.state === "unsupported") small.textContent = agent.note;
-  else if (agent.note) {
-    // e.g. Claude Code: say plainly that billing moves off the subscription.
-    small.textContent = agent.note;
-    small.className = "warn-note";
-  } else small.textContent = "Orca will update its settings";
+  else {
+    const note = agentNote(agent);
+    small.textContent = note.text;
+    if (note.warn) small.className = "warn-note"; // e.g. Claude Code's billing change
+  }
   nm.append(b, small);
 
   const pill = document.createElement("span");

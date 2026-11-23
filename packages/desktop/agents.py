@@ -83,6 +83,8 @@ class AgentSpec:
     note: str = ""
     # (path relative to home, format) for "auto"; format is json, yaml, toml or dotenv.
     files: tuple[tuple[str, str], ...] = ()
+    # The note is a warning the user should read before connecting.
+    warn: bool = False
 
     @property
     def config_file(self) -> str | None:
@@ -103,6 +105,7 @@ AGENTS: dict[str, AgentSpec] = {
             setup="auto",
             note="Requests go through your provider keys instead of a Claude subscription while connected.",
             files=((".claude/settings.json", "json"),),
+            warn=True,
         ),
         AgentSpec(
             id="codex",
@@ -185,6 +188,7 @@ class AgentStatus:
     connected: bool
     note: str
     config_path: str | None
+    warn: bool = False
 
 
 @dataclass(frozen=True)
@@ -656,6 +660,7 @@ def detect_agents(
                 connected=spec.id in state,
                 note=spec.note,
                 config_path=str(config_path) if config_path else None,
+                warn=spec.warn,
             )
         )
     return out

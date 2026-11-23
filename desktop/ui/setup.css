@@ -23,7 +23,7 @@ form { display: flex; flex-direction: column; gap: 14px; }
 .agent .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--tile-fg); }
 .agent .nm { min-width: 0; display: flex; flex-direction: column; }
 .agent .nm b { font-weight: 500; }
-.agent .nm small { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent .nm small { color: var(--ink-3); font-size: 11.5px; line-height: 1.45; }
 
 .choices { display: flex; flex-direction: column; gap: 8px; }
 .choice { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 2px 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; transition: border-color var(--d-fast) var(--ease), background var(--d-fast) var(--ease), box-shadow var(--d-fast) var(--ease); }

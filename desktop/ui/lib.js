@@ -225,3 +225,10 @@ export function updateLine(update, { canInstall = false } = {}) {
     action: canInstall ? "Install and restart" : "Download",
   };
 }
+
+// The line under an agent in setup. Only notes the engine marks as warnings
+// (Claude Code: billing moves off the subscription) are styled as warnings.
+export function agentNote(agent) {
+  if (!agent || !agent.note) return { text: "Orca will update its settings", warn: false };
+  return { text: agent.note, warn: Boolean(agent.warn) };
+}

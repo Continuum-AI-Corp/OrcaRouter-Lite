@@ -7,6 +7,7 @@ import {
   AGENT_COLORS,
   gatewayLine,
   updateLine,
+  agentNote,
   agentRows,
   budgetView,
   classifyError,
@@ -220,4 +221,14 @@ test("updateLine installs in place when this build can update itself", () => {
   const url = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/tag/v0.3.0";
   assert.equal(updateLine({ version: "0.3.0", url }).action, "Download");
   assert.equal(updateLine({ version: "0.3.0", url }, { canInstall: true }).action, "Install and restart");
+});
+
+test("agentNote styles only real warnings as warnings", () => {
+  assert.deepEqual(agentNote({ note: "Billing moves off your subscription.", warn: true }), {
+    text: "Billing moves off your subscription.", warn: true,
+  });
+  assert.deepEqual(agentNote({ note: "OpenCode uses the orca/auto model while connected.", warn: false }), {
+    text: "OpenCode uses the orca/auto model while connected.", warn: false,
+  });
+  assert.deepEqual(agentNote({ note: "" }), { text: "Orca will update its settings", warn: false });
 });

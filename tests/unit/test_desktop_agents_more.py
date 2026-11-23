@@ -501,3 +501,10 @@ def test_a_failed_reconnect_keeps_the_working_key(home, state_dir, monkeypatch):
     with pytest.raises(ag.AgentConfigError):
         _connect("opencode", home, state_dir, key=KEY.replace("0", "3"))
     assert (state_dir / "keys" / "opencode.key").read_text() == KEY
+
+
+def test_only_real_warnings_are_flagged_as_warnings(home, state_dir):
+    # Claude Code's note says billing moves off the subscription: a warning.
+    # The others just say which model they'll use.
+    flagged = {s.id for s in ag.detect_agents(home=home, state_dir=state_dir, which=lambda _n: None) if s.warn}
+    assert flagged == {"claude-code"}

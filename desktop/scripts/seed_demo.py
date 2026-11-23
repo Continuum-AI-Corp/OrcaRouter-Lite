@@ -55,10 +55,12 @@ def main() -> None:
     _api("PUT", "/v1/providers/openai", {"api_key": "sk-demo-" + "y" * 40})
     _api("PUT", "/v1/app/settings", {"daily_budget_cents": 2000})
     _api("POST", "/v1/app/agents/claude-code/connect")
+    _api("POST", "/v1/app/agents/codex/connect")
 
     db = sqlite3.connect(HOME / "orca.db")
     keys = dict(db.execute("select name, id from api_keys where revoked_at is null"))
     agent_key = keys["agent:claude-code"]
+    codex_key = keys["agent:codex"]
     direct_key = keys["default"]
     now = datetime.now(timezone.utc)
     rnd = random.Random(7)
@@ -71,11 +73,14 @@ def main() -> None:
             status, None, 0, when.strftime("%Y-%m-%d %H:%M:%S.%f"), 0,
         ))
 
-    # Today: $2.60 from Claude Code, $0.60 from direct use, one rescued request.
+    # Today: $2.60 from Claude Code, $0.85 from Codex, $0.60 from direct use, one rescued request.
     for cost in (900_000, 700_000, 600_000, 400_000):
         add(now - timedelta(minutes=rnd.randint(5, 300)), agent_key, "claude-sonnet-4-5", "anthropic", cost)
     add(now - timedelta(minutes=40), direct_key, "gpt-4o-mini", "openai", 600_000)
     add(now - timedelta(minutes=55), agent_key, "claude-sonnet-4-5", "orcarouter", 0, fallback=1)
+    # Codex, through /v1/responses.
+    for cost in (500_000, 350_000):
+        add(now - timedelta(minutes=rnd.randint(5, 300)), codex_key, "gpt-5.1-codex", "openai", cost)
     # Earlier this week.
     for day in range(1, 6):
         for _ in range(3):
