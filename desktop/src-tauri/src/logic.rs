@@ -180,6 +180,16 @@ pub fn updates_installable(plugins: &Value) -> bool {
     has_key && https
 }
 
+/// What to tell the user when the engine exits during startup: the last
+/// line it wrote (its own explanation, e.g. a locked keychain), or a pointer
+/// to the log when it wrote nothing.
+pub fn startup_failure(new_output: &str, log_path: &str) -> String {
+    match new_output.lines().map(str::trim).filter(|l| !l.is_empty()).last() {
+        Some(line) => line.chars().take(300).collect(),
+        None => format!("The Orca engine stopped during startup. See {log_path}"),
+    }
+}
+
 /// Announce a newer release once per version; the caller remembers which.
 pub fn update_notice(last_announced: Option<&str>, s: &Snapshot) -> Option<(String, Alert)> {
     let version = s.update_version.as_deref()?;
@@ -340,6 +350,23 @@ mod tests {
         assert!(!updates_installable(&json!({"updater": {"pubkey": "", "endpoints": ["https://x/latest.json"]}})));
         assert!(!updates_installable(&json!({"updater": {"pubkey": "k", "endpoints": []}})));
         assert!(!updates_installable(&json!({"updater": {"pubkey": "k", "endpoints": ["http://x/latest.json"]}})));
+    }
+
+    #[test]
+    fn a_failed_start_says_why_in_the_engines_own_words() {
+        let out = "INFO starting\nOrca's encryption key for /home/u/.orcarouter-lite is kept in the OS keychain, \
+                   but the OS keychain is switched off (ORCA_KEYCHAIN=0).\n\n";
+        assert_eq!(
+            startup_failure(out, "/home/u/.orcarouter-lite/engine.log"),
+            "Orca's encryption key for /home/u/.orcarouter-lite is kept in the OS keychain, \
+             but the OS keychain is switched off (ORCA_KEYCHAIN=0)."
+        );
+        assert_eq!(
+            startup_failure("  \n", "/x/engine.log"),
+            "The Orca engine stopped during startup. See /x/engine.log"
+        );
+        let long = "x".repeat(600);
+        assert!(startup_failure(&long, "/x/engine.log").chars().count() <= 300);
     }
 
     #[test]

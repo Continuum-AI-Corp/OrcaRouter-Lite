@@ -135,6 +135,8 @@ impl Engine {
                 .open(home.join("engine.log"))
                 .map_err(|e| e.to_string())?;
             let err = log.try_clone().map_err(|e| e.to_string())?;
+            let log_path = home.join("engine.log");
+            let log_start = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
             let mut spawned = engine_command()
                 .args(["up", "--port", &port.to_string(), "--exit-with-stdin"])
                 .env("ORCA_HOME", &home)
@@ -149,11 +151,13 @@ impl Engine {
                 if healthy(port) {
                     break;
                 }
-                if let Ok(Some(status)) = spawned.try_wait() {
-                    return Err(format!(
-                        "The Orca engine stopped during startup ({status}). See {}",
-                        home.join("engine.log").display()
-                    ));
+                if let Ok(Some(_status)) = spawned.try_wait() {
+                    // The engine explains itself on its last line (a locked
+                    // keychain, a port in use); show that, not just the log path.
+                    let written = std::fs::read(&log_path).unwrap_or_default();
+                    let start = (log_start as usize).min(written.len());
+                    let new_output = String::from_utf8_lossy(&written[start..]);
+                    return Err(crate::logic::startup_failure(&new_output, &log_path.display().to_string()));
                 }
                 if Instant::now() > deadline {
                     let _ = spawned.kill();
