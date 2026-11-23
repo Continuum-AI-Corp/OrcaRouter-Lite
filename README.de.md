@@ -39,10 +39,11 @@ Die Orca-App sitzt in Ihrer Menüleiste. Sie betreibt den Router auf `127.0.0.1`
 Coding-Agenten damit und zeigt, was sie ausgeben.
 
 - **Heutige Ausgaben, pro Agent.** Die Tagessumme steht neben der Uhr; das Panel schlüsselt sie nach Agent auf.
-- **Ein Tagesbudget.** Benachrichtigungen bei 80 % und 100 % des festgelegten Betrags. Die Agenten arbeiten weiter; Orca warnt, statt zu blockieren.
+- **Ein Tagesbudget.** Benachrichtigungen bei 80 % und 100 % des festgelegten Betrags. Standardmäßig nur Warnungen; mit einem Häkchen pausiert Orca Ihre Coding-Agenten, sobald der Betrag erreicht ist.
 - **Verbinden mit einem Klick.** Orca passt die Einstellungen des Agenten selbst an, legt ein Backup an und stellt es wieder her, wenn Sie die Verbindung trennen.
 - **Nie offline.** Fällt ein Provider aus oder bremst Sie per Rate-Limit aus, weichen Anfragen auf einen anderen Provider oder auf das gehostete OrcaRouter aus, und die App zählt, wie viele sie gerettet hat.
 - **Standardmäßig privat.** Prompts gehen direkt von Ihren Agenten an den Provider Ihrer Wahl. Keine Telemetrie.
+- **Funktioniert mit dem Gateway Ihres Teams.** `orca login https://ai-gw.example.com --key …` (oder "Join my company's gateway" in der Einrichtung) richtet Ihre Agenten auf das Gateway aus, das Ihr Plattform-Team betreibt; `orca logout` stellt den vorherigen Zustand wieder her.
 
 **Installation.** Installer (`.dmg`, `.deb`, `.AppImage`, `.msi`) werden von
 [`desktop.yml`](./.github/workflows/desktop.yml) gebaut und ab der nächsten getaggten Version an
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up` stellt das Panel unter `http://127.0.0.1:8765/desktop/panel.html` bereit; wie Sie die
-Menüleisten-App selbst bauen, steht in [`desktop/`](./desktop/README.md).
+Menüleisten-App selbst bauen, steht in [`desktop/`](./desktop/README.md). Sobald das erste Release erschienen ist,
+können Nutzer von Macs mit Apple-Chip auch `brew install --cask continuum-ai-corp/tap/orcarouter-lite` ausführen.
+
+Die heutigen Ausgaben in der Statusleiste von Claude Code: Fügen Sie dies zu `~/.claude/settings.json` hinzu.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` gibt die Woche als Markdown (oder `--format csv`) aus, zum Einfügen in einen Chat oder eine Tabelle.
 
 | Agent | So wird verbunden |
 |---|---|
@@ -366,9 +376,10 @@ packages/
 - [x] Provider-übergreifender Prompt-Cache
 - [x] Desktop-App: Ausgaben in der Menüleiste, Benachrichtigungen zum Tagesbudget, Agenten mit einem Klick verbinden
 - [x] Signierte Releases mit Provenance und SBOM; Abhängigkeiten per Hash gesperrt
+- [x] Tagesbudget, das warnt oder Coding-Agenten am Limit pausiert
+- [x] `orca login` / "Join my company's gateway": das Gateway eines Teams direkt aus der App nutzen
 - [ ] `/v1/responses`, damit Codex sich verbinden kann
-- [ ] Harte Budgetgrenzen pro Entwickler (Benachrichtigungen gibt es bereits)
-- [ ] `orca login`: dem Gateway eines Teams direkt aus der App beitreten
+- [ ] Budgets pro Entwickler, durchgesetzt auf einem gemeinsamen Team-Gateway
 - [ ] Embeddings, Ollama/vLLM-Provider, eigene Fallback-Ketten
 
 Siehe [DEMO.md](./DEMO.md) für die Failover-Demo.

@@ -36,10 +36,11 @@ OrcaRouter Lite é a edição open source do [OrcaRouter](https://www.orcarouter
 O app Orca fica na sua barra de menus. Ele roda o roteador em `127.0.0.1`, conecta seus agentes de código a ele e mostra quanto eles gastam.
 
 - **Gasto de hoje, por agente.** O total do dia fica ao lado do relógio; o painel o divide por agente.
-- **Um orçamento diário.** Notificações em 80% e 100% do valor que você definir. Os agentes continuam trabalhando; o Orca alerta em vez de bloquear.
+- **Um orçamento diário.** Notificações em 80% e 100% do valor que você definir. Por padrão, só alerta; marque uma caixa e o Orca pausa seus agentes de código quando o valor for atingido.
 - **Conexão com um clique.** O Orca edita as configurações do próprio agente, guarda um backup e o restaura quando você desconecta.
 - **Nunca fora do ar.** Quando um provedor falha ou aplica rate limit em você, as requisições fazem fallback para outro provedor ou para o OrcaRouter hospedado, e o app conta quantas ele salvou.
 - **Privado por padrão.** Os prompts vão direto dos seus agentes para o provedor que você escolher. Sem telemetria.
+- **Funciona com o gateway do seu time.** `orca login https://ai-gw.example.com --key …` (ou "Join my company's gateway" na configuração inicial) aponta seus agentes para o gateway que o seu time de plataforma mantém; `orca logout` os restaura.
 
 **Instalação.** Os instaladores (`.dmg`, `.deb`, `.AppImage`, `.msi`) são gerados pelo [`desktop.yml`](./.github/workflows/desktop.yml) e anexados a cada release, a partir da próxima versão com tag. Até lá, o mesmo engine e a mesma CLI estão a um comando de distância:
 
@@ -55,7 +56,15 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
-`orca up` serve o painel em `http://127.0.0.1:8765/desktop/panel.html`; para buildar o app de barra de menus em si, veja [`desktop/`](./desktop/README.md).
+`orca up` serve o painel em `http://127.0.0.1:8765/desktop/panel.html`; para buildar o app de barra de menus em si, veja [`desktop/`](./desktop/README.md). Assim que sair a primeira release, usuários de Mac com Apple silicon também poderão rodar `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+
+O gasto de hoje na barra de status do Claude Code: adicione isto ao `~/.claude/settings.json`.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` imprime a semana em Markdown (ou `--format csv`) para colar em um chat ou em uma planilha.
 
 | Agente | Como se conecta |
 |---|---|
@@ -357,9 +366,10 @@ packages/
 - [x] Cache de prompt cross-provider
 - [x] App desktop: gasto na barra de menus, alertas de orçamento diário, conexão de agentes com um clique
 - [x] Releases assinadas com provenance e SBOM; dependências travadas por hash
+- [x] Orçamento diário que alerta, ou pausa os agentes de código no limite
+- [x] `orca login` / "Join my company's gateway": usar o gateway de um time pelo app
 - [ ] `/v1/responses` para que o Codex possa se conectar
-- [ ] Limites rígidos de orçamento por desenvolvedor (os alertas já estão disponíveis)
-- [ ] `orca login`: entrar no gateway de um time pelo app
+- [ ] Orçamentos por desenvolvedor aplicados em um gateway compartilhado do time
 - [ ] Embeddings, providers Ollama/vLLM, cadeias de fallback personalizadas
 
 Veja [DEMO.md](./DEMO.md) para o demo de failover.

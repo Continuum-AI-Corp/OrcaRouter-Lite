@@ -63,7 +63,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 
 `orca up` serves the panel at `http://127.0.0.1:8765/desktop/panel.html`; to build the
 menu-bar app itself, see [`desktop/`](./desktop/README.md). Once the first release is out,
-macOS users can also `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+on Apple-silicon Macs you can also `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 Today's spend in Claude Code's status bar: add this to `~/.claude/settings.json`.
 

@@ -39,10 +39,11 @@ La app Orca vive en tu barra de menús. Ejecuta el enrutador en `127.0.0.1`, con
 de código y muestra cuánto gastan.
 
 - **Gasto de hoy, por agente.** El total del día aparece junto al reloj; el panel lo desglosa por agente.
-- **Un presupuesto diario.** Notificaciones al 80 % y al 100 % del importe que fijes. Los agentes siguen funcionando; Orca avisa en lugar de bloquear.
+- **Un presupuesto diario.** Notificaciones al 80 % y al 100 % del importe que fijes. Por defecto solo avisa; marca una casilla y Orca pausa tus agentes de código al alcanzarlo.
 - **Conexión en un clic.** Orca edita la configuración propia del agente, guarda una copia de seguridad y la restaura cuando lo desconectas.
 - **Nunca caído.** Cuando un proveedor falla o te aplica rate-limit, las solicitudes pasan a otro proveedor o al OrcaRouter alojado, y la app cuenta cuántas ha rescatado.
 - **Privado por defecto.** Los prompts van directamente de tus agentes al proveedor que elijas. Sin telemetría.
+- **Funciona con el gateway de tu equipo.** `orca login https://ai-gw.example.com --key …` (o "Join my company's gateway" en la configuración inicial) apunta tus agentes al gateway que gestiona tu equipo de plataforma; `orca logout` los restaura.
 
 **Instalación.** Los instaladores (`.dmg`, `.deb`, `.AppImage`, `.msi`) los genera
 [`desktop.yml`](./.github/workflows/desktop.yml) y se adjuntan a cada release a partir de la
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up` sirve el panel en `http://127.0.0.1:8765/desktop/panel.html`; para compilar la propia
-app de barra de menús, consulta [`desktop/`](./desktop/README.md).
+app de barra de menús, consulta [`desktop/`](./desktop/README.md). Cuando salga la primera release,
+los usuarios de Mac con Apple silicon también podrán hacer `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+
+El gasto de hoy en la barra de estado de Claude Code: añade esto a `~/.claude/settings.json`.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` imprime la semana en Markdown (o `--format csv`) para pegarla en un chat o una hoja de cálculo.
 
 | Agente | Cómo se conecta |
 |---|---|
@@ -366,9 +376,10 @@ packages/
 - [x] Caché de prompts entre proveedores
 - [x] App de escritorio: gasto en la barra de menús, alertas de presupuesto diario, conexión de agentes en un clic
 - [x] Releases firmadas con procedencia y SBOM; dependencias fijadas por hash
+- [x] Presupuesto diario que avisa, o pausa los agentes de código al llegar al límite
+- [x] `orca login` / "Join my company's gateway": usar el gateway de un equipo desde la app
 - [ ] `/v1/responses` para que Codex pueda conectarse
-- [ ] Límites de presupuesto estrictos por desarrollador (las alertas ya están disponibles)
-- [ ] `orca login`: unirse al gateway de un equipo desde la app
+- [ ] Presupuestos por desarrollador aplicados en un gateway de equipo compartido
 - [ ] Embeddings, proveedores Ollama/vLLM, cadenas de respaldo personalizadas
 
 Consulta [DEMO.md](./DEMO.md) para la demo de failover.

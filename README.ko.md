@@ -39,10 +39,11 @@ Orca 앱은 메뉴 바에 상주합니다. `127.0.0.1`에서 라우터를 실행
 연결하고, 에이전트들이 쓰는 비용을 보여 줍니다.
 
 - **오늘의 지출, 에이전트별로.** 오늘 총액은 시계 옆에 표시되고, 패널에서 에이전트별로 나눠 볼 수 있습니다.
-- **일일 예산.** 설정한 금액의 80%와 100%에 도달하면 알림을 보냅니다. 에이전트는 계속 동작하며, Orca는 차단하지 않고 알리기만 합니다.
+- **일일 예산.** 설정한 금액의 80%와 100%에 도달하면 알림을 보냅니다. 기본값은 알림만 보내는 것이며, 체크박스 하나를 켜면 한도에 도달했을 때 Orca가 코딩 에이전트를 일시 중지합니다.
 - **원클릭 연결.** Orca가 에이전트 자체의 설정을 수정하고, 백업을 보관했다가, 연결을 해제하면 원래대로 복원합니다.
 - **멈추지 않음.** 공급자에 장애가 나거나 속도 제한에 걸리면 요청이 다른 공급자나 호스팅된 OrcaRouter로 대체되며, 앱은 이렇게 살려 낸 요청 수를 집계합니다.
 - **기본적으로 비공개.** 프롬프트는 에이전트에서 선택한 공급자로 바로 전송됩니다. 텔레메트리는 없습니다.
+- **팀 게이트웨이와 함께 사용.** `orca login https://ai-gw.example.com --key …`(또는 초기 설정의 "Join my company's gateway")로 플랫폼 팀이 운영하는 게이트웨이에 에이전트를 연결하고, `orca logout`으로 원래대로 복원합니다.
 
 **설치.** 설치 파일(`.dmg`, `.deb`, `.AppImage`, `.msi`)은
 [`desktop.yml`](./.github/workflows/desktop.yml)로 빌드되며, 다음 태그 버전부터 각 릴리스에
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up`은 `http://127.0.0.1:8765/desktop/panel.html`에서 패널을 제공합니다. 메뉴 바 앱 자체를
-빌드하려면 [`desktop/`](./desktop/README.md)을 참조하세요.
+빌드하려면 [`desktop/`](./desktop/README.md)을 참조하세요. 첫 릴리스가 나오면 Apple 실리콘 Mac 사용자는
+`brew install --cask continuum-ai-corp/tap/orcarouter-lite`로도 설치할 수 있습니다.
+
+Claude Code 상태 표시줄에 오늘의 지출을 표시하려면 `~/.claude/settings.json`에 다음을 추가하세요.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report`는 한 주의 내역을 Markdown(또는 `--format csv`)으로 출력하므로 채팅이나 스프레드시트에 바로 붙여 넣을 수 있습니다.
 
 | 에이전트 | 연결 방식 |
 |---|---|
@@ -365,9 +375,10 @@ packages/
 - [x] 공급자 간 프롬프트 캐시
 - [x] 데스크톱 앱: 메뉴 바 지출 표시, 일일 예산 알림, 원클릭 에이전트 연결
 - [x] 출처 증명과 SBOM이 포함된 서명된 릴리스, 해시로 고정된 의존성
+- [x] 알림을 보내거나 한도에서 코딩 에이전트를 일시 중지하는 일일 예산
+- [x] `orca login` / "Join my company's gateway": 앱에서 팀의 게이트웨이 사용
 - [ ] Codex 연결을 위한 `/v1/responses`
-- [ ] 개발자별 강제 예산 상한(알림은 현재 제공)
-- [ ] `orca login`: 앱에서 팀의 게이트웨이에 참여
+- [ ] 공유 팀 게이트웨이에서 강제되는 개발자별 예산
 - [ ] 임베딩, Ollama/vLLM 공급자, 사용자 지정 대체 체인
 
 장애 조치 데모는 [DEMO.md](./DEMO.md)를 참조하세요.

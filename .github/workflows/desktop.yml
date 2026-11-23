@@ -81,7 +81,6 @@ jobs:
       matrix:
         include:
           - { name: macOS Apple silicon, os: macos-15 }
-          - { name: macOS Intel, os: macos-15-intel }
           - { name: Linux, os: ubuntu-22.04 }
           - { name: Windows, os: windows-2022 }
     runs-on: ${{ matrix.os }}
@@ -196,7 +195,6 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           arm=$(ls dmgs/*_"$v"_aarch64.dmg)
-          x64=$(ls dmgs/*_"$v"_x64.dmg)
-          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" --x64 "$x64" > orcarouter-lite.rb
+          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" > orcarouter-lite.rb
           cat orcarouter-lite.rb
           gh release upload "$GITHUB_REF_NAME" orcarouter-lite.rb --clobber

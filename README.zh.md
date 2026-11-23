@@ -39,10 +39,11 @@ Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你�
 并显示它们的花费。
 
 - **今日花费，按 Agent 拆分。** 今日总额显示在时钟旁边；面板按 Agent 拆分明细。
-- **每日预算。** 达到你设定金额的 80% 和 100% 时发出通知。Agent 照常工作；Orca 只提醒，不拦截。
+- **每日预算。** 达到你设定金额的 80% 和 100% 时发出通知。默认只提醒；勾选一个复选框，达到上限后 Orca 就会暂停你的编程 Agent。
 - **一键连接。** Orca 修改 Agent 自身的设置，保留一份备份，并在你断开连接时恢复原样。
 - **永不掉线。** 当某个 provider 故障或对你限流时，请求会回退到另一个 provider 或托管的 OrcaRouter，应用会统计它挽救了多少请求。
 - **默认私密。** 提示词从你的 Agent 直接发送到你选择的 provider。没有遥测。
+- **支持团队网关。** `orca login https://ai-gw.example.com --key …`（或在设置中选择 "Join my company's gateway"）会让你的 Agent 指向平台团队运行的网关；`orca logout` 恢复原样。
 
 **安装。** 安装包（`.dmg`、`.deb`、`.AppImage`、`.msi`）由
 [`desktop.yml`](./.github/workflows/desktop.yml) 构建，并从下一个打标签的版本开始附加到每个 release。
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up` 会在 `http://127.0.0.1:8765/desktop/panel.html` 提供面板；如需构建
-菜单栏应用本身，请见 [`desktop/`](./desktop/README.md)。
+菜单栏应用本身，请见 [`desktop/`](./desktop/README.md)。首个 release 发布后，
+Apple 芯片 Mac 用户也可以 `brew install --cask continuum-ai-corp/tap/orcarouter-lite`。
+
+在 Claude Code 的状态栏显示今日花费：把下面这行加到 `~/.claude/settings.json`。
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` 以 Markdown（或 `--format csv`）输出本周数据，可直接粘贴到聊天或表格中。
 
 | Agent | 连接方式 |
 |---|---|
@@ -365,9 +375,10 @@ packages/
 - [x] 跨 provider 提示缓存
 - [x] 桌面应用：菜单栏显示花费、每日预算告警、一键连接 Agent
 - [x] 带来源证明和 SBOM 的签名 release；哈希锁定的依赖
+- [x] 每日预算：可只提醒，也可在达到上限时暂停编程 Agent
+- [x] `orca login` / "Join my company's gateway"：从应用使用团队的网关
 - [ ] `/v1/responses`，让 Codex 可以接入
-- [ ] 按开发者的硬性预算上限（目前已提供告警）
-- [ ] `orca login`：从应用加入团队的网关
+- [ ] 在共享团队网关上强制执行按开发者的预算
 - [ ] Embeddings、Ollama/vLLM provider、自定义 fallback 链
 
 故障转移演示请见 [DEMO.md](./DEMO.md)。

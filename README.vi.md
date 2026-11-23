@@ -39,10 +39,11 @@ OrcaRouter Lite là phiên bản mã nguồn mở của [OrcaRouter](https://www
 của bạn vào đó và cho bạn thấy chúng tiêu bao nhiêu.
 
 - **Chi tiêu hôm nay, theo từng agent.** Tổng hôm nay hiển thị cạnh đồng hồ; bảng điều khiển chia nhỏ theo agent.
-- **Ngân sách hằng ngày.** Thông báo khi đạt 80% và 100% số tiền bạn đặt. Các agent vẫn tiếp tục làm việc; Orca cảnh báo chứ không chặn.
+- **Ngân sách hằng ngày.** Thông báo khi đạt 80% và 100% số tiền bạn đặt. Mặc định chỉ cảnh báo; đánh dấu một ô là Orca sẽ tạm dừng các coding agent của bạn khi chạm mức đó.
 - **Kết nối một cú nhấp.** Orca sửa cấu hình riêng của agent, giữ một bản sao lưu và khôi phục lại khi bạn ngắt kết nối.
 - **Không bao giờ sập.** Khi một provider gặp lỗi hoặc giới hạn rate của bạn, request sẽ fallback sang provider khác hoặc sang OrcaRouter hosted, và ứng dụng đếm số request mà nó đã cứu được.
 - **Riêng tư theo mặc định.** Prompt đi thẳng từ agent của bạn tới provider bạn chọn. Không có telemetry.
+- **Dùng được với gateway của đội.** `orca login https://ai-gw.example.com --key …` (hoặc "Join my company's gateway" trong phần thiết lập) trỏ các agent của bạn tới gateway do đội platform vận hành; `orca logout` khôi phục lại như cũ.
 
 **Cài đặt.** Bộ cài (`.dmg`, `.deb`, `.AppImage`, `.msi`) được build bởi
 [`desktop.yml`](./.github/workflows/desktop.yml) và đính kèm vào mỗi bản phát hành, bắt đầu từ
@@ -61,7 +62,16 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up` phục vụ bảng điều khiển tại `http://127.0.0.1:8765/desktop/panel.html`; để tự build
-ứng dụng thanh menu, xem [`desktop/`](./desktop/README.md).
+ứng dụng thanh menu, xem [`desktop/`](./desktop/README.md). Khi bản phát hành đầu tiên ra mắt,
+người dùng Mac chip Apple silicon cũng có thể `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+
+Chi tiêu hôm nay trên thanh trạng thái của Claude Code: thêm dòng này vào `~/.claude/settings.json`.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` in ra số liệu của tuần dưới dạng Markdown (hoặc `--format csv`) để dán vào chat hay bảng tính.
 
 | Agent | Cách kết nối |
 |---|---|
@@ -365,9 +375,10 @@ packages/
 - [x] Cache prompt liên-provider
 - [x] Ứng dụng desktop: chi tiêu trên thanh menu, cảnh báo ngân sách hằng ngày, kết nối agent một cú nhấp
 - [x] Bản phát hành được ký kèm provenance và SBOM; dependency được khoá bằng hash
+- [x] Ngân sách hằng ngày có thể cảnh báo, hoặc tạm dừng các coding agent khi chạm giới hạn
+- [x] `orca login` / "Join my company's gateway": dùng gateway của đội từ ứng dụng
 - [ ] `/v1/responses` để Codex có thể kết nối
-- [ ] Giới hạn ngân sách cứng theo từng lập trình viên (hiện đã có cảnh báo)
-- [ ] `orca login`: tham gia gateway của đội từ ứng dụng
+- [ ] Ngân sách theo từng lập trình viên được áp dụng trên gateway dùng chung của đội
 - [ ] Embeddings, provider Ollama/vLLM, chuỗi fallback tuỳ chỉnh
 
 Xem [DEMO.md](./DEMO.md) để xem demo failover.
