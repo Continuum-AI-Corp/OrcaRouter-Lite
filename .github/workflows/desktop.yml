@@ -81,6 +81,7 @@ jobs:
       matrix:
         include:
           - { name: macOS Apple silicon, os: macos-15 }
+          - { name: macOS Intel, os: macos-15-intel }
           - { name: Linux, os: ubuntu-22.04 }
           - { name: Windows, os: windows-2022 }
     runs-on: ${{ matrix.os }}
@@ -104,11 +105,28 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      # cryptography ships no Intel macOS wheels from 50.x on, so pip builds it
+      # from the (hash-locked) source here. Link OpenSSL statically: a
+      # dynamically linked build expects a newer libssl than the one
+      # PyInstaller bundles, and the frozen engine fails to import.
+      - name: static OpenSSL for the Intel macOS source build
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
       - name: install the engine from the hash-locked lockfile
         shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements.lock
+          if [ "$RUNNER_OS" = macOS ]; then
+            so=$(python -c "import cryptography.hazmat.bindings._rust as m; print(m.__file__)")
+            if otool -L "$so" | grep -E "libssl|libcrypto"; then
+              echo "::error::cryptography links a system OpenSSL; the frozen engine would not import it"
+              exit 1
+            fi
+          fi
           python -m pip install --no-deps -e .
           python -m pip install --require-hashes -r desktop/engine/requirements-build.lock
       - name: freeze the engine
@@ -195,6 +213,7 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           arm=$(ls dmgs/*_"$v"_aarch64.dmg)
-          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" > orcarouter-lite.rb
+          x64=$(ls dmgs/*_"$v"_x64.dmg)
+          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" --x64 "$x64" > orcarouter-lite.rb
           cat orcarouter-lite.rb
           gh release upload "$GITHUB_REF_NAME" orcarouter-lite.rb --clobber

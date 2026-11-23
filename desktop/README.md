@@ -82,15 +82,13 @@ cd desktop && npx tauri build             # → src-tauri/target/release/bundle/
 ```
 
 The [`desktop` workflow](../.github/workflows/desktop.yml) does this on macOS
-(Apple silicon), Linux and Windows for every `v*` tag, smoke-tests the frozen
-engine, and attaches the installers to the GitHub release. macOS builds are
-signed and notarised when the `APPLE_*` repository secrets are set.
+(Apple silicon and Intel), Linux and Windows for every `v*` tag, smoke-tests the
+frozen engine, and attaches the installers to the GitHub release. macOS builds
+are signed and notarised when the `APPLE_*` repository secrets are set.
 
-There is no Intel Mac build: `cryptography` ships no Intel macOS wheels from
-50.x on, and building it from source links against an OpenSSL that clashes with
-the one PyInstaller bundles. On an Intel Mac, run the engine with
-`uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up`
-instead.
+On Intel Macs `cryptography` has no prebuilt wheel, so the workflow builds it
+from source with OpenSSL linked statically and fails if the result links a
+system OpenSSL (which wouldn't load inside the frozen engine).
 
 Login items should start the app with `--background` so it doesn't open the
 panel on boot; launching it by hand opens the panel.
