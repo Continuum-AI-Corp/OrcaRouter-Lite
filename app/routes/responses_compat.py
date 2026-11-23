@@ -61,7 +61,8 @@ async def create_response(
     except HTTPException as exc:
         error_type = (exc.headers or {}).get(ERROR_TYPE_HEADER)
         return proto.error_response(
-            proto.native_status(exc.status_code, error_type), str(exc.detail), code=error_type,
+            proto.native_status(exc.status_code, error_type), str(exc.detail),
+            code=proto.error_code(error_type) if error_type else None,
         )
     except ValidationError as exc:
         return proto.error_response(400, _validation_message(exc))

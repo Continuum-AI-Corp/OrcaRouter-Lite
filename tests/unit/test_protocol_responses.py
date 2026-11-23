@@ -138,6 +138,23 @@ def test_consecutive_function_calls_merge_into_one_assistant_message_after_its_t
     ]
 
 
+def test_text_streamed_after_a_tool_call_joins_that_calls_turn():
+    # Our own stream emits text that follows a call as a later message item,
+    # and Codex replays the items in that order before the tool output. An
+    # assistant message between tool_calls and their results is rejected by
+    # OpenAI-style upstreams, so the text joins the tool-calling turn.
+    msgs = _translate(input=[
+        _msg("user", _in_text("hi")),
+        _fc("c1", "shell", '{"cmd":"ls"}'),
+        _msg("assistant", _out_text("Let me check.")),
+        _fco("c1", "a.txt"),
+    ])["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
+    assert msgs[1]["content"] == "Let me check."
+    assert [c["id"] for c in msgs[1]["tool_calls"]] == ["c1"]
+    assert msgs[2]["tool_call_id"] == "c1"
+
+
 def test_function_call_output_content_list_is_flattened_and_images_follow_the_tool_run():
     out = _translate(input=[
         _fc("call_1", "view_image", '{"path": "a.png"}'),
@@ -779,3 +796,55 @@ def test_native_status_maps_engine_types_onto_openai_statuses():
     assert proto.native_status(503, "upstream_auth_error") == 403
     assert proto.native_status(422, "no_providers_configured") == 403
     assert proto.native_status(422, "no_capable_provider") == 403
+
+
+# ── review fixes: tool-call assembly ────────────────────────────────────
+
+
+async def test_a_new_call_id_on_a_reused_index_starts_a_new_call():
+    # Some providers restart tool_calls[].index at 0 for every call.
+    events = await _collect([
+        _tool(0, '{"x": 1}', call_id="c1", name="a"),
+        _tool(0, '{"y": 2}', call_id="c2", name="b"),
+        _finish("tool_calls"),
+    ])
+    output = events[-1][1]["response"]["output"]
+    assert [(o["call_id"], o["name"], json.loads(o["arguments"])) for o in output] == [
+        ("c1", "a", {"x": 1}),
+        ("c2", "b", {"y": 2}),
+    ]
+
+
+async def test_a_call_with_no_arguments_sends_an_empty_object():
+    events = await _collect([
+        _tool(0, "", call_id="c1", name="list_files"),
+        _text("done"),
+        _finish("tool_calls"),
+    ])
+    output = events[-1][1]["response"]["output"]
+    assert output[0]["arguments"] == "{}"
+    done = [d for n, d in events if n == "response.function_call_arguments.done"]
+    assert done[0]["arguments"] == "{}"
+
+
+async def test_custom_and_function_calls_keep_the_models_order():
+    ctx = _ctx(stream=True, tools=[_SHELL_TOOL, _APPLY_PATCH_TOOL])
+    patch = json.dumps({"input": "*** Begin Patch\n*** End Patch\n"})
+    events = await _collect([
+        _tool(0, "", call_id="call_p", name="apply_patch"),
+        _tool(1, '{"command": ["ls"]', call_id="call_s", name="shell"),
+        _tool(0, patch),
+        _tool(1, "}"),
+        _finish("tool_calls"),
+    ], ctx)
+    output = events[-1][1]["response"]["output"]
+    assert [o["call_id"] for o in output] == ["call_p", "call_s"]
+    added = {d["item"]["call_id"]: d["output_index"] for n, d in events if n == "response.output_item.added"}
+    assert added["call_p"] < added["call_s"]
+
+
+def test_non_streaming_call_with_empty_arguments_sends_an_empty_object():
+    resp = _completion({"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "list_files", "arguments": ""}}]}, "tool_calls")
+    out = proto.to_responses_response(resp, _ctx())
+    assert out["output"][0]["arguments"] == "{}"

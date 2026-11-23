@@ -220,6 +220,13 @@ def _translate_input(items: list) -> list[dict]:
             if not text:
                 logger.debug("responses_empty_message_dropped", role=role)
                 continue
+            prev = messages[-1] if messages else None
+            if role == "assistant" and prev is not None and prev.get("tool_calls") and not pending_images:
+                # Text the model wrote after its calls, replayed before their
+                # results: an assistant message may not sit between tool_calls
+                # and the tool messages, so it joins the calling turn.
+                prev["content"] = (prev.get("content") or "") + text
+                continue
             emit({"role": role, "content": text})
 
         elif itype in ("function_call", "custom_tool_call"):
@@ -532,6 +539,8 @@ def to_responses_response(resp: dict, ctx: ResponseContext) -> dict:
         args = fn.get("arguments")
         if not isinstance(args, str):
             args = json.dumps(args or {})
+        if not args.strip():
+            args = "{}"  # clients parse arguments as JSON
         custom = name in ctx.custom_tools
         output.append(_call_item(
             _new_id("ctc" if custom else "fc"), tc.get("id") or _new_id("call"), name,
@@ -555,6 +564,11 @@ _ENGINE_ERROR_CODE = {
     "rate_limit_error": "rate_limit_exceeded",
     "overloaded_error": "server_is_overloaded",
 }
+
+
+def error_code(engine_type: str | None) -> str:
+    """OpenAI's error code for an engine error type, before or inside a stream."""
+    return _error_code(engine_type)
 
 
 def _error_code(engine_type: str | None) -> str:
@@ -665,6 +679,13 @@ class _StreamState:
     def tool_fragment(self, tcd: dict) -> list[str]:
         out = self.close_text()
         idx = tcd.get("index") or 0
+        current = self.tools.get(idx)
+        if (current is not None and tcd.get("id") and current["call_id"]
+                and tcd["id"] != current["call_id"] and _args_complete(current["args"])):
+            # Some providers restart the index for every call: a new id on
+            # a finished slot is a new call, not more of the old one.
+            del self.tools[idx]
+            out += self._close_slot(current)
         if idx not in self.tools:
             # A new call starting: the ones whose arguments are already
             # whole are done (the sequential case). Incomplete ones stay
@@ -693,6 +714,9 @@ class _StreamState:
                 out.append(self._args_delta(slot, args))
         elif slot["name"] and not self._is_custom(slot):
             out += self._open_function(slot)
+        elif slot["name"] and slot["output_index"] is None:
+            # Custom calls are sent whole at the end, but keep their place.
+            slot["output_index"] = self._alloc()
         if self.pending_text and not self._tools_incomplete():
             out += self.text_delta("")
         return out
@@ -701,7 +725,8 @@ class _StreamState:
         ev = self.ctx.event
         out: list[str] = []
         if self._is_custom(slot):
-            item_id, index = _new_id("ctc"), self._alloc()
+            index = slot["output_index"] if slot["output_index"] is not None else self._alloc()
+            item_id = _new_id("ctc")
             call_id = slot["call_id"] or _new_id("call")
             raw = _custom_input(slot["args"])
             base = {"item_id": item_id, "output_index": index}
@@ -716,6 +741,8 @@ class _StreamState:
         else:
             if slot["item_id"] is None:  # never saw a name: open it now
                 out += self._open_function(slot)
+            if not slot["args"].strip():
+                slot["args"] = "{}"  # clients parse arguments as JSON
             index = slot["output_index"]
             out.append(ev("response.function_call_arguments.done", {
                 "item_id": slot["item_id"], "output_index": index,

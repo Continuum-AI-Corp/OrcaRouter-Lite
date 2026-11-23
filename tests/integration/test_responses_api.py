@@ -480,3 +480,15 @@ async def test_streaming_client_disconnect_closes_upstream_and_logs_499(native_c
     (row,) = await _log_rows()
     assert row.status_code == 499
     assert row.error_type == "client_disconnect"
+
+
+async def test_rate_limit_before_the_stream_uses_the_same_code_as_in_stream(native_client):
+    client, fake, key = native_client
+    from packages.litellm_adapter.types import UpstreamProviderError
+
+    fake.acompletion = AsyncMock(side_effect=UpstreamProviderError(
+        "slow down", http_status=429, error_type="rate_limit_error",
+    ))
+    r = await client.post("/v1/responses", json=_payload(), headers=_auth(key))
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "rate_limit_exceeded"
