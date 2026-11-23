@@ -46,19 +46,18 @@ pub fn parse_summary(v: &Value) -> Option<Snapshot> {
     })
 }
 
-/// Parse `date +%z` output (`+0200`, `-0530`) into minutes east of UTC.
-pub fn parse_utc_offset(s: &str) -> Option<i64> {
-    let (sign, digits) = match s.chars().next()? {
-        '+' => (1, &s[1..]),
-        '-' => (-1, &s[1..]),
-        _ => return None,
+/// Did the engine answer our challenge with the per-launch secret from
+/// engine.json? Checked before the app ever sends the engine its key.
+pub fn verify_proof(secret: &str, challenge: &str, proof: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    let Ok(expected) = hex::decode(proof) else {
+        return false;
     };
-    if digits.len() != 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let h: i64 = digits[0..2].parse().ok()?;
-    let m: i64 = digits[2..4].parse().ok()?;
-    Some(sign * (h * 60 + m))
+    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(challenge.as_bytes());
+    mac.verify_slice(&expected).is_ok() // constant-time comparison
 }
 
 pub fn tray_title(s: &Snapshot) -> String {
@@ -169,12 +168,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_date_utc_offsets_into_minutes_east() {
-        assert_eq!(parse_utc_offset("+0200"), Some(120));
-        assert_eq!(parse_utc_offset("-0530"), Some(-330));
-        assert_eq!(parse_utc_offset("+0000"), Some(0));
-        assert_eq!(parse_utc_offset("bogus"), None);
-        assert_eq!(parse_utc_offset(""), None);
+    fn money_matches_the_shared_vectors() {
+        let vectors: Vec<(i64, String)> =
+            serde_json::from_str(include_str!("../../tests/money_vectors.json")).unwrap();
+        for (micro, text) in vectors {
+            assert_eq!(money(micro), text, "money({micro})");
+        }
+    }
+
+    #[test]
+    fn accepts_only_the_right_proof() {
+        // HMAC-SHA256("s3cret", "abc123abc123abc123abc123"), as the engine computes it.
+        let good = "4d9a6c39e3a3b8b9a4a2f5a2d2f9c4b3e9a0e0a7f1d9b4c0a2e3f4b5c6d7e8f9";
+        let real = {
+            use hmac::{Hmac, Mac};
+            let mut m = Hmac::<sha2::Sha256>::new_from_slice(b"s3cret").unwrap();
+            m.update(b"abc123abc123abc123abc123");
+            hex::encode(m.finalize().into_bytes())
+        };
+        assert!(verify_proof("s3cret", "abc123abc123abc123abc123", &real));
+        assert!(!verify_proof("s3cret", "abc123abc123abc123abc123", good));
+        assert!(!verify_proof("wrong", "abc123abc123abc123abc123", &real));
+        assert!(!verify_proof("s3cret", "abc123abc123abc123abc123", ""));
     }
 
     #[test]

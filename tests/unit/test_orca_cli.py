@@ -25,14 +25,14 @@ def test_up_starts_the_engine_on_loopback_in_desktop_mode(orca_home, monkeypatch
     calls = {}
 
     def fake_run(*, host, port, env):
-        calls.update(host=host, port=port, env=env)
+        calls.update(host=host, port=port, env=env, info=dh.read_engine_info(orca_home))
 
     assert orca_cli.main(["up", "--port", "8799"], run_server=fake_run) == 0
     assert calls["host"] == "127.0.0.1"
     assert calls["port"] == 8799
     assert calls["env"]["ORCA_DESKTOP_MODE"] == "1"
     assert calls["env"]["DATABASE_URL"].endswith(f"{orca_home / 'orca.db'}")
-    assert dh.read_engine_info(orca_home)["base_url"] == "http://127.0.0.1:8799"
+    assert calls["info"]["base_url"] == "http://127.0.0.1:8799"
 
 
 def test_up_refuses_a_non_loopback_host(orca_home, capsys):
@@ -46,16 +46,30 @@ def test_up_refuses_a_non_loopback_host(orca_home, capsys):
 # ── commands that talk to a running engine ──────────────────────────────
 
 
+SECRET = "instance-secret-for-tests"
+
+
 def _running(orca_home, key="sk-orca-app"):
     dh.prepare_home(orca_home)
-    dh.write_engine_info(orca_home, base_url="http://127.0.0.1:8765", pid=1)
+    dh.write_engine_info(orca_home, base_url="http://127.0.0.1:8765", pid=1, secret=SECRET)
     (orca_home / "app.key").write_text(key)
 
 
-def _transport(handler):
+def _proof(request, secret=SECRET):
+    import hashlib
+    import hmac
+
+    challenge = request.url.params["challenge"]
+    return httpx.Response(200, json={"proof": hmac.new(secret.encode(), challenge.encode(), hashlib.sha256).hexdigest()})
+
+
+def _transport(handler, secret=SECRET):
+    """Answer the identity challenge like the real engine, then delegate."""
     seen = []
 
     def wrapped(request: httpx.Request):
+        if request.url.path == "/health/identity":
+            return _proof(request, secret)
         seen.append(request)
         return handler(request)
 
@@ -155,9 +169,14 @@ def test_status_json(orca_home, capsys):
     assert json.loads(capsys.readouterr().out)["today"]["spend_microcents"] == 3_200_000
 
 
-@pytest.mark.parametrize("micro,text", [(0, "$0.00"), (4_999, "$0.00"), (5_000, "$0.01"), (1_234_567, "$1.23"),
-                                        (123_456_789_000, "$123,456.79")])
-def test_money_format(micro, text):
+MONEY_VECTORS = json.loads(
+    (__import__("pathlib").Path(__file__).resolve().parents[2] / "desktop" / "tests" / "money_vectors.json").read_text()
+)
+
+
+@pytest.mark.parametrize("micro,text", MONEY_VECTORS)
+def test_money_format_matches_the_shared_vectors(micro, text):
+    # The same vectors are checked by the desktop UI (JS) and the tray (Rust).
     assert orca_cli.money(micro) == text
 
 
@@ -166,4 +185,79 @@ def test_status_uses_singular_for_one_rescued_request(orca_home, capsys):
     one = {**SUMMARY, "week": {**SUMMARY["week"], "failures_avoided": 1}}
     transport, _ = _transport(lambda r: httpx.Response(200, json=one))
     orca_cli.main(["status"], transport=transport)
-    assert "1 request rescued" in capsys.readouterr().out
+    assert "1 failed request was retried on another provider" in capsys.readouterr().out
+
+
+
+# ── review fixes ────────────────────────────────────────────────────────
+
+
+def test_up_passes_a_fresh_instance_secret_to_the_engine_and_engine_json(orca_home):
+    calls = {}
+    orca_cli.main(["up"], run_server=lambda **kw: calls.update(kw, info=dh.read_engine_info(orca_home)))
+    secret = calls["env"]["ORCA_INSTANCE_SECRET"]
+    assert len(secret) >= 32
+    assert calls["info"]["secret"] == secret
+
+
+def test_up_removes_engine_json_when_the_server_stops(orca_home):
+    orca_cli.main(["up"], run_server=lambda **kw: None)
+    with pytest.raises(dh.EngineNotRunning):
+        dh.read_engine_info(orca_home)
+
+
+def test_up_rejects_ipv6_loopback_it_would_not_bind(orca_home, capsys):
+    assert orca_cli.main(["up", "--host", "::1"], run_server=lambda **kw: None) == 2
+
+
+def test_bad_orca_port_is_a_clear_error(orca_home, monkeypatch, capsys):
+    monkeypatch.setenv("ORCA_PORT", "eighty")
+    assert orca_cli.main(["up"], run_server=lambda **kw: None) == 2
+    assert "ORCA_PORT" in capsys.readouterr().err
+
+
+def test_an_impostor_on_the_port_never_receives_the_key(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={}), secret="wrong")
+    assert orca_cli.main(["status"], transport=transport) == 1
+    assert seen == []  # no authenticated request was sent
+    assert "another program" in capsys.readouterr().err
+
+
+def test_a_slow_engine_is_reported_as_slow_not_stopped(orca_home, capsys):
+    _running(orca_home)
+
+    def slow(request):
+        if request.url.path == "/health/identity":
+            return _proof(request)
+        raise httpx.ReadTimeout("slow")
+
+    assert orca_cli.main(["status"], transport=httpx.MockTransport(slow)) == 1
+    err = capsys.readouterr().err
+    assert "didn't answer" in err and "orca up" not in err
+
+
+def test_watch_stdin_calls_back_on_eof():
+    import io
+
+    fired = []
+    orca_cli.watch_stdin(io.StringIO("ignored\n"), lambda: fired.append(True))
+    assert fired == [True]
+
+
+
+def test_status_uses_the_same_words_as_the_app(orca_home, capsys):
+    _running(orca_home)
+    transport, _ = _transport(lambda r: httpx.Response(200, json=SUMMARY))
+    orca_cli.main(["status"], transport=transport)
+    out = capsys.readouterr().out
+    assert "of $20.00 daily alert" in out
+    assert "Last 7 days" in out and "vs GPT-4o" in out
+
+
+def test_status_hides_zero_savings(orca_home, capsys):
+    _running(orca_home)
+    none = {**SUMMARY, "week": {**SUMMARY["week"], "saved_microcents": 0}}
+    transport, _ = _transport(lambda r: httpx.Response(200, json=none))
+    orca_cli.main(["status"], transport=transport)
+    assert "saved" not in capsys.readouterr().out

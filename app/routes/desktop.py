@@ -11,8 +11,12 @@ plain group-by on `requests_log.api_key_id`.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 import os
 import shutil
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -33,11 +37,28 @@ from packages.db.models.workspace import Workspace
 from packages.desktop import agents as ag
 
 router = APIRouter(prefix="/v1/app", tags=["desktop"])
+# Unauthenticated on purpose: it proves which process owns the port before
+# any client sends it a key. See Settings.orca_instance_secret.
+identity_router = APIRouter(tags=["desktop"])
 
 AGENT_KEY_PREFIX = "agent:"
+APP_KEY_NAME = "desktop-app"
+_agent_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 BASELINE_MODEL = "gpt-4o"
 WARN_AT_PERCENT = 80.0
 HEALTH_WINDOW = timedelta(hours=1)
+
+
+@dataclass(frozen=True)
+class _Row:
+    api_key_id: str
+    provider: str
+    status_code: int
+    cost_microcents: int
+    input_tokens: int
+    output_tokens: int
+    fallback_level: int
+    created_at: datetime
 
 
 @dataclass
@@ -67,11 +88,21 @@ def get_desktop_context() -> DesktopContext:
 
 
 def require_app_caller(kc: KeyContext = Depends(get_key_context)) -> KeyContext:
-    if kc.name.startswith(AGENT_KEY_PREFIX):
-        raise HTTPException(status_code=403, detail="Agent keys can't manage the desktop app.")
-    if kc.model_allowlist is not None or kc.budget_limit_cents is not None:
-        raise HTTPException(status_code=403, detail="Restricted keys can't manage the desktop app.")
+    """Only the desktop app's own key (~/.orcarouter-lite/app.key) may use /v1/app."""
+    if kc.name != APP_KEY_NAME or kc.model_allowlist is not None or kc.budget_limit_cents is not None:
+        raise HTTPException(status_code=403, detail="Only the desktop app's key can manage the desktop app.")
     return kc
+
+
+@identity_router.get("/health/identity")
+async def identity(challenge: str = Query(..., min_length=16, max_length=128)) -> dict:
+    from app.config import get_settings
+
+    secret = get_settings().orca_instance_secret
+    if not secret:
+        raise HTTPException(status_code=404, detail="Not Found")
+    proof = hmac.new(secret.encode(), challenge.encode(), hashlib.sha256).hexdigest()
+    return {"proof": proof}
 
 
 # ── agents ──────────────────────────────────────────────────────────────
@@ -121,24 +152,39 @@ async def connect_agent(
         raise HTTPException(status_code=409, detail=spec.note)
 
     full_key, key_hash, key_prefix = generate_api_key()
-    try:
-        result = ag.connect_agent(
-            agent_id, home=ctx.home, state_dir=ctx.state_dir, base_url=ctx.base_url, api_key=full_key
+    async with _agent_locks[agent_id]:
+        # Stage the key change in the transaction first, then write the
+        # agent's config, then commit. If the commit fails, the config is put
+        # back, so a config never points at a key the database doesn't have.
+        await _revoke_agent_keys(db, kc.workspace_id, agent_id)
+        db.add(
+            ApiKey(
+                workspace_id=kc.workspace_id,
+                name=f"{AGENT_KEY_PREFIX}{agent_id}",
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+            )
         )
-    except ag.AgentConfigError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    # The config now holds the new key; retire the old one and store the new.
-    await _revoke_agent_keys(db, kc.workspace_id, agent_id)
-    db.add(
-        ApiKey(
-            workspace_id=kc.workspace_id,
-            name=f"{AGENT_KEY_PREFIX}{agent_id}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-        )
-    )
-    await db.commit()
+        await db.flush()
+        try:
+            result = ag.connect_agent(
+                agent_id, home=ctx.home, state_dir=ctx.state_dir, base_url=ctx.base_url, api_key=full_key
+            )
+        except (ag.AgentConfigError, OSError) as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            try:
+                ag.disconnect_agent(agent_id, home=ctx.home, state_dir=ctx.state_dir)
+            except ag.AgentConfigError:
+                pass
+            raise HTTPException(
+                status_code=503,
+                detail=f"Couldn't save the new key, so {spec.name}'s original settings were restored. Try again.",
+            ) from exc
 
     out = _agent_out(ctx, agent_id)
     out["manual"] = result.manual
@@ -158,12 +204,15 @@ async def disconnect_agent(
 ) -> dict:
     if agent_id not in ag.AGENTS:
         raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_id}")
-    try:
-        ag.disconnect_agent(agent_id, home=ctx.home, state_dir=ctx.state_dir)
-    except ag.AgentConfigError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await _revoke_agent_keys(db, kc.workspace_id, agent_id)
-    await db.commit()
+    async with _agent_locks[agent_id]:
+        await _revoke_agent_keys(db, kc.workspace_id, agent_id)
+        await db.flush()
+        try:
+            ag.disconnect_agent(agent_id, home=ctx.home, state_dir=ctx.state_dir)
+        except (ag.AgentConfigError, OSError) as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await db.commit()
     return _agent_out(ctx, agent_id)
 
 
@@ -282,17 +331,25 @@ async def summary(
     today_start = _local_midnight_utc(now, tz_offset_minutes)
     window_start = min(week_start, today_start)
 
-    rows = (
-        await db.execute(
-            select(RequestLog).where(
-                RequestLog.workspace_id == kc.workspace_id,
-                RequestLog.is_deleted == 0,
-                RequestLog.created_at >= window_start,
+    # Plain rows, not ORM entities: normalising timestamps must never mark
+    # log rows as modified (that would autoflush UPDATEs into the log).
+    rows = [
+        _Row(r.api_key_id, r.provider, r.status_code, int(r.cost_microcents or 0), r.input_tokens,
+             r.output_tokens, r.fallback_level, _aware(r.created_at))
+        for r in (
+            await db.execute(
+                select(
+                    RequestLog.api_key_id, RequestLog.provider, RequestLog.status_code, RequestLog.cost_microcents,
+                    RequestLog.input_tokens, RequestLog.output_tokens, RequestLog.fallback_level,
+                    RequestLog.created_at,
+                ).where(
+                    RequestLog.workspace_id == kc.workspace_id,
+                    RequestLog.is_deleted == 0,
+                    RequestLog.created_at >= window_start,
+                )
             )
-        )
-    ).scalars().all()
-    for r in rows:
-        r.created_at = _aware(r.created_at)
+        ).all()
+    ]
 
     ok = [r for r in rows if r.status_code < 400]
     week = [r for r in ok if r.created_at >= week_start]

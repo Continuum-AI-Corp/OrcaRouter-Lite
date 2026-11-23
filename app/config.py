@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     orca_home: str = ""
     # The URL agents are told to use. Empty means http://127.0.0.1:<port>.
     orca_public_base_url: str = ""
+    # Per-launch secret `orca up` generates and also writes to engine.json
+    # (0600). The app and CLI challenge /health/identity with it before they
+    # send the app key, so another program squatting the port gets nothing.
+    orca_instance_secret: str = ""
 
     # ── Quality scoring (Artificial Analysis) ──
     # API key from https://artificialanalysis.ai (free tier: 1000 req/day).

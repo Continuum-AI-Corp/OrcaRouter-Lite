@@ -126,7 +126,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     async with session_mod._session_factory() as s:
         seed = await seed_initial_state(s)
-        if seed.created and seed.api_key:
+        # The desktop app uses its own key (app.key); printing the seed admin
+        # key would leave a working credential in the app's engine.log.
+        if seed.created and seed.api_key and not settings.orca_desktop_mode:
             # No key material in the structured event: logs are retained by
             # aggregators. The print() below is the one-time delivery channel.
             log.info("seed_complete", workspace_id=seed.workspace_id)
@@ -137,7 +139,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 # encode "✓" — the banner must never kill startup.
                 print(f"\n  orcarouter-lite ready. API key: {seed.api_key}\n")
 
-    if settings.orca_desktop_mode:
+    if settings.orca_desktop_mode and settings.host not in LOOPBACK_HOSTS:
+        log.error("desktop_mode_refused", host=settings.host, reason="desktop mode only runs on 127.0.0.1")
+    elif settings.orca_desktop_mode:
         # The desktop app and `orca` CLI authenticate with a key kept in the
         # engine's home folder, so the user never copies one by hand.
         from pathlib import Path
@@ -161,12 +165,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await dispose_engine()
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def create_app() -> FastAPI:
+    from app.config import get_settings
+
+    desktop = get_settings().orca_desktop_mode
+    # The desktop engine serves pages that hold the app key, so it loads no
+    # third-party scripts: the interactive docs (CDN assets) are off.
+    docs = {} if not desktop else {"docs_url": None, "redoc_url": None, "openapi_url": None}
     app = FastAPI(
         title="OrcaRouter Lite",
         description="Open Source. Single Tenant. Self-hosted LLM router with a managed safety net.",
         version="0.1.0",
         lifespan=lifespan,
+        **docs,
     )
 
     def _native_error(request, status: int, message: str) -> JSONResponse | None:
@@ -274,13 +288,13 @@ def create_app() -> FastAPI:
     app.include_router(quality.router)
 
     # The desktop API edits files in the user's home directory, so it only
-    # exists when `orca up` started this engine on the user's own machine.
-    from app.config import get_settings
+    # exists when `orca up` started this engine on the user's own machine,
+    # listening on loopback. Desktop mode on a network host mounts nothing.
+    if desktop and get_settings().host in LOOPBACK_HOSTS:
+        from app.routes import desktop as desktop_routes
 
-    if get_settings().orca_desktop_mode:
-        from app.routes import desktop
-
-        app.include_router(desktop.router)
+        app.include_router(desktop_routes.router)
+        app.include_router(desktop_routes.identity_router)
 
         ui_dir = _find_desktop_ui_dir()
         if ui_dir:

@@ -70,20 +70,39 @@ LiteLLM, our largest dependency, shipped backdoored releases on PyPI twice in
 The desktop engine (`orca up`, started by the desktop app) is built for one
 person on one computer:
 
-- It listens on `127.0.0.1` only. `orca up --host 0.0.0.0` is refused.
-- The `/v1/app/*` endpoints that read and edit coding-agent settings exist
-  only in desktop mode. A server started with `orcarouter-lite` or Docker does
-  not have them.
-- They need the desktop app's own key, which is stored in
-  `~/.orcarouter-lite/app.key` with mode 0600. Agent keys and keys limited by a
-  model allowlist or a budget are refused.
-- Connecting an agent edits only the settings it needs (for Claude Code,
-  `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN` in
-  `~/.claude/settings.json`). The original file is backed up first in
-  `~/.orcarouter-lite/agents/` (mode 0600, because it may contain earlier
-  credentials). Disconnecting restores it, and keeps any change you made in
-  the meantime.
-- Each connected agent gets its own key. Disconnecting revokes it.
-- The app sends no telemetry. Prompts and request logs stay in
-  `~/.orcarouter-lite/orca.db` unless you configure a hosted provider, in
-  which case requests go to that provider.
+- **Loopback only.** It listens on `127.0.0.1`; `orca up --host 0.0.0.0` is
+  refused, and an engine started in desktop mode on any other host doesn't
+  mount the desktop API at all.
+- **Desktop API, desktop key.** The `/v1/app/*` endpoints that read and edit
+  coding-agent settings exist only in desktop mode, and only the desktop app's
+  own key (`~/.orcarouter-lite/app.key`, mode 0600) may call them. A server
+  started with `orcarouter-lite` or Docker has no such endpoints.
+- **Agent keys can only call models.** Each connected agent gets its own key.
+  That key is accepted on the model endpoints (`/v1/chat/completions`,
+  `/v1/messages`, `/v1/models`, `/v1beta/…`) and refused everywhere else, so a
+  key read out of an agent's config can't mint keys, change providers, read
+  spend or rewire other agents. Disconnecting revokes it.
+- **No impostors on the port.** `orca up` writes a per-launch secret to
+  `engine.json` (0600). Before sending its key anywhere, the app and the CLI
+  challenge the listener at `/health/identity` and check an HMAC of that
+  secret, so another program that grabs the port first gets nothing.
+- **No third-party scripts.** In desktop mode the interactive API docs (which
+  load from a CDN) are switched off, and the app injects its key only into its
+  own pages under `/desktop/`. Those pages may call only the app's own native
+  commands. No admin key is printed to the engine log.
+- **Agent settings are edited, not replaced.** Connecting an agent changes only
+  the settings it needs (for Claude Code, `env.ANTHROPIC_BASE_URL` and
+  `env.ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`), writes through
+  symlinks, and keeps the file's permissions and comments. The original file is
+  backed up first in `~/.orcarouter-lite/agents/` (mode 0600, because it may
+  contain earlier credentials). Disconnecting restores it, and keeps any change
+  you made in the meantime.
+- **The engine stops with the app.** The app holds a pipe to the engine; when
+  the app exits for any reason, the engine exits too.
+- **No telemetry.** Prompts and request logs stay in
+  `~/.orcarouter-lite/orca.db` unless you configure a hosted provider, in which
+  case requests go to that provider.
+
+Desktop installers are built in GitHub Actions from tagged commits. macOS
+builds are signed and notarised when the project's Apple credentials are
+configured; Windows and Linux installers are not signed yet.

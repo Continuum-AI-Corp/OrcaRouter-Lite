@@ -1,28 +1,46 @@
-// Menu-bar panel: spend today, budget, coding agents, provider health.
+// Menu-bar panel: spend today, daily alert, coding agents, provider health.
 import { createEngine, native, toast } from "./api.js";
-import { agentRows, budgetView, missingLine, money, providerRows, weekLine } from "./lib.js";
+import {
+  AGENT_COLORS,
+  agentRows,
+  budgetView,
+  classifyError,
+  createSequencer,
+  missingLine,
+  money,
+  providerRows,
+  rescuedLine,
+  weekLine,
+} from "./lib.js";
 
-const AGENT_COLORS = {
-  "claude-code": "#D97757",
-  codex: "#10A37F",
-  cursor: "#334155",
-  aider: "#14B8A6",
-  "gemini-cli": "#4C8DF6",
-  other: "#94A2B8",
-};
 const REFRESH_MS = 15_000;
+const CONFIRM_MS = 3_000;
+const CONFIRM_GUARD_MS = 350; // a double-click must not confirm a disconnect
+const OTHER_GLYPH =
+  '<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="4" height="4" rx="1"/><rect x="7" y="1" width="4" height="4" rx="1"/><rect x="1" y="7" width="4" height="4" rx="1"/><rect x="7" y="7" width="4" height="4" rx="1"/></svg>';
 
 const engine = createEngine();
+const seq = createSequencer();
 const $ = (id) => document.getElementById(id);
 const busy = new Set();
+const seenRows = new Set();
 let lastSummary = null;
 let lastAgents = null;
+let confirming = null; // { id, armedAt }
 let confirmTimer = null;
+let lastAnnounced = "";
+
+function announce(text) {
+  if (text && text !== lastAnnounced) {
+    lastAnnounced = text;
+    $("announce").textContent = text;
+  }
+}
 
 function setEngineState(state) {
-  const pill = $("engine-pill");
-  const label = { running: "Running", starting: "Starting", stopped: "Offline" }[state];
-  pill.className = `pill ${state === "running" ? "ok live" : state === "stopped" ? "err" : "muted"}`;
+  const label = { running: "Router on", starting: "Starting", stopped: "Offline", auth: "Signed out" }[state];
+  const tone = { running: "ok", starting: "muted starting", stopped: "err", auth: "warn" }[state];
+  $("engine-pill").className = `pill ${tone}`;
   $("engine-state").textContent = label;
 }
 
@@ -31,34 +49,43 @@ function el(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") node.className = v;
     else if (k === "style") node.style.cssText = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
     else if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v === true ? "" : v);
   }
   for (const c of children) if (c !== null && c !== undefined) node.append(c);
   return node;
 }
 
+// ── today ──
+
 function renderToday(s) {
-  const b = budgetView(s.budget);
+  const b = budgetView(s.budget, s.today.spend_microcents);
   $("today-spend").textContent = money(s.today.spend_microcents);
   $("budget-caption").textContent = b.caption;
-  $("budget-edit").textContent = b.hasBudget ? "Edit budget" : "Set budget";
+  $("budget-edit").textContent = b.hasBudget ? "Edit alert" : "Set daily alert";
   $("today").className = `today ${b.tone === "warn" || b.tone === "over" ? b.tone : ""}`;
+
   const bar = $("budget-bar");
+  const fill = bar.firstElementChild;
+  const firstShow = bar.hidden && b.hasBudget;
   bar.hidden = !b.hasBudget;
   bar.className = `bar ${b.tone === "warn" || b.tone === "over" ? b.tone : ""}`;
-  bar.setAttribute("role", "progressbar");
   bar.setAttribute("aria-valuenow", String(Math.round(b.percent)));
-  bar.setAttribute("aria-valuemin", "0");
-  bar.setAttribute("aria-valuemax", "100");
-  bar.setAttribute("aria-label", "Daily budget used");
-  requestAnimationFrame(() => (bar.firstElementChild.style.width = `${b.percent}%`));
+  bar.setAttribute("aria-valuetext", b.ariaText);
+  if (firstShow) {
+    fill.style.width = "0%";
+    void fill.offsetWidth; // fill from 0 the first time it appears
+  }
+  requestAnimationFrame(() => (fill.style.width = `${b.percent}%`));
+
   $("week-line").textContent = weekLine(s);
-  const rescued = s.week.failures_avoided || 0;
-  $("rescued").hidden = rescued === 0;
-  $("rescued").textContent = `${rescued} ${rescued === 1 ? "request" : "requests"} rescued by fallback this week`;
-  $("no-provider").hidden = (s.providers || []).length > 0 || s.hosted?.configured;
+  const rescued = rescuedLine(s.week.failures_avoided || 0);
+  $("rescued").hidden = !rescued;
+  $("rescued").textContent = rescued;
+  $("no-provider").hidden = (s.providers || []).length > 0 || Boolean(s.hosted?.configured);
+  if (b.tone === "warn" || b.tone === "over") announce(b.caption);
 }
+
+// ── agents ──
 
 function actionButton(row) {
   if (!row.action) return null;
@@ -66,66 +93,74 @@ function actionButton(row) {
   if (row.action === "connect") {
     return el(
       "button",
-      { class: "btn btn-primary btn-sm", type: "button", disabled: pending, onclick: () => connect(row) },
+      { class: "btn btn-primary btn-sm", type: "button", "data-act": "connect", disabled: pending, "aria-label": `Connect ${row.name}` },
       pending ? el("span", { class: "spinner", "aria-hidden": "true" }) : null,
       pending ? "Connecting" : "Connect",
     );
   }
-  const confirming = row.confirming;
+  const isConfirming = confirming?.id === row.id;
   return el(
     "button",
     {
-      class: `btn btn-sm ${confirming ? "btn-danger" : "btn-ghost"}`,
+      class: `btn btn-sm ${isConfirming ? "btn-danger confirming" : "btn-ghost"}`,
       type: "button",
+      "data-act": "disconnect",
       disabled: pending,
+      "aria-label": isConfirming ? `Confirm disconnecting ${row.name}` : `Disconnect ${row.name}`,
       title: "Restore this agent's original settings",
-      onclick: () => disconnect(row),
     },
-    pending ? "Restoring" : confirming ? "Confirm" : "Disconnect",
+    pending ? "Restoring" : isConfirming ? "Confirm?" : "Disconnect",
   );
 }
 
-let confirming = null;
+function tile(row) {
+  const ic = el("span", { class: "ic", style: `background:${AGENT_COLORS[row.id] || AGENT_COLORS.other}`, "aria-hidden": "true" });
+  if (row.id === "other") ic.innerHTML = OTHER_GLYPH; // constant markup: "everything else"
+  else ic.textContent = row.initials;
+  return ic;
+}
 
 function renderAgents() {
   if (!lastAgents) return;
   const all = agentRows(lastAgents.agents, lastSummary?.agents || [], { includeOther: true });
   const rows = all.filter((r) => r.state !== "missing");
-  $("agents-missing").textContent = missingLine(all);
-  $("agents-missing").hidden = !missingLine(all);
+  const missing = missingLine(all);
+  $("agents-missing").textContent = missing;
+  $("agents-missing").hidden = !missing;
+
+  // Rows are keyed by agent id and reused, so a refresh doesn't replay their
+  // entrance, and keyboard focus stays on the same row's button.
+  const focused = document.activeElement?.closest?.("li[data-id]")?.dataset.id;
   const list = $("agents");
-  list.replaceChildren(
-    ...rows.map((r, i) => {
-      r.confirming = confirming === r.id;
-      const sub = {
-        connected: "Connected",
-        available: r.setup === "manual" ? "One paste step" : "Ready to connect",
-        unsupported: "Not supported yet",
-        missing: "Not installed",
-        other: "Your own Lite keys",
-      }[r.state];
-      return el(
-        "li",
-        {
-          class: `row ${r.state === "missing" || r.state === "unsupported" ? "dim" : ""}`,
-          style: `animation-delay:${i * 24}ms`,
-          title: r.note || null,
-        },
-        el("span", { class: "ic", style: `background:${AGENT_COLORS[r.id] || "#94A2B8"}`, "aria-hidden": "true" }, r.initials),
-        el("span", { class: "nm" }, el("b", {}, r.name), el("small", {}, sub)),
-        el("span", { class: "amt" }, r.today || ""),
-        el(
-          "span",
-          { class: "act" },
-          actionButton(r) ||
-            (r.state === "connected" || r.state === "other"
-              ? null
-              : el("span", { class: `pill ${r.badge.tone}` }, r.badge.text)),
-        ),
-      );
-    }),
-  );
+  const existing = new Map([...list.children].map((li) => [li.dataset.id, li]));
+  const next = rows.map((r) => {
+    const li = existing.get(r.id) || el("li", { "data-id": r.id });
+    const isNew = !seenRows.has(r.id);
+    seenRows.add(r.id);
+    li.className = ["row", r.state === "unsupported" ? "dim" : "", isNew ? "enter" : ""].filter(Boolean).join(" ");
+    li.title = r.note || "";
+    const badge = r.badge && r.state !== "connected" ? el("span", { class: `pill ${r.badge.tone}` }, r.badge.text) : null;
+    li.replaceChildren(
+      tile(r),
+      el("span", { class: "nm" }, el("b", {}, r.name), el("small", {}, r.subtitle)),
+      el("span", { class: "amt" }, r.today || ""),
+      el("span", { class: "act" }, actionButton(r) || badge),
+    );
+    return li;
+  });
+  list.replaceChildren(...next);
+  if (focused) list.querySelector(`li[data-id="${CSS.escape(focused)}"] button`)?.focus();
 }
+
+$("agents").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn || !lastAgents) return;
+  const id = btn.closest("li").dataset.id;
+  const row = agentRows(lastAgents.agents, lastSummary?.agents || []).find((r) => r.id === id);
+  if (!row) return;
+  if (btn.dataset.act === "connect") connect(row);
+  else disconnect(row);
+});
 
 function renderProviders(s) {
   const rows = providerRows(s.providers);
@@ -136,18 +171,36 @@ function renderProviders(s) {
   }
   list.replaceChildren(
     ...rows.map((p) =>
-      el("li", { class: "row" }, el("span", { class: "nm" }, el("b", {}, p.name)), el("span", { class: `pill ${p.tone}` }, p.status)),
+      el(
+        "li",
+        { class: "row" },
+        el("span", { class: "nm" }, el("b", {}, p.name), p.detail ? el("small", {}, p.detail) : null),
+        el("span", { class: `pill ${p.tone}` }, p.status),
+      ),
     ),
   );
 }
 
+// ── refresh ──
+
+function fitWindow() {
+  // The native panel is sized to its content: no dead space under the list.
+  requestAnimationFrame(() => {
+    const panel = $("panel");
+    const h = panel.hidden ? 360 : panel.scrollHeight;
+    native.resizePanel(Math.max(360, Math.min(680, Math.ceil(h)))).catch(() => {});
+  });
+}
+
 async function refresh() {
   if (!engine.hasKey) {
-    showOffline("The app didn't pass an engine key to this window.");
+    showOffline("auth", "Something went wrong opening this window. Quit and reopen Orca.");
     return;
   }
+  const token = seq.next();
   try {
     const [summary, agents] = await Promise.all([engine.summary(), engine.agents()]);
+    if (!seq.isLatest(token)) return; // a newer refresh already rendered
     lastSummary = summary;
     lastAgents = agents;
     $("offline").hidden = true;
@@ -156,18 +209,28 @@ async function refresh() {
     renderToday(summary);
     renderAgents();
     renderProviders(summary);
+    fitWindow();
   } catch (err) {
-    if (err.status === 0) showOffline();
+    if (!seq.isLatest(token)) return;
+    const kind = classifyError(err);
+    if (kind === "offline") showOffline("stopped");
+    else if (kind === "auth") showOffline("auth", "Orca couldn't sign in to its engine. Quit and reopen Orca.");
     else toast("err", "Couldn't refresh", err.message);
   }
 }
 
-function showOffline(detail) {
-  setEngineState("stopped");
+function showOffline(state, detail) {
+  setEngineState(state);
   $("panel").hidden = true;
   $("offline").hidden = false;
-  if (detail) $("offline-detail").textContent = detail;
+  $("today-spend").textContent = "—"; // never leave stale numbers behind
+  $("offline-title").textContent = state === "auth" ? "Orca can't sign in" : "Orca isn't running";
+  $("offline-detail").textContent = detail || "It may still be starting. Orca checks again every 15 seconds.";
+  announce($("offline-title").textContent);
+  fitWindow();
 }
+
+// ── actions ──
 
 async function connect(row) {
   busy.add(row.id);
@@ -181,7 +244,7 @@ async function connect(row) {
       $("manual-key").textContent = res.api_key;
       $("manual").hidden = false;
     } else {
-      toast("ok", `${res.name} connected`, "New sessions route through Orca. Your old settings are backed up.");
+      toast("ok", `${res.name} connected`, "Restart open sessions to use Orca. Your old settings are backed up.");
     }
   } catch (err) {
     toast("err", `Couldn't connect ${row.name}`, err.message, 6000);
@@ -192,16 +255,19 @@ async function connect(row) {
 }
 
 async function disconnect(row) {
-  if (confirming !== row.id) {
-    confirming = row.id;
+  const now = performance.now();
+  if (confirming?.id !== row.id) {
+    confirming = { id: row.id, armedAt: now };
     renderAgents();
+    announce(`Press again to disconnect ${row.name}`);
     clearTimeout(confirmTimer);
     confirmTimer = setTimeout(() => {
       confirming = null;
       renderAgents();
-    }, 3000);
+    }, CONFIRM_MS);
     return;
   }
+  if (now - confirming.armedAt < CONFIRM_GUARD_MS) return; // second click of a double-click
   confirming = null;
   clearTimeout(confirmTimer);
   busy.add(row.id);
@@ -217,21 +283,32 @@ async function disconnect(row) {
   }
 }
 
-// ── budget editing ──
-$("budget-edit").addEventListener("click", () => {
-  const form = $("budget-form");
-  form.hidden = !form.hidden;
-  if (!form.hidden) {
+// ── daily alert editing ──
+
+function openBudget(open) {
+  $("budget-collapse").classList.toggle("open", open);
+  $("budget-edit").setAttribute("aria-expanded", String(open));
+  if (open) {
     const cents = lastSummary?.budget?.daily_cents;
-    $("budget-input").value = cents ? String(cents / 100) : "";
-    $("budget-input").focus();
+    $("budget-input").value = cents === null || cents === undefined ? "" : String(cents / 100);
+    setTimeout(() => $("budget-input").focus(), 60);
+  }
+  setTimeout(fitWindow, 240);
+}
+
+$("budget-edit").addEventListener("click", () => openBudget(!$("budget-collapse").classList.contains("open")));
+$("budget-form").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    openBudget(false);
+    $("budget-edit").focus();
   }
 });
 $("budget-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const dollars = Number($("budget-input").value);
-  if (!Number.isFinite(dollars) || dollars < 0) {
-    toast("err", "Enter a budget in dollars", "For example 20 for $20 a day.");
+  const raw = $("budget-input").value.trim();
+  const dollars = Number(raw);
+  if (raw === "" || !Number.isFinite(dollars) || dollars < 0) {
+    toast("err", "Enter an amount in dollars", "For example 20 for a $20.00 daily alert.");
     return;
   }
   await saveBudget(Math.round(dollars * 100));
@@ -241,17 +318,24 @@ $("budget-clear").addEventListener("click", () => saveBudget(null));
 async function saveBudget(cents) {
   try {
     await engine.saveSettings({ daily_budget_cents: cents });
-    $("budget-form").hidden = true;
-    toast("ok", cents === null ? "Daily budget removed" : `Daily budget set to ${money(cents * 10_000)}`,
-      cents === null ? "" : "You'll get a notification at 80% and 100%.");
+    openBudget(false);
+    toast(
+      "ok",
+      cents === null ? "Daily alert removed" : `Daily alert set to ${money(cents * 10_000)}`,
+      cents === null ? "" : "Orca notifies you at 80% and 100%. It won't stop your agents.",
+    );
     await refresh();
   } catch (err) {
-    toast("err", "Couldn't save the budget", err.message);
+    toast("err", "Couldn't save the alert", err.message);
   }
 }
 
 // ── manual setup sheet ──
-$("manual-close").addEventListener("click", () => ($("manual").hidden = true));
+
+$("manual-close").addEventListener("click", () => {
+  $("manual").hidden = true;
+  fitWindow();
+});
 document.querySelectorAll("[data-copy]").forEach((btn) =>
   btn.addEventListener("click", async () => {
     const text = $(btn.dataset.copy).textContent;
@@ -264,19 +348,28 @@ document.querySelectorAll("[data-copy]").forEach((btn) =>
       range.selectNodeContents($(btn.dataset.copy));
       getSelection().removeAllRanges();
       getSelection().addRange(range);
-      toast("info", "Press ⌘C to copy", "The text is selected.");
+      toast("info", "Copy the selected text", "Your system blocked automatic copying.");
     }
   }),
 );
 
-// ── footer ──
+// ── footer and offline ──
+
 $("open-dashboard").addEventListener("click", () => native.openDashboard(engine));
 $("open-setup").addEventListener("click", () => native.openSetup(engine));
 $("open-setup-cta").addEventListener("click", () => native.openSetup(engine));
-$("retry").addEventListener("click", refresh);
+$("retry").addEventListener("click", async () => {
+  $("retry").textContent = "Checking…";
+  $("retry").disabled = true;
+  await refresh();
+  $("retry").textContent = "Try again";
+  $("retry").disabled = false;
+});
 if (native.available()) {
-  $("quit").hidden = false;
-  $("quit").addEventListener("click", () => native.quit());
+  for (const id of ["quit", "offline-quit"]) {
+    $(id).hidden = false;
+    $(id).addEventListener("click", () => native.quit());
+  }
 }
 
 document.addEventListener("visibilitychange", () => {

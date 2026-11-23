@@ -2,6 +2,8 @@
 // pages at /desktop/, so requests go to location.origin with the app key.
 import { engineConfig, tzOffsetMinutes } from "./lib.js";
 
+const TIMEOUT_MS = 8_000;
+
 export class EngineError extends Error {
   constructor(message, status) {
     super(message);
@@ -13,10 +15,13 @@ export function createEngine(win = window) {
   const { baseUrl, key } = engineConfig(win.location, win.__ORCA__);
 
   async function call(method, path, body) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     let resp;
     try {
       resp = await fetch(`${baseUrl}${path}`, {
         method,
+        signal: controller.signal,
         headers: {
           Authorization: `Bearer ${key}`,
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
@@ -25,6 +30,8 @@ export function createEngine(win = window) {
       });
     } catch {
       throw new EngineError("Can't reach the Orca engine.", 0);
+    } finally {
+      clearTimeout(timer);
     }
     let data = null;
     try {
@@ -62,14 +69,13 @@ export const native = {
     return window.__TAURI__.core.invoke(cmd, args);
   },
   async openDashboard(engine) {
-    // The dashboard shares this origin, so hand it the key it would
-    // otherwise ask for.
+    if (this.available()) return this.invoke("open_dashboard");
+    // The dashboard shares this origin, so hand it the key it would ask for.
     try {
       localStorage.setItem("orca-lite-api-key", engine.key);
     } catch {
       /* storage can be unavailable; the dashboard will ask for the key */
     }
-    if (this.available()) return this.invoke("open_dashboard");
     window.open(`${engine.baseUrl}/`, "_blank", "noopener");
   },
   async openSetup(engine) {
@@ -83,13 +89,22 @@ export const native = {
   async finishSetup() {
     if (this.available()) return this.invoke("finish_setup");
   },
+  async resizePanel(height) {
+    if (this.available()) return this.invoke("resize_panel", { height });
+  },
   async quit() {
     if (this.available()) return this.invoke("quit_app");
   },
 };
 
+let toastTimer = null;
+
 export function toast(kind, title, detail, ms = 3600) {
-  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  document.querySelectorAll(".toast:not(.leaving)").forEach((t) => {
+    t.classList.add("leaving");
+    setTimeout(() => t.remove(), 240);
+  });
+  clearTimeout(toastTimer);
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
   el.setAttribute("role", kind === "err" ? "alert" : "status");
@@ -98,12 +113,17 @@ export function toast(kind, title, detail, ms = 3600) {
     err: '<path d="M12 7v6M12 17h.01"/>',
     info: '<path d="M12 11v6M12 7h.01"/>',
   }[kind];
-  el.innerHTML = `<span class="ico"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span><div><b></b><span></span></div>`;
+  el.innerHTML = `<span class="ico" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span><div><b></b><span></span></div>`;
   el.querySelector("b").textContent = title;
-  el.querySelector("span:last-child").textContent = detail || "";
+  el.querySelector("div > span").textContent = detail || "";
   document.body.appendChild(el);
-  setTimeout(() => {
+  const dismiss = () => {
     el.classList.add("leaving");
-    setTimeout(() => el.remove(), 200);
-  }, ms);
+    setTimeout(() => el.remove(), 240);
+  };
+  const arm = () => (toastTimer = setTimeout(dismiss, ms));
+  // Hovering keeps a toast (errors especially) on screen while it's read.
+  el.addEventListener("mouseenter", () => clearTimeout(toastTimer));
+  el.addEventListener("mouseleave", arm);
+  arm();
 }

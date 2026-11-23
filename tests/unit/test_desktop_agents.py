@@ -257,3 +257,107 @@ def test_connect_result_tells_the_caller_what_changed(home, state_dir):
     result = ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
     assert result.manual is False
     assert result.config_path == str(_claude_settings(home))
+
+
+# ── review fixes ────────────────────────────────────────────────────────
+
+
+def test_symlinked_config_stays_a_symlink_and_target_is_updated(home, state_dir, tmp_path):
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "claude-settings.json"
+    original = json.dumps({"model": "opus"})
+    target.write_text(original)
+    (home / ".claude").mkdir()
+    link = _claude_settings(home)
+    link.symlink_to(target)
+
+    ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+    assert link.is_symlink()
+    assert json.loads(target.read_text())["env"]["ANTHROPIC_BASE_URL"] == BASE
+
+    ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+    assert link.is_symlink()
+    assert target.read_text() == original
+
+
+def test_non_object_env_is_refused_not_overwritten(home, state_dir):
+    p = _claude_settings(home)
+    p.parent.mkdir()
+    p.write_text(json.dumps({"env": "not-an-object"}))
+    with pytest.raises(ag.AgentConfigError):
+        ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+    assert json.loads(p.read_text()) == {"env": "not-an-object"}
+
+
+def test_aider_comments_survive_a_connect_and_a_surgical_disconnect(home, state_dir):
+    p = home / ".aider.conf.yml"
+    p.write_text("# my aider config\nmodel: gpt-4o  # favourite\ndark-mode: true\nnote: café\n")
+    ag.connect_agent("aider", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+    connected = p.read_text()
+    assert "# my aider config" in connected and "café" in connected
+    assert yaml.safe_load(connected)["model"] == "openai/auto"
+
+    p.write_text(connected + "# added while connected\n")  # forces the surgical path
+    ag.disconnect_agent("aider", home=home, state_dir=state_dir)
+    after = p.read_text()
+    assert "# my aider config" in after and "# added while connected" in after and "café" in after
+    data = yaml.safe_load(after)
+    assert data["model"] == "gpt-4o"
+    assert "openai-api-key" not in data and "openai-api-base" not in data
+
+
+def test_original_file_mode_is_kept(home, state_dir):
+    p = _claude_settings(home)
+    p.parent.mkdir()
+    p.write_text("{}")
+    os.chmod(p, 0o644)
+    ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o644
+    ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+    assert stat.S_IMODE(os.stat(p).st_mode) == 0o644
+
+
+def test_malformed_state_entry_is_a_clean_error(home, state_dir):
+    (state_dir / "connections.json").write_text(json.dumps({"claude-code": {"oops": 1}}))
+    with pytest.raises(ag.AgentConfigError):
+        ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+
+
+def test_a_previous_value_that_looks_like_the_old_sentinel_is_restored(home, state_dir):
+    p = _claude_settings(home)
+    p.parent.mkdir()
+    weird = {"__orca_absent__": True}
+    p.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": weird}}))
+    ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+    data = json.loads(p.read_text())
+    data["x"] = 1
+    p.write_text(json.dumps(data))
+    ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+    assert json.loads(p.read_text())["env"]["ANTHROPIC_BASE_URL"] == weird
+
+
+def test_concurrent_connects_keep_the_users_original(home, state_dir):
+    import threading
+
+    p = _claude_settings(home)
+    p.parent.mkdir()
+    original = json.dumps({"model": "sonnet"})
+    p.write_text(original)
+    errors = []
+
+    def go(i):
+        try:
+            ag.connect_agent("claude-code", home=home, state_dir=state_dir, base_url=BASE,
+                             api_key=f"sk-orca-{i:032d}")
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+    assert p.read_text() == original

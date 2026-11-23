@@ -46,7 +46,7 @@ def test_desktop_env_binds_to_loopback_and_uses_home_database(tmp_path):
 def test_engine_info_round_trip(tmp_path):
     h = tmp_path / "orca"
     dh.prepare_home(h)
-    dh.write_engine_info(h, base_url="http://127.0.0.1:8765", pid=1234)
+    dh.write_engine_info(h, base_url="http://127.0.0.1:8765", pid=1234, secret="s")
     info = dh.read_engine_info(h)
     assert info["base_url"] == "http://127.0.0.1:8765"
     assert info["pid"] == 1234
@@ -110,5 +110,20 @@ async def test_ensure_app_key_replaces_a_revoked_key(tmp_path, db_session):
 def test_engine_info_is_json(tmp_path):
     h = tmp_path / "orca"
     dh.prepare_home(h)
-    dh.write_engine_info(h, base_url="http://127.0.0.1:1", pid=1)
+    dh.write_engine_info(h, base_url="http://127.0.0.1:1", pid=1, secret="s")
     json.loads((h / "engine.json").read_text())
+
+
+
+def test_concurrent_first_runs_agree_on_one_set_of_secrets(tmp_path):
+    import threading
+
+    h = tmp_path / "orca"
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(dh.prepare_home(h))) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len({json.dumps(r, sort_keys=True) for r in results}) == 1
+    assert json.loads((h / "secrets.json").read_text()) == results[0]

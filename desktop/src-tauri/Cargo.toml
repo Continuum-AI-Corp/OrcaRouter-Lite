@@ -25,6 +25,10 @@ serde_json = "1"
 # Plain HTTP to 127.0.0.1 only: no TLS stack needed.
 ureq = { version = "2", default-features = false, features = ["json"] }
 dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.release]
 codegen-units = 1

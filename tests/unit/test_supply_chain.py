@@ -93,3 +93,21 @@ def test_security_policy_exists_and_is_linked_from_the_readme():
     assert "cosign verify" in policy
     assert "gh attestation verify" in policy
     assert "SECURITY.md" in (ROOT / "README.md").read_text()
+
+
+def test_signing_and_sbom_actions_are_pinned_to_commits():
+    # These run with id-token and packages: write, so a moved tag could sign
+    # or push anything: pin them to full commit SHAs.
+    sensitive = ("sigstore/cosign-installer@", "anchore/sbom-action@", "actions/attest-sbom@")
+    for step in _release_steps():
+        uses = str(step.get("uses", ""))
+        if uses.startswith(sensitive):
+            assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", uses), f"{uses} is not pinned to a commit"
+
+
+def test_desktop_engine_build_tools_are_hash_locked():
+    lock = (ROOT / "desktop" / "engine" / "requirements-build.lock").read_text()
+    assert "pyinstaller==" in lock and "--hash=sha256:" in lock
+    wf = (ROOT / ".github" / "workflows" / "desktop.yml").read_text()
+    assert "requirements-build.lock" in wf
+    assert '"pyinstaller>=' not in wf

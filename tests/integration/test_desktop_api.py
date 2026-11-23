@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
+from packages.desktop import agents as ag
+
 
 @pytest.fixture
 def desktop_dirs(tmp_path):
@@ -29,12 +31,14 @@ async def seeded(db_session):
     from packages.auth.hashing import generate_api_key
     from packages.db.models.api_key import ApiKey
 
-    seed = await seed_initial_state(db_session)
+    await seed_initial_state(db_session)
+    app_key, h, prefix = generate_api_key()
+    db_session.add(ApiKey(workspace_id="default", name="desktop-app", key_hash=h, key_prefix=prefix))
     full, h, prefix = generate_api_key()
     db_session.add(ApiKey(workspace_id="default", name="restricted", key_hash=h, key_prefix=prefix,
                           model_allowlist=["gpt-4o-mini"]))
     await db_session.commit()
-    return seed.api_key, full
+    return app_key, full
 
 
 def _patch_sessions(monkeypatch, db_session):
@@ -86,6 +90,8 @@ async def _create_app(monkeypatch, db_session, desktop: bool):
     from app import config
 
     monkeypatch.setenv("DATABASE_URL", str(db_session.bind.url))
+    if desktop and "HOST" not in __import__("os").environ:
+        monkeypatch.setenv("HOST", "127.0.0.1")
     if desktop:
         monkeypatch.setenv("ORCA_DESKTOP_MODE", "1")
     else:
@@ -407,3 +413,128 @@ async def test_desktop_ui_is_not_served_outside_desktop_mode(monkeypatch, db_ses
     async with _client(app) as c:
         r = await c.get("/desktop/panel.html")
     assert r.status_code == 404
+
+
+
+# ── review fixes ────────────────────────────────────────────────────────
+
+
+async def test_only_the_desktop_app_key_can_use_the_app_api(desktop_app, db_session, seeded):
+    from app.seed import seed_initial_state  # noqa: F401  (seeded already ran it)
+    from packages.auth.hashing import generate_api_key
+    from packages.db.models.api_key import ApiKey
+
+    other, h, prefix = generate_api_key()
+    db_session.add(ApiKey(workspace_id="default", name="some-script", key_hash=h, key_prefix=prefix))
+    await db_session.commit()
+    async with _client(desktop_app) as c:
+        r = await c.get("/v1/app/summary", headers=_auth(other))
+    assert r.status_code == 403
+
+
+async def test_failed_db_commit_leaves_the_agent_config_untouched(desktop_app, seeded, desktop_dirs, db_session,
+                                                                 monkeypatch):
+    root, _ = seeded
+    home, _ = desktop_dirs
+    settings = home / ".claude" / "settings.json"
+    settings.write_text('{"model": "opus"}')
+
+    async def boom():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(db_session, "commit", boom)
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+    assert r.status_code >= 500 or r.status_code == 503
+    assert settings.read_text() == '{"model": "opus"}'
+    assert not ag.detect_agents(home=home, state_dir=desktop_dirs[1], which=lambda _n: None)[0].connected
+
+
+async def test_unwritable_config_is_a_clear_error(desktop_app, seeded, monkeypatch):
+    root, _ = seeded
+
+    def denied(*_a, **_k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ag, "_write_atomic", denied)
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+    assert r.status_code == 422
+    assert "Permission denied" in r.text
+
+
+async def test_summary_never_writes_to_the_request_log(desktop_app, seeded, db_session):
+    from sqlalchemy import event
+
+    root, _ = seeded
+    root_id = await _key_id(db_session, "default")
+    db_session.add(_log(root_id, 100, datetime.now(timezone.utc) - timedelta(minutes=1)))
+    await db_session.commit()
+    updates = []
+
+    def count(_conn, _cursor, statement, *_a):
+        if statement.lstrip().upper().startswith("UPDATE REQUESTS_LOG"):
+            updates.append(statement)
+
+    sync_engine = db_session.bind.sync_engine if hasattr(db_session.bind, "sync_engine") else db_session.bind
+    event.listen(sync_engine, "before_cursor_execute", count)
+    try:
+        async with _client(desktop_app) as c:
+            await c.get("/v1/app/summary", headers=_auth(root))
+            await c.get("/v1/app/settings", headers=_auth(root))
+        await db_session.commit()
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", count)
+    assert updates == []
+
+
+async def test_agent_keys_can_only_call_models(desktop_app, seeded, desktop_dirs, db_session, monkeypatch):
+    from app.middleware.auth import AuthMiddleware
+    from app.routes import keys as keys_routes
+    from app.routes import models as models_routes
+
+    root, _ = seeded
+    home, _ = desktop_dirs
+    desktop_app.include_router(keys_routes.router)
+    desktop_app.include_router(models_routes.router)
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+        agent_key = json.loads((home / ".claude" / "settings.json").read_text())["env"]["ANTHROPIC_AUTH_TOKEN"]
+        mint = await c.post("/v1/keys", headers=_auth(agent_key), json={"name": "escalate"})
+        listing = await c.get("/v1/keys", headers=_auth(agent_key))
+        models = await c.get("/v1/models", headers=_auth(agent_key))
+    assert mint.status_code == 403
+    assert listing.status_code == 403
+    assert models.status_code == 200
+    assert AuthMiddleware  # imported for clarity: the rule lives in the middleware
+
+
+async def test_desktop_mode_on_a_network_host_does_not_mount_the_app_api(monkeypatch, db_session, seeded):
+    root, _ = seeded
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    app = await _create_app(monkeypatch, db_session, desktop=True)
+    async with _client(app) as c:
+        r = await c.get("/v1/app/settings", headers=_auth(root))
+    assert r.status_code == 404
+
+
+async def test_docs_are_off_in_desktop_mode(monkeypatch, db_session, seeded):
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    app = await _create_app(monkeypatch, db_session, desktop=True)
+    async with _client(app) as c:
+        assert (await c.get("/docs")).status_code == 404
+        assert (await c.get("/openapi.json")).status_code == 404
+
+
+async def test_identity_proves_the_engine_holds_the_instance_secret(monkeypatch, db_session, seeded):
+    import hashlib
+    import hmac
+
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("ORCA_INSTANCE_SECRET", "s3cret")
+    app = await _create_app(monkeypatch, db_session, desktop=True)
+    async with _client(app) as c:
+        r = await c.get("/health/identity", params={"challenge": "abc123abc123abc123abc123"})
+    assert r.status_code == 200
+    expected = hmac.new(b"s3cret", b"abc123abc123abc123abc123", hashlib.sha256).hexdigest()
+    assert r.json()["proof"] == expected

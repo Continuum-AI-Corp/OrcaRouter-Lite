@@ -1,19 +1,45 @@
 // View logic for the Orca app. Pure functions only: no DOM, no network,
 // so they run under `node --test` (desktop/tests) and in the webview alike.
 
+// Tile colours for agent initials, darkened from each tool's brand colour
+// until white text reaches at least 4:1 (checked by the tests).
+export const AGENT_COLORS = {
+  "claude-code": "#C2613F",
+  codex: "#0E8A6B",
+  cursor: "#334155",
+  aider: "#0F8A7E",
+  "gemini-cli": "#2F6FE0",
+  other: "#64748B",
+};
+
+// Rounds half-up to cents; the same vectors are tested in Python and Rust.
 export function money(microcents) {
   const cents = Math.floor((Math.max(0, Number(microcents) || 0) + 5_000) / 10_000);
   const dollars = Math.floor(cents / 100).toLocaleString("en-US");
   return `$${dollars}.${String(cents % 100).padStart(2, "0")}`;
 }
 
-export function budgetView(budget) {
+// The daily budget is an alert, not a cap: agents keep working past it.
+export function budgetView(budget, spentMicrocents = 0) {
   if (!budget || budget.daily_cents === null || budget.daily_cents === undefined) {
-    return { hasBudget: false, tone: "none", caption: "No daily budget", percent: 0, limit: null };
+    return { hasBudget: false, tone: "none", caption: "No daily budget", ariaText: "No daily budget", percent: 0, limit: null };
   }
-  const limit = money(budget.daily_cents * 10_000);
-  const percent = Math.max(0, Math.min(100, Number(budget.used_percent) || 0));
-  return { hasBudget: true, tone: budget.state, caption: `of ${limit} budget`, percent, limit };
+  const limitMicro = budget.daily_cents * 10_000;
+  const limit = money(limitMicro);
+  const used = Math.max(0, Number(budget.used_percent) || 0);
+  const pct = Math.round(used);
+  const caption =
+    budget.state === "over"
+      ? `${money(Math.max(0, spentMicrocents - limitMicro))} over your ${limit} alert`
+      : `${pct}% of ${limit} alert`;
+  return {
+    hasBudget: true,
+    tone: budget.state,
+    caption,
+    ariaText: `${money(spentMicrocents)} of a ${limit} daily alert used, ${pct}%`,
+    percent: Math.min(100, used),
+    limit,
+  };
 }
 
 const ORDER = { connected: 0, available: 1, unsupported: 2, missing: 3 };
@@ -21,8 +47,15 @@ const ORDER = { connected: 0, available: 1, unsupported: 2, missing: 3 };
 function initials(name) {
   const words = name.split(/\s+/).filter(Boolean);
   if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
-  return (name.slice(0, 1).toUpperCase() + name.slice(1, 2).toLowerCase()).padEnd(2, " ");
+  return name.slice(0, 1).toUpperCase() + name.slice(1, 2).toLowerCase();
 }
+
+const SUBTITLES = {
+  connected: () => "Connected",
+  available: (a) => (a.setup === "manual" ? "One paste step" : "Ready to connect"),
+  unsupported: () => "Not supported yet",
+  missing: () => "Not installed",
+};
 
 export function agentRows(agents, spend = [], { includeOther = false } = {}) {
   const spendById = Object.fromEntries((spend || []).map((s) => [s.id, s]));
@@ -49,6 +82,7 @@ export function agentRows(agents, spend = [], { includeOther = false } = {}) {
       setup: a.setup,
       badge,
       action,
+      subtitle: SUBTITLES[state](a),
       note: a.note || "",
       today: s ? money(s.today_microcents) : state === "connected" ? money(0) : "",
       week: s ? s.week_microcents : 0,
@@ -63,18 +97,25 @@ export function agentRows(agents, spend = [], { includeOther = false } = {}) {
     rows.push({
       id: "other",
       name: "Other apps",
-      initials: "··",
+      initials: "",
       state: "other",
       setup: null,
-      badge: { text: "Direct", tone: "muted" },
+      badge: null,
       action: null,
-      note: "Requests made with your own Lite keys.",
+      subtitle: "Your dashboard keys",
+      note: "Requests made with API keys from the dashboard, not a connected agent.",
       today: money(other.today_microcents),
       week: other.week_microcents,
       index: rows.length,
     });
   }
   return rows;
+}
+
+// Agents that aren't installed take one line instead of a row each.
+export function missingLine(rows) {
+  const names = rows.filter((r) => r.state === "missing").map((r) => r.name);
+  return names.length ? `Not installed: ${names.join(", ")}` : "";
 }
 
 const PROVIDER_NAMES = {
@@ -90,9 +131,9 @@ const PROVIDER_NAMES = {
 };
 
 const HEALTH = {
-  healthy: { status: "Healthy", tone: "ok" },
-  degraded: { status: "Degraded", tone: "warn" },
-  idle: { status: "Idle", tone: "muted" },
+  healthy: { status: "Healthy", tone: "ok", detail: "" },
+  degraded: { status: "Degraded", tone: "warn", detail: "Most requests failed in the last hour" },
+  idle: { status: "Idle", tone: "muted", detail: "No requests in the last hour" },
 };
 
 export function providerRows(providers) {
@@ -103,10 +144,37 @@ export function providerRows(providers) {
   }));
 }
 
+const MODEL_NAMES = { "gpt-4o": "GPT-4o" };
+
 export function weekLine(summary) {
   const w = summary.week;
-  const base = `This week ${money(w.spend_microcents)}`;
-  return w.saved_microcents > 0 ? `${base} · saved ${money(w.saved_microcents)}` : base;
+  const base = `Last 7 days ${money(w.spend_microcents)}`;
+  if (!(w.saved_microcents > 0)) return base;
+  const vs = MODEL_NAMES[w.baseline_model] || w.baseline_model;
+  return `${base} · saved ${money(w.saved_microcents)} vs ${vs}`;
+}
+
+export function rescuedLine(count) {
+  if (!count) return "";
+  return count === 1
+    ? "1 failed request was retried on another provider in the last 7 days"
+    : `${count} failed requests were retried on another provider in the last 7 days`;
+}
+
+// How a failed engine call should be shown: can't reach it, can't sign in, or other.
+export function classifyError(err) {
+  if (!err || err.status === 0) return "offline";
+  if (err.status === 401 || err.status === 403) return "auth";
+  return "error";
+}
+
+// Overlapping refreshes: only the most recently started one may render.
+export function createSequencer() {
+  let latest = 0;
+  return {
+    next: () => ++latest,
+    isLatest: (token) => token === latest,
+  };
 }
 
 export function tzOffsetMinutes(date = new Date()) {
@@ -122,10 +190,4 @@ export function engineConfig(location, injected) {
   if (injected && injected.key) return { baseUrl, key: injected.key };
   const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
   return { baseUrl, key: params.get("key") || "" };
-}
-
-// Agents that aren't installed take one line instead of a row each.
-export function missingLine(rows) {
-  const names = rows.filter((r) => r.state === "missing").map((r) => r.name);
-  return names.length ? `Not installed: ${names.join(", ")}` : "";
 }

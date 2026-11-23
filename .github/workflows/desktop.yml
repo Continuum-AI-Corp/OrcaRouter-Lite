@@ -29,6 +29,9 @@ on:
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: desktop tests
@@ -69,7 +72,7 @@ jobs:
       matrix:
         include:
           - { name: macOS Apple silicon, os: macos-14 }
-          - { name: macOS Intel, os: macos-13 }
+          - { name: macOS Intel, os: macos-15-intel }
           - { name: Linux, os: ubuntu-22.04 }
           - { name: Windows, os: windows-2022 }
     runs-on: ${{ matrix.os }}
@@ -99,7 +102,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements.lock
           python -m pip install --no-deps -e .
-          python -m pip install "pyinstaller>=6.10"
+          python -m pip install --require-hashes -r desktop/engine/requirements-build.lock
       - name: freeze the engine
         run: python desktop/engine/build_engine.py
       - name: smoke the frozen engine
@@ -112,8 +115,10 @@ jobs:
           curl -sf http://127.0.0.1:8791/desktop/panel.html | grep -q "OrcaRouter Lite"
           test -s "$ORCA_HOME/app.key"
           kill %1 || true
-      - name: tauri build
-        working-directory: desktop
+      # Signing secrets are exported only when they exist, so forks and
+      # unsigned builds don't hand Tauri empty values to try to use.
+      - name: macOS signing identity (when configured)
+        if: runner.os == 'macOS'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -122,6 +127,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!v}" ]; then
+              { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
+            fi
+          done
+      - name: tauri build
+        working-directory: desktop
+        shell: bash
         run: |
           npm ci
           npx tauri build
@@ -141,7 +155,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          # Four jobs race to create the release; losing that race is fine.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --generate-notes \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
           shopt -s nullglob
           gh release upload "$GITHUB_REF_NAME" --clobber \
             desktop/src-tauri/target/release/bundle/dmg/*.dmg \

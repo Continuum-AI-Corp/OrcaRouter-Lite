@@ -1,60 +1,75 @@
-// First-run setup: pick agents, choose where requests go, set a budget.
+// First-run setup: pick agents, choose where requests go, set a daily alert.
+// Also reopened later from the menu, so it starts from the current settings.
 import { createEngine, native } from "./api.js";
+import { AGENT_COLORS, agentRows } from "./lib.js";
 
-const AGENT_COLORS = { "claude-code": "#D97757", codex: "#10A37F", cursor: "#334155", aider: "#14B8A6", "gemini-cli": "#4C8DF6" };
 const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", orcarouter: "OrcaRouter" };
+const TICK =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg>';
 
 const engine = createEngine();
 const $ = (id) => document.getElementById(id);
-let state = { agents: [], providers: [], tokenUrl: "https://www.orcarouter.ai/console/token" };
+const state = { agents: [], providers: [], tokenUrl: "https://www.orcarouter.ai/console/token" };
 
-function initials(name) {
-  const w = name.split(/\s+/);
-  return w.length > 1 ? (w[0][0] + w[1][0]).toUpperCase() : name.slice(0, 2);
-}
-
-function agentItem(a) {
-  const auto = a.setup === "auto" && a.installed;
+function agentItem(row, agent) {
+  const connectable = row.state === "available" && row.setup === "auto";
   const li = document.createElement("li");
-  li.className = `agent ${auto ? (a.connected ? "on" : "on") : "off"}`;
-  const box = document.createElement("input");
-  box.type = "checkbox";
-  box.id = `agent-${a.id}`;
-  box.value = a.id;
-  box.checked = auto;
-  box.disabled = !auto || a.connected;
-  box.addEventListener("change", () => {
-    li.classList.toggle("on", box.checked);
-    updateButton();
-  });
+  li.className = `agent ${row.state === "connected" ? "is-connected" : connectable ? "on" : "off"}`;
+
+  let control;
+  if (row.state === "connected") {
+    control = document.createElement("span");
+    control.className = "tick";
+    control.innerHTML = TICK; // constant markup
+  } else {
+    control = document.createElement("input");
+    control.type = "checkbox";
+    control.id = `agent-${row.id}`;
+    control.value = row.id;
+    control.checked = connectable;
+    control.disabled = !connectable;
+    control.addEventListener("change", () => {
+      li.classList.toggle("on", control.checked);
+      updateButton();
+    });
+  }
+
   const ic = document.createElement("span");
   ic.className = "ic";
-  ic.style.background = AGENT_COLORS[a.id] || "#94A2B8";
-  ic.textContent = initials(a.name);
+  ic.style.background = AGENT_COLORS[row.id] || AGENT_COLORS.other;
+  ic.textContent = row.initials;
   ic.setAttribute("aria-hidden", "true");
+
   const nm = document.createElement("label");
   nm.className = "nm";
-  nm.htmlFor = box.id;
+  if (control.id) nm.htmlFor = control.id;
   const b = document.createElement("b");
-  b.textContent = a.name;
+  b.textContent = row.name;
   const small = document.createElement("small");
-  small.textContent = a.connected
-    ? "Already connected"
-    : a.setup === "manual"
-      ? "Connect from the menu bar: one paste step"
-      : a.setup === "unsupported"
-        ? a.note
-        : "Orca will update its settings";
+  if (row.state === "connected") small.textContent = "Already connected";
+  else if (row.setup === "manual") small.textContent = "Connect from the menu: one paste step";
+  else if (row.state === "unsupported") small.textContent = agent.note;
+  else if (agent.note) {
+    // e.g. Claude Code: say plainly that billing moves off the subscription.
+    small.textContent = agent.note;
+    small.className = "warn-note";
+  } else small.textContent = "Orca will update its settings";
   nm.append(b, small);
+
   const pill = document.createElement("span");
-  pill.className = `pill ${a.connected ? "ok" : a.setup === "unsupported" ? "muted" : a.setup === "manual" ? "muted" : ""}`;
-  pill.textContent = a.connected ? "Connected" : a.setup === "unsupported" ? "Coming soon" : a.setup === "manual" ? "Manual" : "Found";
-  li.append(box, ic, nm, pill);
+  const pillFor = {
+    connected: ["ok", "Connected"],
+    unsupported: ["muted", "Coming soon"],
+    available: row.setup === "manual" ? ["muted", "Manual"] : ["", "Found"],
+  }[row.state] || ["muted", ""];
+  pill.className = `pill ${pillFor[0]}`;
+  pill.textContent = pillFor[1];
+  li.append(control, ic, nm, pill);
   return li;
 }
 
 function selectedAgents() {
-  return [...document.querySelectorAll(".agents input:checked:not(:disabled)")].map((i) => i.value);
+  return [...document.querySelectorAll(".agents input[type=checkbox]:checked:not(:disabled)")].map((i) => i.value);
 }
 
 function route() {
@@ -63,22 +78,36 @@ function route() {
 
 function updateButton() {
   const n = selectedAgents().length;
-  $("go").textContent = n === 0 ? "Save" : n === 1 ? "Connect 1 agent" : `Connect ${n} agents`;
+  const setUp = state.providers.length > 0;
+  $("go").textContent = n === 0 ? (setUp ? "Save changes" : "Save") : n === 1 ? "Connect 1 agent" : `Connect ${n} agents`;
 }
 
 async function load() {
   try {
-    const [agents, summary, hosted] = await Promise.all([engine.agents(), engine.summary(), engine.hosted().catch(() => null)]);
+    const [agents, summary, settings, hosted] = await Promise.all([
+      engine.agents(),
+      engine.summary(),
+      engine.settings(),
+      engine.hosted().catch(() => null),
+    ]);
     state.agents = agents.agents;
     state.providers = (summary.providers || []).map((p) => p.provider);
     if (hosted?.token_url) state.tokenUrl = hosted.token_url;
+    // Start from what's saved: never silently reset someone's alert.
+    const cents = settings.daily_budget_cents;
+    $("budget").value = cents === null || cents === undefined ? "" : String(cents / 100);
+    if (cents === null || cents === undefined) $("budget").placeholder = state.providers.length ? "No alert" : "20";
+    if (!state.providers.length && (cents === null || cents === undefined)) $("budget").value = "20";
   } catch (err) {
     setStatus(err.message, true);
     return;
   }
-  const shown = state.agents.filter((a) => a.installed);
-  const missing = state.agents.filter((a) => !a.installed).map((a) => a.name);
-  $("agents").replaceChildren(...shown.map(agentItem));
+
+  const rows = agentRows(state.agents, []);
+  const byId = Object.fromEntries(state.agents.map((a) => [a.id, a]));
+  const shown = rows.filter((r) => r.state !== "missing");
+  const missing = rows.filter((r) => r.state === "missing").map((r) => r.name);
+  $("agents").replaceChildren(...shown.map((r) => agentItem(r, byId[r.id])));
   if (!shown.length) {
     const li = document.createElement("li");
     li.className = "hint";
@@ -91,9 +120,13 @@ async function load() {
     li.textContent = `Not found on this computer: ${missing.join(", ")}.`;
     $("agents").append(li);
   }
+
   if (state.providers.length) {
+    $("setup-title").textContent = "You're already set up";
+    $("setup-lede").textContent = "Change anything below. Leave a field empty to keep what you have.";
     $("providers-ready").hidden = false;
-    $("providers-ready").textContent = `Already set up: ${state.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")}. Adding a key here is optional.`;
+    $("providers-ready").textContent = `Already added: ${state.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")}. Adding a key here is optional.`;
+    if (!state.providers.includes("orcarouter")) document.querySelector('input[name="route"][value="byok"]').checked = true;
   }
   updateButton();
 }
@@ -106,11 +139,13 @@ function setStatus(text, isError = false) {
 function field(id) {
   const input = $(id);
   input.classList.remove("invalid");
+  input.removeAttribute("aria-invalid");
   return input.value.trim();
 }
 
 function invalid(id, message) {
   $(id).classList.add("invalid");
+  $(id).setAttribute("aria-invalid", "true");
   $(id).focus();
   setStatus(message, true);
   return false;
@@ -137,9 +172,10 @@ $("get-key").addEventListener("click", () => native.openExternal(state.tokenUrl)
 
 $("setup-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const dollars = Number($("budget").value);
-  if ($("budget").value !== "" && (!Number.isFinite(dollars) || dollars < 0)) {
-    invalid("budget", "Enter the daily budget in dollars, for example 20.");
+  const raw = $("budget").value.trim();
+  const dollars = Number(raw);
+  if (raw !== "" && (!Number.isFinite(dollars) || dollars < 0)) {
+    invalid("budget", "Enter the daily alert in dollars, for example 20, or leave it empty.");
     return;
   }
   $("go").disabled = true;
@@ -148,7 +184,7 @@ $("setup-form").addEventListener("submit", async (e) => {
   const results = [];
   try {
     if (!(await saveProviders())) return;
-    await engine.saveSettings({ daily_budget_cents: $("budget").value === "" ? null : Math.round(dollars * 100) });
+    await engine.saveSettings({ daily_budget_cents: raw === "" ? null : Math.round(dollars * 100) });
     for (const id of selectedAgents()) {
       const name = state.agents.find((a) => a.id === id)?.name || id;
       setStatus(`Connecting ${name}…`);
@@ -171,7 +207,7 @@ $("setup-form").addEventListener("submit", async (e) => {
 
 function showDone(results) {
   $("setup-form").hidden = true;
-  document.querySelector(".sh").hidden = true;
+  $("setup-header").hidden = true;
   $("results").replaceChildren(
     ...results.map((r) => {
       const li = document.createElement("li");
@@ -184,7 +220,9 @@ function showDone(results) {
       return li;
     }),
   );
+  $("results").hidden = results.length === 0;
   $("done").hidden = false;
+  $("close").focus();
 }
 
 function close() {

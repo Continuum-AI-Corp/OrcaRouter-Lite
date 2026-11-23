@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import secrets as _secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,18 +44,33 @@ def _write_private(path: Path, text: str) -> None:
 
 
 def prepare_home(home: Path) -> dict[str, str]:
-    """Create the folder (0700) and its secrets on first run; return the secrets."""
+    """Create the folder (0700) and its secrets on first run; return the secrets.
+
+    Creation is exclusive (O_EXCL), so two first runs racing each other end up
+    with the same secrets instead of one overwriting the other's.
+    """
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
     os.chmod(home, 0o700)
     path = home / "secrets.json"
-    if path.exists():
-        return json.loads(path.read_text())
     data = {
         "credential_encryption_key": _secrets.token_hex(32),
         "api_key_pepper": _secrets.token_urlsafe(32),
     }
-    _write_private(path, json.dumps(data, indent=2))
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        for _ in range(50):  # the winner may still be writing
+            try:
+                existing = json.loads(path.read_text())
+                if existing.get("credential_encryption_key") and existing.get("api_key_pepper"):
+                    return existing
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.02)
+        raise
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=2))
     return data
 
 
@@ -72,8 +88,19 @@ def desktop_env(home: Path, *, port: int = DEFAULT_PORT) -> dict[str, str]:
     }
 
 
-def write_engine_info(home: Path, *, base_url: str, pid: int) -> None:
-    _write_private(Path(home) / "engine.json", json.dumps({"base_url": base_url, "pid": pid}))
+def write_engine_info(home: Path, *, base_url: str, pid: int, secret: str) -> None:
+    """Where the engine listens, plus the per-launch secret that proves it's ours."""
+    _write_private(Path(home) / "engine.json", json.dumps({"base_url": base_url, "pid": pid, "secret": secret}))
+
+
+def remove_engine_info(home: Path, *, pid: int) -> None:
+    """Remove engine.json if it still describes this process."""
+    path = Path(home) / "engine.json"
+    try:
+        if json.loads(path.read_text()).get("pid") == pid:
+            path.unlink()
+    except (OSError, ValueError):
+        pass
 
 
 def read_engine_info(home: Path) -> dict:

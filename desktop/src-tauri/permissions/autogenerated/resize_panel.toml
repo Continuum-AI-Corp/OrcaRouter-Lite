@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resize-panel"
+description = "Enables the resize_panel command without any pre-configured scope."
+commands.allow = ["resize_panel"]
+
+[[permission]]
+identifier = "deny-resize-panel"
+description = "Denies the resize_panel command without any pre-configured scope."
+commands.deny = ["resize_panel"]

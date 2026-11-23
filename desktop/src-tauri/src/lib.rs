@@ -26,6 +26,9 @@ const POLL: Duration = Duration::from_secs(20);
 struct AppState {
     engine: Mutex<Option<Arc<Engine>>>,
     error: Mutex<Option<String>>,
+    // When the panel last hid itself on blur. A tray click that closes the
+    // panel blurs it first, so a show request right after is ignored.
+    panel_hidden_at: Mutex<Option<std::time::Instant>>,
 }
 
 fn engine(state: &AppState) -> Result<Arc<Engine>, String> {
@@ -35,16 +38,9 @@ fn engine(state: &AppState) -> Result<Arc<Engine>, String> {
     Err(state.error.lock().unwrap().clone().unwrap_or_else(|| "The Orca engine is still starting.".into()))
 }
 
-/// Minutes east of UTC, matching the JavaScript convention the engine expects.
-/// `date +%z` keeps this free of a timezone crate; it's called once a poll.
+/// Minutes east of UTC, the same convention the panel's JavaScript sends.
 pub fn tz_offset_minutes() -> i64 {
-    std::process::Command::new("date")
-        .arg("+%z")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| logic::parse_utc_offset(s.trim()))
-        .unwrap_or(0)
+    i64::from(chrono::Local::now().offset().local_minus_utc()) / 60
 }
 
 /// Inject the app key and refuse to navigate anywhere but the engine.
@@ -70,15 +66,21 @@ fn engine_window<'a>(
 }
 
 fn key_script(eng: &Engine) -> String {
+    // Only the app's own pages under /desktop/ get the key.
     format!(
-        "if (location.origin === {origin}) {{ window.__ORCA__ = {{ key: {key} }}; }}",
+        "if (location.origin === {origin} && location.pathname.startsWith('/desktop/')) {{ window.__ORCA__ = {{ key: {key} }}; }}",
         origin = serde_json::to_string(&eng.base_url).unwrap(),
-        key = serde_json::to_string(&eng.key).unwrap(),
+        key = serde_json::to_string(&eng.key()).unwrap(),
     )
 }
 
 fn show_panel(app: &AppHandle) {
     let state = app.state::<AppState>();
+    if let Some(t) = *state.panel_hidden_at.lock().unwrap() {
+        if t.elapsed() < Duration::from_millis(300) {
+            return; // this click is the one that just closed the panel
+        }
+    }
     let eng = match engine(&state) {
         Ok(e) => e,
         Err(msg) => {
@@ -102,9 +104,11 @@ fn show_panel(app: &AppHandle) {
             match built {
                 Ok(w) => {
                     let handle = w.clone();
+                    let app2 = app.clone();
                     w.on_window_event(move |e| {
                         if let WindowEvent::Focused(false) = e {
                             let _ = handle.hide();
+                            *app2.state::<AppState>().panel_hidden_at.lock().unwrap() = Some(std::time::Instant::now());
                         }
                     });
                     w
@@ -117,7 +121,9 @@ fn show_panel(app: &AppHandle) {
         let _ = win.hide();
         return;
     }
-    if win.move_window(Position::TrayBottomCenter).is_err() {
+    // TrayCenter sits above a bottom taskbar (Windows) and below a top menu
+    // bar (macOS), flipping to fit the screen.
+    if win.move_window(Position::TrayCenter).is_err() {
         let _ = win.move_window(Position::TopRight);
     }
     let _ = win.show();
@@ -132,7 +138,11 @@ fn open_window(app: &AppHandle, label: &str, path: &str, title: &str, size: (f64
         let _ = w.set_focus();
         return Ok(());
     }
-    let init = format!("{}\n{}", key_script(&eng), extra_init);
+    let init = if path.starts_with("/desktop/") {
+        format!("{}\n{}", key_script(&eng), extra_init)
+    } else {
+        extra_init.to_string()
+    };
     engine_window(app, label, &eng, path, init)
         .and_then(|b| b.title(title).inner_size(size.0, size.1).min_inner_size(480.0, 560.0).center().build())
         .map(|_| ())
@@ -147,7 +157,7 @@ fn open_dashboard(app: AppHandle) -> Result<(), String> {
     let seed = format!(
         "if (location.origin === {o}) {{ try {{ localStorage.setItem('orca-lite-api-key', {k}); }} catch (e) {{}} }}",
         o = serde_json::to_string(&eng.base_url).unwrap(),
-        k = serde_json::to_string(&eng.key).unwrap(),
+        k = serde_json::to_string(&eng.key()).unwrap(),
     );
     open_window(&app, "dashboard", "/", "OrcaRouter Lite", (1200.0, 820.0), &seed)
 }
@@ -186,6 +196,16 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// The panel reports its content height so the window has no dead space.
+#[tauri::command]
+fn resize_panel(app: AppHandle, height: f64) -> Result<(), String> {
+    let h = height.clamp(360.0, 680.0);
+    if let Some(w) = app.get_webview_window("panel") {
+        w.set_size(tauri::LogicalSize::new(360.0, h)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn start_engine(app: AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -193,16 +213,17 @@ fn start_engine(app: AppHandle) {
             Ok(eng) => {
                 let eng = Arc::new(eng);
                 // Let only the engine's own pages call the commands above.
+                // Only the app's own pages, never the dashboard or other paths.
                 let cap = CapabilityBuilder::new("engine-pages")
-                    .remote(format!("{}/*", eng.base_url))
-                    .windows(["panel", "setup", "dashboard"])
-                    .permission("core:default")
+                    .remote(format!("{}/desktop/*", eng.base_url))
+                    .windows(["panel", "setup"])
                     .permission("allow-open-dashboard")
                     .permission("allow-open-setup")
                     .permission("allow-close-setup")
                     .permission("allow-finish-setup")
                     .permission("allow-open-external")
-                    .permission("allow-quit-app");
+                    .permission("allow-quit-app")
+                    .permission("allow-resize-panel");
                 if let Err(e) = app.add_capability(cap) {
                     eprintln!("orca: capability: {e}");
                 }
@@ -223,29 +244,52 @@ fn start_engine(app: AppHandle) {
             }
             Err(msg) => {
                 *state.error.lock().unwrap() = Some(msg.clone());
-                if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                    let _ = tray.set_title(Some("!"));
-                    let _ = tray.set_tooltip(Some(&msg));
-                }
+                set_tray(&app, "!", &msg);
                 let _ = app.notification().builder().title("Orca couldn't start").body(msg).show();
             }
         }
     });
 }
 
-fn poll(app: AppHandle, eng: Arc<Engine>) {
+fn set_tray(app: &AppHandle, title: &str, tooltip: &str) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_title(Some(title));
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
+fn poll(app: AppHandle, mut eng: Arc<Engine>) {
     let mut prev: Option<logic::Snapshot> = None;
+    let mut failures = 0u32;
+    let mut last_restart: Option<std::time::Instant> = None;
     loop {
-        if let Some(snap) = eng.summary().as_ref().and_then(logic::parse_summary) {
-            let title = logic::tray_title(&snap);
-            if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                let _ = tray.set_title(Some(&title));
-                let _ = tray.set_tooltip(Some(&format!("OrcaRouter Lite · {title} today")));
+        match eng.summary().ok().as_ref().and_then(logic::parse_summary) {
+            Some(snap) => {
+                failures = 0;
+                let title = logic::tray_title(&snap);
+                set_tray(&app, &title, &format!("OrcaRouter Lite · {title} today"));
+                for alert in logic::alerts(prev.as_ref(), &snap) {
+                    let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
+                }
+                prev = Some(snap);
             }
-            for alert in logic::alerts(prev.as_ref(), &snap) {
-                let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
+            None => {
+                failures += 1;
+                if failures >= 3 {
+                    // Don't keep showing a number that may be stale.
+                    set_tray(&app, "—", "OrcaRouter Lite: the engine isn't responding");
+                }
+                let may_restart = last_restart.map_or(true, |t| t.elapsed() > Duration::from_secs(60));
+                if eng.exited() && may_restart {
+                    last_restart = Some(std::time::Instant::now());
+                    if let Ok(fresh) = Engine::start() {
+                        let fresh = Arc::new(fresh);
+                        *app.state::<AppState>().engine.lock().unwrap() = Some(fresh.clone());
+                        eng = fresh;
+                        failures = 0;
+                    }
+                }
             }
-            prev = Some(snap);
         }
         std::thread::sleep(POLL);
     }
@@ -264,7 +308,8 @@ pub fn run() {
             close_setup,
             finish_setup,
             open_external,
-            quit_app
+            quit_app,
+            resize_panel
         ])
         .setup(|app| {
             // A menu-bar app: no Dock icon on macOS.

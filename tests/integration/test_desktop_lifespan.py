@@ -54,3 +54,11 @@ def test_orca_console_script_is_registered():
 
     data = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
     assert data["project"]["scripts"]["orca"] == "app.orca_cli:entrypoint"
+
+
+async def test_desktop_startup_never_prints_the_seed_admin_key(desktop_env, capsys):
+    from app.main import create_app, lifespan
+
+    async with lifespan(create_app()):
+        pass
+    assert "sk-orca-" not in capsys.readouterr().out

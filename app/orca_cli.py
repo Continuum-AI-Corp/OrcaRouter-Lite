@@ -13,23 +13,33 @@ action here is also a button in the app.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sys
+import threading
 import time
 from collections.abc import Callable
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TextIO
 
 import httpx
 
 from packages.desktop import home as dh
 
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+LOOPBACK = {"127.0.0.1", "localhost"}
 NOT_RUNNING = "The Orca engine isn't running. Start it with `orca up`, or open the Orca app."
+NOT_OURS = (
+    "Something answered on {url}, but it isn't the Orca engine started from this folder "
+    "(another program may be using the port). Orca didn't send it your key."
+)
+SLOW = "The Orca engine didn't answer in time. It may be busy; try again in a moment."
 
 
 def money(microcents: int) -> str:
-    dollars = (Decimal(int(microcents)) / Decimal(1_000_000)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    dollars = (Decimal(max(0, int(microcents))) / Decimal(1_000_000)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return f"${dollars:,.2f}"
 
 
@@ -48,12 +58,39 @@ def _run_uvicorn(*, host: str, port: int, env: dict[str, str]) -> None:  # pragm
     uvicorn.run("app.main:app", host=host, port=port, log_level=os.environ.get("LOG_LEVEL", "info"))
 
 
+def watch_stdin(stream: TextIO, on_eof: Callable[[], None]) -> None:
+    """Block until `stream` closes, then call `on_eof`.
+
+    The desktop app starts the engine with a pipe on stdin and never writes
+    to it. When the app exits for any reason (quit, crash, force-quit) the OS
+    closes the pipe, and the engine stops instead of lingering on the port.
+    """
+    try:
+        while stream.read(4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    on_eof()
+
+
+def _default_port() -> int | None:
+    raw = os.environ.get("ORCA_PORT")
+    if raw is None:
+        return dh.DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        return None
+    return port if 0 < port < 65536 else None
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="orca", description="Put a budget on every coding agent.")
     sub = p.add_subparsers(dest="cmd", required=True)
     up = sub.add_parser("up", help="start the local engine")
     up.add_argument("--host", default="127.0.0.1")
-    up.add_argument("--port", type=int, default=int(os.environ.get("ORCA_PORT", dh.DEFAULT_PORT)))
+    up.add_argument("--port", type=int, default=None)
+    up.add_argument("--exit-with-stdin", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("agents", help="list coding agents")
     c = sub.add_parser("connect", help="point an agent at the engine")
     c.add_argument("agent")
@@ -81,41 +118,70 @@ def _error_message(resp: httpx.Response) -> str:
     return str(body)
 
 
+def _verify_identity(client: httpx.Client, secret: str) -> bool:
+    challenge = secrets.token_hex(16)
+    resp = client.get("/health/identity", params={"challenge": challenge})
+    if resp.status_code != 200:
+        return False
+    expected = hmac.new(secret.encode(), challenge.encode(), hashlib.sha256).hexdigest()
+    try:
+        proof = str(resp.json().get("proof", ""))
+    except ValueError:
+        return False
+    return hmac.compare_digest(proof, expected)
+
+
 def _request(method: str, path: str, *, transport, params=None) -> dict | None:
     home = dh.default_home()
     try:
         info = dh.read_engine_info(home)
         key = dh.read_app_key(home)
-    except dh.EngineNotRunning:
+        base_url, secret = info["base_url"], info["secret"]
+    except (dh.EngineNotRunning, KeyError, TypeError):
         _err(NOT_RUNNING)
         return None
     try:
-        with httpx.Client(
-            base_url=info["base_url"], transport=transport, timeout=15,
-            headers={"Authorization": f"Bearer {key}"},
-        ) as client:
-            resp = client.request(method, path, params=params)
+        with httpx.Client(base_url=base_url, transport=transport, timeout=15) as client:
+            # Prove the listener is the engine we started before sending it the key.
+            if not _verify_identity(client, secret):
+                _err(NOT_OURS.format(url=base_url))
+                return None
+            resp = client.request(method, path, params=params, headers={"Authorization": f"Bearer {key}"})
+    except httpx.TimeoutException:
+        _err(SLOW)
+        return None
     except httpx.TransportError:
         _err(NOT_RUNNING)
         return None
     if resp.status_code >= 400:
         _err(_error_message(resp))
         return None
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError:
+        _err(f"The Orca engine sent an unexpected reply (HTTP {resp.status_code}).")
+        return None
+
+
+MODEL_NAMES = {"gpt-4o": "GPT-4o"}
 
 
 def _print_status(s: dict) -> None:
+    # Same words as the menu-bar panel (desktop/ui/lib.js).
     budget = s.get("budget") or {}
-    line = f"Today      {money(s['today']['spend_microcents'])}"
+    line = f"Today        {money(s['today']['spend_microcents'])}"
     if budget.get("daily_cents") is not None:
-        line += f" of {money(budget['daily_cents'] * 10_000)} daily budget ({budget['used_percent']:.0f}%)"
+        line += f" of {money(budget['daily_cents'] * 10_000)} daily alert ({budget['used_percent']:.0f}%)"
     print(line)
     week = s["week"]
-    print(f"This week  {money(week['spend_microcents'])}  ·  saved {money(week['saved_microcents'])}"
-          f" vs always {week['baseline_model']}")
-    if week.get("failures_avoided"):
-        n = week["failures_avoided"]
-        print(f"Failovers  {n} {'request' if n == 1 else 'requests'} rescued by fallback")
+    line = f"Last 7 days  {money(week['spend_microcents'])}"
+    if week.get("saved_microcents", 0) > 0:
+        vs = MODEL_NAMES.get(week["baseline_model"], week["baseline_model"])
+        line += f"  ·  saved {money(week['saved_microcents'])} vs {vs}"
+    print(line)
+    n = week.get("failures_avoided") or 0
+    if n:
+        print(f"Fallback     {n} failed {'request was' if n == 1 else 'requests were'} retried on another provider")
     agents = s.get("agents") or []
     if agents:
         print()
@@ -138,10 +204,27 @@ def main(
             _err("orca up only listens on 127.0.0.1: the desktop engine edits files in your home folder. "
                  "To serve a team, run `orcarouter-lite` instead.")
             return 2
+        port = args.port if args.port is not None else _default_port()
+        if port is None:
+            _err("ORCA_PORT must be a port number between 1 and 65535.")
+            return 2
         home = dh.default_home()
-        env = dh.desktop_env(home, port=args.port)
-        dh.write_engine_info(home, base_url=f"http://127.0.0.1:{args.port}", pid=os.getpid())
-        (run_server or _run_uvicorn)(host="127.0.0.1", port=args.port, env=env)
+        instance_secret = secrets.token_urlsafe(32)
+        env = dh.desktop_env(home, port=port)
+        env["ORCA_INSTANCE_SECRET"] = instance_secret
+        dh.write_engine_info(home, base_url=f"http://127.0.0.1:{port}", pid=os.getpid(), secret=instance_secret)
+        if args.exit_with_stdin:
+            def _parent_gone() -> None:
+                dh.remove_engine_info(home, pid=os.getpid())
+                os._exit(0)
+
+            threading.Thread(
+                target=watch_stdin, args=(sys.stdin, _parent_gone), daemon=True, name="orca-stdin-watch"
+            ).start()
+        try:
+            (run_server or _run_uvicorn)(host="127.0.0.1", port=port, env=env)
+        finally:
+            dh.remove_engine_info(home, pid=os.getpid())
         return 0
 
     if args.cmd == "agents":

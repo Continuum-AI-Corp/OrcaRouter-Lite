@@ -1,59 +1,66 @@
-/* Menu-bar panel: a 360px column, sections separated by hairlines. */
+/* Menu-bar panel: a 360px column; sections separated by hairlines. The
+   native window is sized to the content, so there is no dead space. */
 body { background: var(--surface); }
-.panel { display: flex; flex-direction: column; height: 100vh; animation: pop var(--d) var(--ease) both; }
-.scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
-.missing { color: var(--ink-3); font-size: 11.5px; padding: 2px 0 0; }
-.ph { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+.panel { display: flex; flex-direction: column; max-height: 100vh; animation: fade var(--d) var(--ease) both; }
+.scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
+.ph { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); flex: none; }
 .label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
 
-.today { padding: 14px 16px 14px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(135deg, var(--brand-soft) 0%, var(--surface) 72%); border-bottom: 1px solid var(--border); }
+.today { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(135deg, var(--brand-soft) 0%, var(--surface) 72%); border-bottom: 1px solid var(--border); }
 .today-top { display: flex; align-items: center; justify-content: space-between; }
 .today-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .big { font-size: 30px; font-weight: 650; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; color: var(--brand-deep); transition: color var(--d) var(--ease); }
 .today.warn .big { color: var(--warn-ink); }
 .today.over .big { color: var(--err); }
-.caption { color: var(--ink-2); font-size: 12px; text-align: right; }
+.caption { color: var(--ink-2); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 .week { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .rescued { color: var(--ok-ink); font-size: 12px; }
 
-.budget-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; animation: rise var(--d) var(--ease) both; }
-.budget-form label { font-size: 12px; color: var(--ink-2); margin-right: 2px; }
-.money-input { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); padding: 0 8px; height: 28px; }
+.budget-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 2px; }
+.budget-form label, .budget-form .per { font-size: 12px; color: var(--ink-2); }
+.budget-form .fine { flex-basis: 100%; }
+.money-input { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); padding: 0 8px; height: 30px; }
 .money-input span { color: var(--ink-3); }
-.money-input input { border: 0; outline: 0; background: transparent; color: var(--ink); width: 56px; font: inherit; font-variant-numeric: tabular-nums; padding-left: 4px; }
+.money-input input { border: 0; outline: 0; background: transparent; color: var(--ink); width: 64px; font: inherit; font-variant-numeric: tabular-nums; padding-left: 4px; }
 .money-input:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-glow); }
 
-.callout { margin: 12px 16px 0; padding: 10px 12px; border: 1px solid var(--border); background: var(--warn-soft); border-radius: var(--r); display: flex; align-items: center; justify-content: space-between; gap: 10px; animation: rise var(--d) var(--ease) both; }
+.callout { margin: 12px 16px 0; padding: 10px 12px; border: 1px solid var(--border); background: var(--warn-soft); border-radius: var(--r); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .callout b { display: block; font-weight: 600; }
 .callout span { color: var(--ink-2); font-size: 12px; }
 
 .block { padding: 12px 16px 4px; display: flex; flex-direction: column; gap: 6px; }
-.block + .block { border-top: 1px solid var(--border); margin-top: 8px; }
+.block ~ .block { border-top: 1px solid var(--border); margin-top: 8px; }
 .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 36px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-sm); transition: background var(--d-fast) var(--ease); animation: rise var(--d) var(--ease) both; }
+/* Fixed columns so every amount and button lines up across rows. */
+.row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 56px 92px; align-items: center; gap: 10px; min-height: 38px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-sm); transition: background var(--d-fast) var(--ease); }
+.row.enter { animation: rise var(--d) var(--ease) both; }
 .row:hover { background: var(--surface-2); }
-.row .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; letter-spacing: 0.02em; }
+.row .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--tile-fg); letter-spacing: 0.02em; }
 .row .nm { min-width: 0; display: flex; flex-direction: column; }
 .row .nm b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .nm small { color: var(--ink-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .amt { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink); min-width: 48px; text-align: right; }
-.row .act { min-width: 82px; display: flex; justify-content: flex-end; }
+.row .nm small { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .amt { font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+.row .act { display: flex; justify-content: flex-end; }
+.row .act .btn { min-width: 86px; }
 .row.dim .nm b { color: var(--ink-2); }
-.row.dim .ic { opacity: 0.45; filter: saturate(0.4); }
-.rows.compact .row { grid-template-columns: minmax(0, 1fr) auto; min-height: 30px; }
+.row.dim .ic { opacity: 0.55; filter: saturate(0.5); }
+.rows.compact .row { grid-template-columns: minmax(0, 1fr) auto; min-height: 34px; }
+.missing { color: var(--ink-3); font-size: 11.5px; padding: 2px 0 0; }
 
 .manual { margin: 8px 16px 0; padding: 12px; border: 1px solid var(--brand); border-radius: var(--r); background: var(--brand-soft); display: flex; flex-direction: column; gap: 8px; animation: rise var(--d) var(--ease) both; }
 .manual-head { display: flex; align-items: center; justify-content: space-between; }
 .manual p { color: var(--ink-2); font-size: 12px; }
 .copy-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.copy-row .k { font-size: 11px; color: var(--ink-3); }
+.copy-row .k { font-size: 11.5px; color: var(--ink-3); }
 .copy-row code { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fine { font-size: 11px !important; color: var(--ink-3) !important; }
+.fine { font-size: 11.5px !important; color: var(--ink-3) !important; }
 
 .pf { flex: none; background: var(--surface); display: flex; gap: 16px; padding: 10px 16px 12px; border-top: 1px solid var(--border); }
-.pf .quiet { color: var(--ink-3); margin-left: auto; }
+.pf .quiet, .offline .quiet { color: var(--ink-3); }
+.pf .quiet { margin-left: auto; }
 
 .offline { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
 .offline img { width: 56px; height: 56px; opacity: 0.9; }
 .offline h1 { font-size: 15px; font-weight: 600; }
 .offline p { color: var(--ink-2); max-width: 260px; }
+.offline-actions { display: flex; gap: 14px; align-items: center; }
