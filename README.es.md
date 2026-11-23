@@ -38,7 +38,7 @@ OrcaRouter Lite es la edición open source de [OrcaRouter](https://www.orcaroute
 La app Orca vive en tu barra de menús. Ejecuta el enrutador en `127.0.0.1`, conecta a él tus agentes
 de código y muestra cuánto gastan.
 
-- **Gasto de hoy, por agente.** El total del día aparece junto al reloj; el panel lo desglosa por agente.
+- **Gasto de hoy, por agente.** El total del día aparece junto al reloj; el panel lo desglosa por agente, y cada lunes una notificación resume la semana.
 - **Un presupuesto diario.** Notificaciones al 80 % y al 100 % del importe que fijes. Por defecto solo avisa; marca una casilla y Orca pausa tus agentes de código al alcanzarlo.
 - **Conexión en un clic.** Orca edita la configuración propia del agente, guarda una copia de seguridad y la restaura cuando lo desconectas.
 - **Nunca caído.** Cuando un proveedor falla o te aplica rate-limit, las solicitudes pasan a otro proveedor o al OrcaRouter alojado, y la app cuenta cuántas ha rescatado. Vincula tu cuenta con `orca link --key sk-orca-…` o desde la configuración inicial.

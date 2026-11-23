@@ -291,6 +291,26 @@ fn set_tray(app: &AppHandle, title: &str, tooltip: &str) {
     }
 }
 
+/// The Monday summary. The last week it covered is kept in the Orca folder
+/// so a restart doesn't repeat it.
+fn weekly_digest(app: &AppHandle, snap: &logic::Snapshot) {
+    let path = engine::orca_home().join("weekly-digest");
+    let last = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+    let now = chrono::Local::now().naive_local();
+    match logic::weekly_digest(now, last.as_deref(), snap) {
+        logic::Digest::Nothing => {}
+        logic::Digest::Record { week } => {
+            let _ = std::fs::write(&path, week);
+        }
+        logic::Digest::Send { week, alert } => {
+            // Record first: a notification that fails to show isn't retried every 30 s.
+            if std::fs::write(&path, week).is_ok() {
+                let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
+            }
+        }
+    }
+}
+
 fn poll(app: AppHandle, mut eng: Arc<Engine>) {
     let mut prev: Option<logic::Snapshot> = None;
     let mut failures = 0u32;
@@ -304,6 +324,7 @@ fn poll(app: AppHandle, mut eng: Arc<Engine>) {
                 for alert in logic::alerts(prev.as_ref(), &snap) {
                     let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
                 }
+                weekly_digest(&app, &snap);
                 prev = Some(snap);
             }
             None => {

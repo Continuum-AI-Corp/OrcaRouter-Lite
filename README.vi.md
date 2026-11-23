@@ -38,7 +38,7 @@ OrcaRouter Lite là phiên bản mã nguồn mở của [OrcaRouter](https://www
 Ứng dụng Orca nằm trên thanh menu. Nó chạy router tại `127.0.0.1`, kết nối các coding agent
 của bạn vào đó và cho bạn thấy chúng tiêu bao nhiêu.
 
-- **Chi tiêu hôm nay, theo từng agent.** Tổng hôm nay hiển thị cạnh đồng hồ; bảng điều khiển chia nhỏ theo agent.
+- **Chi tiêu hôm nay, theo từng agent.** Tổng hôm nay hiển thị cạnh đồng hồ; bảng điều khiển chia nhỏ theo agent, và mỗi thứ Hai một thông báo tóm tắt cả tuần.
 - **Ngân sách hằng ngày.** Thông báo khi đạt 80% và 100% số tiền bạn đặt. Mặc định chỉ cảnh báo; đánh dấu một ô là Orca sẽ tạm dừng các coding agent của bạn khi chạm mức đó.
 - **Kết nối một cú nhấp.** Orca sửa cấu hình riêng của agent, giữ một bản sao lưu và khôi phục lại khi bạn ngắt kết nối.
 - **Không bao giờ sập.** Khi một provider gặp lỗi hoặc giới hạn rate của bạn, request sẽ fallback sang provider khác hoặc sang OrcaRouter hosted, và ứng dụng đếm số request mà nó đã cứu được. Liên kết tài khoản bằng `orca link --key sk-orca-…` hoặc trong màn hình thiết lập.

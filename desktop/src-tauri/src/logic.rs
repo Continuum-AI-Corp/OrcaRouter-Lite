@@ -13,6 +13,10 @@ pub struct Snapshot {
     pub failures_avoided: i64,
     /// Budget mode "stop": agents are paused once the budget is reached.
     pub stops: bool,
+    pub week_spend_microcents: i64,
+    /// What the same requests would have cost on `baseline_model`, minus spend.
+    pub week_saved_microcents: i64,
+    pub baseline_model: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +24,47 @@ pub enum Alert {
     BudgetWarn { used_percent: f64, limit: String },
     BudgetOver { limit: String, stops: bool },
     Rescued { count: i64 },
+    Weekly { spend: i64, saved: i64, vs: String, rescued: i64 },
+}
+
+/// What to do about the weekly summary notification on this poll.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Digest {
+    Nothing,
+    /// Remember this week as handled without notifying.
+    Record { week: String },
+    Send { week: String, alert: Alert },
+}
+
+fn model_name(id: &str) -> String {
+    match id {
+        "gpt-4o" => "GPT-4o".into(),
+        other => other.into(),
+    }
+}
+
+/// One notification a week, from Monday 09:00 local time (or the first poll
+/// after it, if the app was closed), summarising the last 7 days. Never on
+/// first launch, and never for a week with no spend.
+pub fn weekly_digest(now: chrono::NaiveDateTime, last_sent: Option<&str>, s: &Snapshot) -> Digest {
+    use chrono::{Datelike, Timelike, Weekday};
+    let iso = now.iso_week();
+    let key = format!("{}-W{:02}", iso.year(), iso.week());
+    if last_sent == Some(key.as_str()) || (now.weekday() == Weekday::Mon && now.hour() < 9) {
+        return Digest::Nothing;
+    }
+    if last_sent.is_none() || s.week_spend_microcents <= 0 {
+        return Digest::Record { week: key };
+    }
+    Digest::Send {
+        week: key,
+        alert: Alert::Weekly {
+            spend: s.week_spend_microcents,
+            saved: s.week_saved_microcents,
+            vs: model_name(&s.baseline_model),
+            rescued: s.failures_avoided,
+        },
+    }
 }
 
 pub fn money(microcents: i64) -> String {
@@ -46,6 +91,9 @@ pub fn parse_summary(v: &Value) -> Option<Snapshot> {
         daily_cents: budget.get("daily_cents").and_then(Value::as_i64),
         failures_avoided: week.get("failures_avoided").and_then(Value::as_i64).unwrap_or(0),
         stops: budget.get("mode").and_then(Value::as_str) == Some("stop"),
+        week_spend_microcents: week.get("spend_microcents").and_then(Value::as_i64).unwrap_or(0),
+        week_saved_microcents: week.get("saved_microcents").and_then(Value::as_i64).unwrap_or(0),
+        baseline_model: week.get("baseline_model").and_then(Value::as_str).unwrap_or("").to_string(),
     })
 }
 
@@ -108,6 +156,10 @@ pub fn alerts(prev: Option<&Snapshot>, cur: &Snapshot) -> Vec<Alert> {
     out
 }
 
+fn requests(n: i64) -> String {
+    format!("{} {}", n, if n == 1 { "request" } else { "requests" })
+}
+
 impl Alert {
     pub fn title(&self) -> String {
         match self {
@@ -115,11 +167,8 @@ impl Alert {
                 format!("{:.0}% of today's {} budget used", used_percent, limit)
             }
             Alert::BudgetOver { limit, .. } => format!("Today's {} budget is used up", limit),
-            Alert::Rescued { count } => format!(
-                "{} {} rescued by fallback",
-                count,
-                if *count == 1 { "request" } else { "requests" }
-            ),
+            Alert::Rescued { count } => format!("{} rescued by fallback", requests(*count)),
+            Alert::Weekly { spend, .. } => format!("Last 7 days: {} on coding agents", money(*spend)),
         }
     }
 
@@ -133,6 +182,20 @@ impl Alert {
                 "Your agents keep working; Orca only alerts. Raise the budget or switch to auto-routing in Orca.".into()
             }
             Alert::Rescued { .. } => "A provider failed or rate-limited you, and Orca sent the request elsewhere.".into(),
+            Alert::Weekly { saved, vs, rescued, .. } => {
+                let mut parts = Vec::new();
+                if *saved > 0 {
+                    parts.push(format!("Saved {} vs {}.", money(*saved), vs));
+                }
+                if *rescued > 0 {
+                    parts.push(format!("{} rescued by fallback.", requests(*rescued)));
+                }
+                if parts.is_empty() {
+                    "Open Orca to see which agent spent it.".into()
+                } else {
+                    parts.join(" ")
+                }
+            }
         }
     }
 }
@@ -150,7 +213,68 @@ mod tests {
             daily_cents: daily,
             failures_avoided: rescued,
             stops: false,
+            week_spend_microcents: 0,
+            week_saved_microcents: 0,
+            baseline_model: String::new(),
         }
+    }
+
+    fn week(spend: i64, saved: i64, rescued: i64) -> Snapshot {
+        Snapshot {
+            week_spend_microcents: spend,
+            week_saved_microcents: saved,
+            baseline_model: "gpt-4o".into(),
+            ..snap(0, "ok", None, None, rescued)
+        }
+    }
+
+    fn at(y: i32, m: u32, d: u32, h: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(h, 0, 0).unwrap()
+    }
+
+    // 2026-11-23 is a Monday, ISO week 2026-W48.
+
+    #[test]
+    fn weekly_digest_is_sent_on_monday_morning_once_per_week() {
+        let s = week(42_500_000, 61_000_000, 3);
+        match weekly_digest(at(2026, 11, 23, 9), Some("2026-W47"), &s) {
+            Digest::Send { week, alert } => {
+                assert_eq!(week, "2026-W48");
+                assert_eq!(alert.title(), "Last 7 days: $42.50 on coding agents");
+                assert_eq!(alert.body(), "Saved $61.00 vs GPT-4o. 3 requests rescued by fallback.");
+            }
+            other => panic!("expected a digest, got {other:?}"),
+        }
+        assert_eq!(weekly_digest(at(2026, 11, 23, 15), Some("2026-W48"), &s), Digest::Nothing);
+    }
+
+    #[test]
+    fn weekly_digest_waits_for_monday_nine_am() {
+        let s = week(1_000_000, 0, 0);
+        assert_eq!(weekly_digest(at(2026, 11, 23, 8), Some("2026-W47"), &s), Digest::Nothing);
+        // Missed Monday (app was closed): the first poll later that week sends it.
+        assert!(matches!(weekly_digest(at(2026, 11, 26, 8), Some("2026-W47"), &s), Digest::Send { .. }));
+    }
+
+    #[test]
+    fn weekly_digest_is_not_sent_on_first_launch_or_for_an_idle_week() {
+        let s = week(1_000_000, 0, 0);
+        assert_eq!(
+            weekly_digest(at(2026, 11, 23, 10), None, &s),
+            Digest::Record { week: "2026-W48".into() }
+        );
+        assert_eq!(
+            weekly_digest(at(2026, 11, 23, 10), Some("2026-W47"), &week(0, 0, 0)),
+            Digest::Record { week: "2026-W48".into() }
+        );
+    }
+
+    #[test]
+    fn weekly_digest_body_leaves_out_what_did_not_happen() {
+        let a = Alert::Weekly { spend: 2_000_000, saved: 0, vs: "GPT-4o".into(), rescued: 1 };
+        assert_eq!(a.body(), "1 request rescued by fallback.");
+        let a = Alert::Weekly { spend: 2_000_000, saved: 0, vs: "GPT-4o".into(), rescued: 0 };
+        assert_eq!(a.body(), "Open Orca to see which agent spent it.");
     }
 
     #[test]
@@ -169,7 +293,9 @@ mod tests {
             "week": {"spend_microcents": 9, "failures_avoided": 2},
             "budget": {"daily_cents": 2000, "used_percent": 16.0, "state": "ok"}
         });
-        assert_eq!(parse_summary(&v), Some(snap(3_200_000, "ok", Some(16.0), Some(2000), 2)));
+        let mut want = snap(3_200_000, "ok", Some(16.0), Some(2000), 2);
+        want.week_spend_microcents = 9;
+        assert_eq!(parse_summary(&v), Some(want));
     }
 
     #[test]

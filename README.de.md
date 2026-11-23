@@ -38,7 +38,7 @@ OrcaRouter Lite ist die Open-Source-Edition von [OrcaRouter](https://www.orcarou
 Die Orca-App sitzt in Ihrer Menüleiste. Sie betreibt den Router auf `127.0.0.1`, verbindet Ihre
 Coding-Agenten damit und zeigt, was sie ausgeben.
 
-- **Heutige Ausgaben, pro Agent.** Die Tagessumme steht neben der Uhr; das Panel schlüsselt sie nach Agent auf.
+- **Heutige Ausgaben, pro Agent.** Die Tagessumme steht neben der Uhr; das Panel schlüsselt sie nach Agent auf, und montags fasst eine Benachrichtigung die Woche zusammen.
 - **Ein Tagesbudget.** Benachrichtigungen bei 80 % und 100 % des festgelegten Betrags. Standardmäßig nur Warnungen; mit einem Häkchen pausiert Orca Ihre Coding-Agenten, sobald der Betrag erreicht ist.
 - **Verbinden mit einem Klick.** Orca passt die Einstellungen des Agenten selbst an, legt ein Backup an und stellt es wieder her, wenn Sie die Verbindung trennen.
 - **Nie offline.** Fällt ein Provider aus oder bremst Sie per Rate-Limit aus, weichen Anfragen auf einen anderen Provider oder auf das gehostete OrcaRouter aus, und die App zählt, wie viele sie gerettet hat. Ihr Konto verknüpfen Sie mit `orca link --key sk-orca-…` oder im Setup.
