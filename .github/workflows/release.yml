@@ -174,6 +174,34 @@ jobs:
           fi
           echo "digest=$released" >> "$GITHUB_OUTPUT"
 
+      # Keyless cosign signature (Sigstore, GitHub OIDC identity) on the exact
+      # digest the release tags resolve to: `cosign verify` in SECURITY.md.
+      - uses: sigstore/cosign-installer@v3
+
+      - name: sign the image
+        env:
+          DIGEST: ${{ steps.promote.outputs.digest }}
+          IMAGE: ${{ steps.cfg.outputs.image }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # SPDX SBOM of the published image, attached to the registry as an
+      # attestation so `gh attestation verify --predicate-type …spdx…` works.
+      - name: generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.cfg.outputs.image }}@${{ steps.promote.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+
+      - name: attest SBOM
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ steps.cfg.outputs.image }}
+          subject-digest: ${{ steps.promote.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
       # Attests what the release tags resolve to, so
       # `gh attestation verify oci://…:latest` verifies the image people pull.
       - name: attest build provenance

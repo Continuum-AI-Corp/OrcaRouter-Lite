@@ -1,15 +1,17 @@
 # OrcaRouter benchmark
 
-_10 prompts × 4 models · last run 2026-05-06 07:38 UTC_
+_No published run yet._
 
-**TL;DR**: routing the cheapest capable model saved **~0%** vs. the most expensive (`llama-3.3-70b-versatile` → `gpt-4o-mini`)
+The nightly job (`.github/workflows/benchmark.yml`) sends the prompts in
+`bench/prompts.jsonl` to each model and ranks them by cost per answered
+request. It needs provider keys (or an `ORCAROUTER_API_KEY`) as repository
+secrets. Until those are configured, the job fails instead of publishing a
+report, so this page stays empty rather than showing numbers nobody measured.
 
-| Model | Requests | Total cost | Avg latency | Success |
-|---|---:|---:|---:|---:|
-| `gpt-4o-mini` | 10 | $0.00 | 0 ms | 0% |
-| `claude-3-5-haiku-latest` | 10 | $0.00 | 0 ms | 0% |
-| `gemini-2.5-flash` | 10 | $0.00 | 0 ms | 0% |
-| `llama-3.3-70b-versatile` | 10 | $0.00 | 0 ms | 0% |
+Reproduce locally against your own keys:
 
-_Run nightly via GitHub Actions; see `.github/workflows/benchmark.yml`._
-_Reproduce: `python bench/run.py --prompts bench/prompts.jsonl`_
+```bash
+LITE_BASE_URL=http://localhost:8000 LITE_API_KEY=sk-orca-... \
+MODELS=gpt-4o-mini,claude-3-5-haiku-latest \
+python bench/run.py --prompts bench/prompts.jsonl --out BENCHMARK.md
+```

@@ -37,6 +37,19 @@ def _find_design_dir() -> str | None:
     return None
 
 
+def _find_desktop_ui_dir() -> str | None:
+    """Locate the Orca app's UI (desktop/ui in a checkout, app/desktop_ui in a wheel)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (
+        os.environ.get("ORCA_DESKTOP_UI_DIR"),
+        os.path.join(here, "desktop_ui"),
+        os.path.join(here, os.pardir, "desktop", "ui"),
+    ):
+        if candidate and os.path.isfile(os.path.join(candidate, "panel.html")):
+            return candidate
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -123,6 +136,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 # Non-UTF-8 consoles (e.g. GBK-codepage Windows) can't
                 # encode "✓" — the banner must never kill startup.
                 print(f"\n  orcarouter-lite ready. API key: {seed.api_key}\n")
+
+    if settings.orca_desktop_mode:
+        # The desktop app and `orca` CLI authenticate with a key kept in the
+        # engine's home folder, so the user never copies one by hand.
+        from pathlib import Path
+
+        from packages.desktop.home import default_home, ensure_app_key
+
+        desktop_home = Path(settings.orca_home).expanduser() if settings.orca_home else default_home()
+        async with session_mod._session_factory() as s:
+            await ensure_app_key(s, desktop_home)
+        log.info("desktop_mode", home=str(desktop_home))
 
     from app import cache_invalidation_bus
 
@@ -247,6 +272,21 @@ def create_app() -> FastAPI:
     app.include_router(routing.router)
     app.include_router(hosted.router)
     app.include_router(quality.router)
+
+    # The desktop API edits files in the user's home directory, so it only
+    # exists when `orca up` started this engine on the user's own machine.
+    from app.config import get_settings
+
+    if get_settings().orca_desktop_mode:
+        from app.routes import desktop
+
+        app.include_router(desktop.router)
+
+        ui_dir = _find_desktop_ui_dir()
+        if ui_dir:
+            from fastapi.staticfiles import StaticFiles
+
+            app.mount("/desktop", StaticFiles(directory=ui_dir, html=True), name="desktop")
 
     # ── Static SPA (provider keys, routing, analytics, keys) ──
     from fastapi.responses import FileResponse, RedirectResponse

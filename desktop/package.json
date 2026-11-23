@@ -1,0 +1,17 @@
+{
+  "name": "orcarouter-lite-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OrcaRouter Lite menu-bar app",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.6"
+  }
+}

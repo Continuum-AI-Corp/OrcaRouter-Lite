@@ -1,0 +1,133 @@
+/* Orca app — built on the OrcaRouter Lite design system (design/style.css):
+   brand blue, ink scale, soft surfaces, Inter + JetBrains Mono, 14px cards.
+   Adds a dark theme so the menu-bar panel follows the OS. */
+
+:root {
+  --brand: #2D7FF9;
+  --brand-deep: #1B5FCC;
+  --brand-soft: #EAF2FF;
+  --brand-glow: rgba(45, 127, 249, 0.18);
+  --ink: #0A0F1C;
+  --ink-2: #5B6B82;
+  --ink-3: #94A2B8;
+  --surface: #FFFFFF;
+  --surface-2: #F7F9FC;
+  --surface-3: #EFF3F8;
+  --border: #E4E9F0;
+  --border-strong: #D2DAE5;
+  --ok: #10B981;
+  --ok-ink: #066943;
+  --ok-soft: #DDF6EB;
+  --warn: #F59E0B;
+  --warn-ink: #8a5a07;
+  --warn-soft: #FFF1D6;
+  --err: #EF4444;
+  --err-ink: #8a1c1c;
+  --err-soft: #FFE0E0;
+  --on-brand: #FFFFFF;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 24px 48px -12px rgba(15, 23, 42, 0.18), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --r-sm: 8px;
+  --r: 10px;
+  --r-md: 14px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --d-fast: 140ms;
+  --d: 220ms;
+  --d-slow: 420ms;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #4C93FF; --brand-deep: #8AB8FF; --brand-soft: #13254A; --brand-glow: rgba(76, 147, 255, 0.28);
+    --ink: #E8EEF7; --ink-2: #A3B1C6; --ink-3: #7484A0;
+    --surface: #111A2B; --surface-2: #0A111E; --surface-3: #18233A;
+    --border: #22304A; --border-strong: #2E3E5C;
+    --ok: #34D399; --ok-ink: #6EE7B7; --ok-soft: #0F3127;
+    --warn: #FBBF24; --warn-ink: #FCD34D; --warn-soft: #3A2C0B;
+    --err: #F87171; --err-ink: #FCA5A5; --err-soft: #3B1518;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+    color-scheme: dark;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+input, .selectable, code { user-select: text; -webkit-user-select: text; }
+h1, h2, h3, h4, p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 12px; }
+button { font: inherit; }
+:where(button, a, input, [tabindex]):focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-glow); border-color: var(--brand); }
+
+/* ── wordmark (same as the dashboard's .brand-wordmark) ── */
+.brand { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 15px; letter-spacing: -0.02em; line-height: 1; }
+.brand img { width: 26px; height: 26px; filter: drop-shadow(0 3px 10px var(--brand-glow)); }
+.brand .router { color: var(--brand); margin-left: -6px; }
+.brand .lite { font-size: 8.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--on-brand); background: var(--brand); padding: 2px 5px; border-radius: 4px; }
+
+/* ── pills / buttons ── */
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--brand-deep); background: var(--brand-soft); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { color: var(--ok-ink); background: var(--ok-soft); }
+.pill.warn { color: var(--warn-ink); background: var(--warn-soft); }
+.pill.err, .pill.over { color: var(--err-ink); background: var(--err-soft); }
+.pill.muted { color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--border); }
+.pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.live .dot { animation: pulse 2.4s var(--ease) infinite; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; font-weight: 500; border: 1px solid transparent; background: transparent; color: var(--ink); padding: 7px 14px; border-radius: var(--r-sm); cursor: pointer; white-space: nowrap; transition: transform var(--d-fast) var(--ease), background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease), box-shadow var(--d-fast) var(--ease), color var(--d-fast) var(--ease); }
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--brand); color: var(--on-brand); box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 4px 12px var(--brand-glow); }
+.btn-primary:hover:not(:disabled) { background: var(--brand-deep); }
+@media (prefers-color-scheme: dark) { .btn-primary:hover:not(:disabled) { background: #3B82F6; } }
+.btn-ghost { background: var(--surface); border-color: var(--border); color: var(--ink-2); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); border-color: var(--border-strong); }
+.btn-danger { background: var(--surface); border-color: var(--err-soft); color: var(--err); }
+.btn-danger:hover:not(:disabled) { background: var(--err-soft); }
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+.btn-link { padding: 3px 0; color: var(--brand); font-weight: 500; }
+.btn-link:hover { color: var(--brand-deep); }
+.btn .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin 700ms linear infinite; }
+
+/* ── progress bar ── */
+.bar { height: 6px; background: var(--surface-3); border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--brand); border-radius: 3px; transition: width var(--d-slow) var(--ease), background-color var(--d) var(--ease); }
+.bar.warn > i { background: var(--warn); }
+.bar.over > i { background: var(--err); }
+
+/* ── toast ── */
+.toast { position: fixed; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: flex-start; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; box-shadow: var(--shadow-lg); font-size: 12.5px; z-index: 20; animation: toast-in var(--d) var(--ease) both; }
+.toast.leaving { animation: toast-out var(--d-fast) var(--ease) both; }
+.toast .ico { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+.toast.ok .ico { background: var(--ok-soft); color: var(--ok); }
+.toast.err .ico { background: var(--err-soft); color: var(--err); }
+.toast.info .ico { background: var(--brand-soft); color: var(--brand); }
+.toast b { display: block; font-weight: 600; }
+.toast span { color: var(--ink-2); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(6px); } }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes pop { 0% { transform: scale(0.98); opacity: 0; } 100% { transform: none; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

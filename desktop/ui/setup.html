@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up OrcaRouter Lite</title>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <main class="setup" id="setup">
+    <header class="sh">
+      <span class="brand"><img src="assets/orca.png" alt=""><span>Orca</span><span class="router">Router</span><span class="lite">Lite</span></span>
+      <h1>Put a budget on every coding agent</h1>
+      <p>Orca runs on this computer. Your prompts go straight from your agents to the provider you choose.</p>
+    </header>
+
+    <form id="setup-form" novalidate>
+      <section class="step" aria-labelledby="s1">
+        <h2 id="s1"><span class="n">1</span>Coding agents on this computer</h2>
+        <ul class="agents" id="agents"></ul>
+        <p class="hint">Orca backs up each agent's settings before changing them. Disconnect restores them.</p>
+      </section>
+
+      <section class="step" aria-labelledby="s2">
+        <h2 id="s2"><span class="n">2</span>Where should requests go?</h2>
+        <p class="hint" id="providers-ready" hidden></p>
+        <div class="choices" role="radiogroup" aria-labelledby="s2">
+          <label class="choice" data-route="hosted">
+            <input type="radio" name="route" value="hosted" checked>
+            <span class="radio" aria-hidden="true"></span>
+            <span class="body">
+              <b>Sign in with OrcaRouter <span class="pill">$5 free</span></b>
+              <small>Every model, no provider keys to manage. Add your own keys later.</small>
+              <span class="reveal">
+                <button class="btn btn-ghost btn-sm" type="button" id="get-key">Get your OrcaRouter key</button>
+                <input class="text" id="hosted-key" type="password" placeholder="Paste sk-orca-…" autocomplete="off" spellcheck="false" aria-label="OrcaRouter key">
+              </span>
+            </span>
+          </label>
+          <label class="choice" data-route="byok">
+            <input type="radio" name="route" value="byok">
+            <span class="radio" aria-hidden="true"></span>
+            <span class="body">
+              <b>Use my own API keys</b>
+              <small>Stored encrypted on this computer. Requests go straight to the provider.</small>
+              <span class="reveal">
+                <input class="text" id="key-anthropic" type="password" placeholder="Anthropic key (sk-ant-…)" autocomplete="off" spellcheck="false" aria-label="Anthropic key">
+                <input class="text" id="key-openai" type="password" placeholder="OpenAI key (sk-…)" autocomplete="off" spellcheck="false" aria-label="OpenAI key">
+              </span>
+            </span>
+          </label>
+          <label class="choice disabled" data-route="company" aria-disabled="true">
+            <input type="radio" name="route" value="company" disabled>
+            <span class="radio" aria-hidden="true"></span>
+            <span class="body">
+              <b>Join my company's gateway <span class="pill muted">Coming soon</span></b>
+              <small>Sign in to the gateway your platform team runs and get your own key and budget.</small>
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <section class="step" aria-labelledby="s3">
+        <h2 id="s3"><span class="n">3</span>Daily budget</h2>
+        <div class="budget">
+          <div class="money-input"><span>$</span><input id="budget" type="number" min="0" step="1" value="20" inputmode="decimal" aria-label="Daily budget in dollars"></div>
+          <p class="hint">Orca notifies you at 80% and 100% of this amount each day.</p>
+        </div>
+      </section>
+
+      <footer class="sf">
+        <p class="status" id="status" role="status"></p>
+        <button class="btn btn-ghost" type="button" id="skip">Skip for now</button>
+        <button class="btn btn-primary" type="submit" id="go">Connect agents</button>
+      </footer>
+    </form>
+
+    <section class="done" id="done" hidden>
+      <div class="check" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg></div>
+      <h1>You're set up</h1>
+      <ul class="results" id="results"></ul>
+      <p>Orca lives in your menu bar. Click it to see today's spend.</p>
+      <button class="btn btn-primary" type="button" id="close">Done</button>
+    </section>
+  </main>
+  <script type="module" src="setup.js"></script>
+</body>
+</html>

@@ -1,17 +1,18 @@
 # OrcaRouter Lite
 
-**Self-hosted LLM router with a managed safety net.**
-OpenAI-compatible. BYOK. Single-workspace. Streaming. `model="auto"`.
+**Put a budget on every coding agent.**
+See and cap what Claude Code, Aider, Cursor and your own apps spend, across every
+model provider, without your prompts leaving your machine. A menu-bar app for one
+developer, and a self-hosted router for a whole team. MIT licensed.
 
-![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
-
-[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
-[![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
+[![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
-![OrcaRouter Lite failover demo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
-
-*`model="auto"` absorbing a provider outage in real time — no code change. How it was recorded: [DEMO.md](./DEMO.md).*
+<p>
+  <img src="docs/screenshots/desktop-panel.png" alt="The OrcaRouter Lite menu-bar panel: today's spend against a daily budget, connected coding agents and provider health" width="340">
+  <img src="docs/screenshots/desktop-setup.png" alt="First-run setup: detected coding agents, where requests go, and a daily budget" width="420">
+</p>
 
 ## Languages
 
@@ -30,11 +31,66 @@ OpenAI-compatible. BYOK. Single-workspace. Streaming. `model="auto"`.
 
 **Find us:** [All model APIs](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
-OrcaRouter Lite is the open-source single-workspace edition of [OrcaRouter](https://www.orcarouter.ai). Run it on your laptop, ship it in your product, or use hosted `api.orcarouter.ai` directly for the long tail of models you don't want to manage keys for.
+OrcaRouter Lite is the open-source edition of [OrcaRouter](https://www.orcarouter.ai). It runs on your computer or your server, speaks the OpenAI, Anthropic and Gemini APIs, and can use hosted `api.orcarouter.ai` as a safety net for outages and for models you don't hold keys for.
 
-> **Why us?** LiteLLM is a library; OpenRouter is closed-source hosted; Ollama is local-only. We're the **self-hosted server with a managed fallback** — a sentence none of those can say.
+## The desktop app
 
-## 60-second quickstart
+The Orca app lives in your menu bar. It runs the router on `127.0.0.1`, connects your
+coding agents to it, and shows what they spend.
+
+- **Spend today, per agent.** Today's total sits next to the clock; the panel splits it by agent.
+- **A daily budget.** Notifications at 80% and 100% of the amount you set. Agents keep working; Orca alerts rather than blocks.
+- **One-click connect.** Orca edits the agent's own settings, keeps a backup, and restores it when you disconnect.
+- **Never down.** When a provider fails or rate-limits you, requests fall back to another provider or to hosted OrcaRouter, and the app counts how many it rescued.
+- **Private by default.** Prompts go straight from your agents to the provider you choose. No telemetry.
+
+**Install.** Installers (`.dmg`, `.deb`, `.AppImage`, `.msi`) are built by
+[`desktop.yml`](./.github/workflows/desktop.yml) and attached to each release, starting with
+the next tagged version. Until then, the same engine and CLI are one command away:
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect claude-code
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
+```
+
+`orca up` serves the panel at `http://127.0.0.1:8765/desktop/panel.html`; to build the
+menu-bar app itself, see [`desktop/`](./desktop/README.md).
+
+| Agent | How it connects |
+|---|---|
+| Claude Code | Automatic: sets `ANTHROPIC_BASE_URL` and a dedicated key in `~/.claude/settings.json` |
+| Aider | Automatic: sets `openai-api-base`, a dedicated key and `model: openai/auto` in `~/.aider.conf.yml` |
+| Cursor | One paste step: the app shows a base URL and key for Cursor's model settings |
+| Codex | Coming: needs the OpenAI Responses API (`/v1/responses`), which Lite doesn't serve yet |
+| Gemini CLI | Coming |
+
+Each connected agent gets its own key: that is how spend is split per agent, and why
+disconnecting revokes access at once. What the app may touch on your computer is spelled
+out in [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch).
+
+## Free and open, for good
+
+- **MIT, permanently.** Everything one developer or one team needs stays in this repository under MIT: routing, `model="auto"`, budgets, the dashboard, the desktop app. We won't move a feature from Lite to a paid plan.
+- **Paid is for organisations.** Governing many teams (SSO/SCIM, role-based access, fleet-wide budgets and policy, audit retention, alerts to Slack and email) lives in [hosted OrcaRouter](https://www.orcarouter.ai).
+- **Verifiable.** Releases are signed and ship with provenance and an SBOM. See [SECURITY.md](./SECURITY.md).
+
+## How it compares
+
+| | Best for | How it runs |
+|---|---|---|
+| **OrcaRouter Lite** | One developer up to a team that wants spend per agent, budgets and failover without new infrastructure | Desktop app, `uvx`/`pip`, or Docker; SQLite by default |
+| LiteLLM proxy | Teams that want a large configuration surface and a Python SDK | Self-hosted server; Postgres for spend tracking |
+| OpenRouter | One API key for many models, billed by them | Hosted only; prompts pass through their service |
+| Claude Code's own gateway support | Companies that only use Claude | Points Claude Code at a gateway you run; Claude models only |
+
+## Run it as a server (60 seconds)
 
 Two ways to use OrcaRouter:
 
@@ -119,21 +175,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 Open `http://localhost:8000/` for the dashboard — providers, routing, analytics, keys (Path A only).
 
-## Why?
-
-| | OrcaRouter Lite | LiteLLM library | OpenRouter | Ollama |
-|---|---|---|---|---|
-| Self-hosted server | ✓ | as a library | ✗ | ✓ |
-| OpenAI-compatible | ✓ | ✓ | ✓ | ✓ |
-| Multi-provider (OpenAI/Anthropic/Google/…) | ✓ | ✓ | ✓ | ✗ |
-| Built-in dashboard | ✓ | ✗ | ✓ | ✗ |
-| `model="auto"` (cheapest capable) | ✓ | ✗ | ✗ | n/a |
-| Streaming | ✓ | ✓ | ✓ | ✓ |
-| BYOK | ✓ | ✓ | ✗ | n/a |
-| Hosted-as-fallback | ✓ | ✗ | n/a | ✗ |
-| No Postgres / no Redis required | ✓ | n/a | n/a | ✓ |
-
-## `model="auto"` — the headline feature
+## `model="auto"`
 
 Send `model="auto"` and OrcaRouter picks the **cheapest** model in your configured providers that meets the request's capability requirements (tools, vision, JSON mode). No manual routing rules; no rate-limit gymnastics; no `if x: ...` cost optimization in your code.
 
@@ -218,12 +260,12 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 
 ## Deploy somewhere else
 
-| Platform | One-click |
+| Platform | How |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (published from the next tagged release; verify it with the commands in [SECURITY.md](./SECURITY.md)) |
 | Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Connect repo, root dir = `.` |
-| Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (image coming soon) |
+| Render | Connect the repo, root dir = `.` |
+| Railway | Template coming (tracked in #181) |
 
 ## What's in the box
 
@@ -236,6 +278,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, no telemetry leaves the box
 - `GET  /v1/hosted` — hosted-fallback status (drives the dashboard's "Get $5 free credit" card)
 - `GET/POST/DELETE /v1/keys/...` — list / rotate / revoke API keys
+- `/v1/app/*` — agents, spend summary and budget for the desktop app (only when started with `orca up`; see [SECURITY.md](./SECURITY.md))
 - Single-page dashboard at `/`
 - SQLite by default; Postgres opt-in via `DATABASE_URL`; Redis optional
 - Multi-worker safe: set `REDIS_URL` and config changes (provider keys, routing, quality overrides) are invalidated across all workers/replicas via pub/sub. Single worker (the default) needs no Redis.
@@ -292,44 +335,18 @@ This is the **single-workspace** edition. By design, no:
 - multi-pod deployment / Kubernetes
 - email / Slack / webhooks for alerts
 
-For those, see the hosted product or the (forthcoming) Teams edition.
+Those are organisation features and live in [hosted OrcaRouter](https://www.orcarouter.ai); see [Free and open, for good](#free-and-open-for-good).
 
 ## Testing
 
-Built test-first. Every behaviour shipped here had a failing test first.
+Built test-first: every behaviour shipped here had a failing test first.
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest -v
-# 403 passed
+PYTHONPATH=. pytest                          # router, protocols, desktop API, CLI, supply-chain checks
+cd desktop && npm test                       # desktop view logic (node --test)
+cd desktop/src-tauri && cargo test --lib     # menu-bar title and notification rules
 ```
-
-| Slice | Tests | What |
-|---|---|---|
-| 1. Config | 5 | env loading, defaults, `env_provider_keys()` |
-| 2. Seed | 3 | bootstrap workspace + API key + RoutingConfig, idempotent |
-| 3. Auth middleware | 4 | bearer-token validation, 401 on missing/invalid |
-| 4. App factory | 3 | /health, error envelope, /v1/* gating |
-| 5. Provider keys CRUD | 5 | encrypted at rest, plaintext never round-trips |
-| 6. Router cache | 13 | env+DB+hosted deployment assembly with precedence |
-| 7. Chat completion | 5 | OpenAI format, RequestLog, validation |
-| 8. Analytics | 4 | recent / spend / latency p50/p99 |
-| 9. /v1/{models,keys,routing} | 8 | list/create/revoke + strategy update |
-| 10. Streaming | 4 | SSE format, `[DONE]` sentinel, log writeback |
-| 11. Catalog | 7 | 100+ models, capability flags, pricing |
-| 12. `model="auto"` | 21 | capability detection, cheapest-meeting-needs (unit + integration) |
-| 13. Cost savings | 9 | savings vs always-GPT-4 baseline + hosted-auto comparison |
-| 14. Prompt cache | 15 | cross-provider exact-match cache + chat integration |
-| 15. Benchmark | 4 | summarize() + render_markdown() aggregation |
-| 16. Hosted status | 7 | `/v1/hosted` config-source + signup-URL surface |
-| 17. Hosted-auto savings | 3 | `_hosted_auto_savings` edge cases on synthetic catalogs |
-| 18. Unreachable models | 7 | "models you can't reach" tile clears when hosted is on |
-| 19. Multi-protocol auth | 6 | x-api-key / x-goog-api-key / ?key= scoping, /v1beta guard, per-protocol 401 envelopes |
-| 20. Anthropic `/v1/messages` | 53 | request/response/stream translation + ingress integration |
-| 21. Gemini `/v1beta` | 40 | translation incl. schema-enum normalization + generateContent/stream ingress |
-| **Total** | **403** | |
-
-Slice rows show the tests added when each slice shipped; the total is the current full suite.
 
 ## Architecture
 
@@ -354,7 +371,13 @@ app/
     ├── hosted.py       /v1/hosted — hosted-fallback status for the dashboard
     └── health.py
 
+desktop/
+├── ui/                 Menu-bar panel + setup pages (served by the engine at /desktop/)
+├── src-tauri/          Native shell: tray title, notifications, starts the engine
+└── engine/             PyInstaller build of the bundled `orca-engine`
+
 packages/
+├── desktop/            Agent connectors (backup/restore) + desktop home folder
 ├── litellm_adapter/    Router wrapper + 100+ model catalog
 ├── auth/               hashing + AES-256-GCM
 └── db/                 models + engine + session
@@ -362,17 +385,16 @@ packages/
 
 ## Roadmap
 
-- [x] OpenAI-compatible chat completions
-- [x] Streaming (SSE)
-- [x] `model="auto"` cheapest-capable routing
-- [x] Hosted-as-upstream
-- [x] Encrypted BYOK at rest
-- [x] Local analytics dashboard
-- [x] CI (GitHub Actions)
-- [x] Cross-provider prompt caching
-- [x] Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK integrations
-- [x] Public benchmark + savings claim
-- [ ] Embeddings + image-gen proxy
+- [x] OpenAI-compatible chat completions, streaming, `model="auto"`
+- [x] Anthropic and Gemini native endpoints
+- [x] Hosted-as-upstream fallback, encrypted BYOK, local dashboard
+- [x] Cross-provider prompt cache
+- [x] Desktop app: menu-bar spend, daily budget alerts, one-click agent connect
+- [x] Signed releases with provenance and SBOM; hash-locked dependencies
+- [ ] `/v1/responses` so Codex can connect
+- [ ] Hard per-developer budget caps (alerts ship today)
+- [ ] `orca login`: join a team's gateway from the app
+- [ ] Embeddings, Ollama/vLLM providers, custom fallback chains
 
 See [DEMO.md](./DEMO.md) for the failover demo.
 

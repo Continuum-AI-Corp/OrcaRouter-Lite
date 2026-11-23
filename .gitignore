@@ -14,3 +14,11 @@ htmlcov/
 .venv/
 venv/
 node_modules/
+
+# Desktop app build output
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+build/
+!desktop/package-lock.json

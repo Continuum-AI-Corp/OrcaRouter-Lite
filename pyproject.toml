@@ -34,7 +34,10 @@ dependencies = [
     "aiosqlite>=0.19.0",
     "alembic>=1.13.0",
 
-    "litellm>=1.40.0",
+    # Pinned exactly: LiteLLM shipped backdoored PyPI releases in 2026
+    # (1.82.7, 1.82.8, 1.107.0). Bump deliberately and regenerate
+    # requirements.lock; see SECURITY.md.
+    "litellm==1.110.2",
     "google-auth>=2.0.0",
 
     "pydantic>=2.7.0",
@@ -52,6 +55,7 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.29.0"]
 redis = ["redis[hiredis]>=5.0.0"]
+desktop-build = ["pyinstaller>=6.10"]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0,<2.0",
@@ -62,6 +66,7 @@ dev = [
 
 [project.scripts]
 orcarouter-lite = "app.cli:main"
+orca = "app.orca_cli:entrypoint"
 
 [project.urls]
 Homepage = "https://www.orcarouter.ai"
@@ -82,9 +87,10 @@ packages = ["app", "packages"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "design" = "app/design"
+"desktop/ui" = "app/desktop_ui"
 
 [tool.hatch.build.targets.sdist]
-include = ["app", "packages", "design", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml"]
+include = ["app", "packages", "design", "desktop/ui", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml"]
 exclude = ["**/__pycache__", "**/*.pyc", "design/test_i18n_unittest.py"]
 
 [tool.pytest.ini_options]
