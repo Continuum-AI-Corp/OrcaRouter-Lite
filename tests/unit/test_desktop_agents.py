@@ -69,12 +69,11 @@ def test_claude_code_detected_from_binary_on_path(home, state_dir):
     assert s.installed is True
 
 
-def test_codex_is_reported_but_not_connectable_yet(home, state_dir):
+def test_codex_is_detected_and_connects_automatically(home, state_dir):
     (home / ".codex").mkdir()
     s = _status(home, state_dir, "codex")
     assert s.installed is True
-    assert s.setup == "unsupported"
-    assert "Responses API" in s.note
+    assert s.setup == "auto"
 
 
 def test_cursor_needs_manual_setup(home, state_dir):
@@ -85,7 +84,7 @@ def test_cursor_needs_manual_setup(home, state_dir):
 
 def test_every_agent_has_a_display_name(home, state_dir):
     ids = {a.id for a in ag.detect_agents(home=home, state_dir=state_dir, which=_no_binaries)}
-    assert ids == {"claude-code", "codex", "cursor", "aider", "gemini-cli"}
+    assert ids == {"claude-code", "codex", "cursor", "aider", "gemini-cli", "opencode", "cline", "command-code"}
     for a in ag.detect_agents(home=home, state_dir=state_dir, which=_no_binaries):
         assert a.name
 
@@ -212,10 +211,11 @@ def test_state_file_is_private(home, state_dir):
 # ── unsupported / manual agents ─────────────────────────────────────────
 
 
-def test_connecting_codex_is_refused_until_responses_api_exists(home, state_dir):
-    (home / ".codex").mkdir()
-    with pytest.raises(ag.AgentNotSupported):
-        ag.connect_agent("codex", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
+def test_connecting_an_unsupported_agent_is_refused(home, state_dir, monkeypatch):
+    monkeypatch.setitem(ag.AGENTS, "future", ag.AgentSpec(
+        id="future", name="Future", binaries=(), config_dirs=(), setup="unsupported", note="Not yet."))
+    with pytest.raises(ag.AgentNotSupported, match="Not yet"):
+        ag.connect_agent("future", home=home, state_dir=state_dir, base_url=BASE, api_key=KEY)
 
 
 def test_unknown_agent_is_rejected(home, state_dir):

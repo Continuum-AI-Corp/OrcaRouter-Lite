@@ -133,7 +133,8 @@ async def test_list_agents(desktop_app, seeded):
     by_id = {a["id"]: a for a in r.json()["agents"]}
     assert by_id["claude-code"]["installed"] is True
     assert by_id["claude-code"]["connected"] is False
-    assert by_id["codex"]["setup"] == "unsupported"
+    assert by_id["codex"]["setup"] == "auto"
+    assert by_id["cline"]["setup"] == "manual"
 
 
 async def test_connect_writes_config_with_a_dedicated_working_key(desktop_app, seeded, desktop_dirs, db_session):
@@ -197,12 +198,32 @@ async def test_manual_agent_gets_its_key_once(desktop_app, seeded):
     assert body["api_key"].startswith("sk-orca-")
 
 
-async def test_unsupported_agent_returns_409_with_reason(desktop_app, seeded):
+async def test_unsupported_agent_returns_409_with_reason(desktop_app, seeded, monkeypatch):
+    from packages.desktop import agents as ag
+
+    monkeypatch.setitem(ag.AGENTS, "future", ag.AgentSpec(
+        id="future", name="Future", binaries=(), config_dirs=(), setup="unsupported", note="Needs a newer Lite."))
     root, _ = seeded
     async with _client(desktop_app) as c:
-        r = await c.post("/v1/app/agents/codex/connect", headers=_auth(root))
+        r = await c.post("/v1/app/agents/future/connect", headers=_auth(root))
     assert r.status_code == 409
-    assert "Responses API" in r.text
+    assert "Needs a newer Lite" in r.text
+
+
+async def test_connect_codex_writes_a_working_bearer_token(desktop_app, seeded, desktop_dirs, db_session):
+    import tomllib
+
+    from packages.auth.key_validator import validate_api_key
+
+    root, _ = seeded
+    home, _state = desktop_dirs
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/agents/codex/connect", headers=_auth(root))
+    assert r.status_code == 200, r.text
+    provider = tomllib.loads((home / ".codex" / "config.toml").read_text())["model_providers"]["orca"]
+    assert provider["base_url"] == "http://127.0.0.1:8765/v1"
+    kc = await validate_api_key(provider["experimental_bearer_token"], db_session)
+    assert kc.name == "agent:codex"
 
 
 async def test_unknown_agent_is_404(desktop_app, seeded):

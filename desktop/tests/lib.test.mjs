@@ -107,6 +107,14 @@ test("agent tile colours keep white initials readable (≥ 4:1)", () => {
   }
 });
 
+test("every connectable agent has its own tile colour", () => {
+  for (const id of ["claude-code", "codex", "gemini-cli", "opencode", "cline", "command-code", "cursor", "aider"]) {
+    assert.ok(AGENT_COLORS[id], `${id} has no colour`);
+  }
+  const used = Object.values(AGENT_COLORS);
+  assert.equal(new Set(used).size, used.length, "two agents share a colour");
+});
+
 test("missingLine folds agents that aren't installed into one sentence", () => {
   const rows = agentRows(AGENTS, SPEND);
   assert.equal(missingLine(rows), "Not installed: Aider, Gemini CLI");

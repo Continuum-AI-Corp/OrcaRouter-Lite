@@ -9,6 +9,9 @@ export const AGENT_COLORS = {
   cursor: "#334155",
   aider: "#0F8A7E",
   "gemini-cli": "#2F6FE0",
+  opencode: "#4338CA",
+  cline: "#7C3AED",
+  "command-code": "#B4233C",
   other: "#64748B",
 };
 
