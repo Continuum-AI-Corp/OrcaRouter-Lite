@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **为每个编程 Agent 设定预算。**
-查看并限制 Claude Code、Aider、Cursor 以及你自己的应用在所有模型 provider 上的花费，
+查看并限制 Claude Code、Codex、Gemini CLI、OpenCode 以及你自己的应用在所有模型 provider 上的花费，
 提示词不会离开你的机器。对个人开发者，它是一个菜单栏应用；对整个团队，
 它是一个自托管路由器。MIT 许可。
 
@@ -63,7 +63,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 
 `orca up` 会在 `http://127.0.0.1:8765/desktop/panel.html` 提供面板；如需构建
 菜单栏应用本身，请见 [`desktop/`](./desktop/README.md)。首个 release 发布后，
-Apple 芯片 Mac 用户也可以 `brew install --cask continuum-ai-corp/tap/orcarouter-lite`。
+macOS 用户也可以 `brew install --cask continuum-ai-corp/tap/orcarouter-lite`。
 
 在 Claude Code 的状态栏显示今日花费：把下面这行加到 `~/.claude/settings.json`。
 
@@ -76,10 +76,13 @@ Apple 芯片 Mac 用户也可以 `brew install --cask continuum-ai-corp/tap/orca
 | Agent | 连接方式 |
 |---|---|
 | Claude Code | 自动：在 `~/.claude/settings.json` 中设置 `ANTHROPIC_BASE_URL` 和专用密钥 |
+| Codex | 自动：在 `~/.codex/config.toml` 中添加 `orca` provider（Responses API），并通过 `model = "auto"` 选中它 |
+| Gemini CLI | 自动：在 `~/.gemini/.env` 中设置 `GOOGLE_GEMINI_BASE_URL` 和专用密钥，并在 `~/.gemini/settings.json` 中设置 Gemini CLI 的网关登录 |
+| OpenCode | 自动：在 `~/.config/opencode/opencode.json` 中添加 `orca` provider 并选中 `orca/auto`；密钥保存在 OpenCode 读取的私有文件中 |
+| Command Code | 自动：在 `~/.commandcode/providers.json` 中添加 `orca` provider，其密钥来自私有文件（Command Code 不接受在该文件中直接写入密钥）|
+| Cline | 粘贴一步：在 Cline 中选择 API Provider → OpenAI Compatible，然后粘贴应用显示的 base URL 和密钥 |
 | Aider | 自动：在 `~/.aider.conf.yml` 中设置 `openai-api-base`、专用密钥和 `model: openai/auto` |
 | Cursor | 粘贴一步：应用会显示用于 Cursor 模型设置的 base URL 和密钥 |
-| Codex | 即将支持：需要 OpenAI Responses API（`/v1/responses`），Lite 目前尚未提供 |
-| Gemini CLI | 即将支持 |
 
 每个已连接的 Agent 都有自己的密钥：花费正是借此按 Agent 拆分，断开连接也因此能立即撤销访问。
 应用可以触碰你电脑上的哪些内容，详见
@@ -268,14 +271,15 @@ client.models.generate_content(model="auto", contents="Hello!")
 | 平台 | 方式 |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>`（从下一个打标签的 release 开始发布；可用 [SECURITY.md](./SECURITY.md) 中的命令校验）|
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | 连接代码仓库，根目录 = `.` |
-| Railway | 模板即将推出（在 #181 中跟踪）|
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite)：使用 [`render.yaml`](./render.yaml)，自动生成所需密钥，并将数据库保存在磁盘上 |
+| Fly.io | `fly launch --no-deploy`，然后执行 [`fly.toml`](./fly.toml) 顶部的卷和 `fly secrets set` 步骤，最后 `fly deploy` |
+| Railway | `railway init`、`railway volume add --mount-path /data`、`railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`，最后 `railway up`（使用 [`railway.json`](./railway.json) 构建）|
 
 ## 盒子里都有什么
 
 - `POST /v1/chat/completions` —— 代理 + 流式传输 + `model="auto"` + 跨 provider 提示缓存
 - `POST /v1/messages` —— **Anthropic Messages API 入口**（Claude Code / Anthropic SDK 可直接连接；`+ /count_tokens`）
+- `POST /v1/responses` —— **OpenAI Responses API 入口**（Codex 和 Responses SDK 客户端；支持流式传输、function 工具和 custom 工具）
 - `POST /v1beta/models/{model}:generateContent` —— **Gemini API 入口**（google-genai SDK 可直接连接；`+ :streamGenerateContent`、`GET /v1beta/models`）
 - `GET  /v1/models` —— 可发现的模型目录（来自 `litellm.model_cost` 的 100+ 模型）
 - `GET/PUT/DELETE /v1/providers/{provider}` —— 设置 / 列出 / 撤销加密的 provider 密钥
@@ -377,7 +381,8 @@ packages/
 - [x] 带来源证明和 SBOM 的签名 release；哈希锁定的依赖
 - [x] 每日预算：可只提醒，也可在达到上限时暂停编程 Agent
 - [x] `orca login` / "Join my company's gateway"：从应用使用团队的网关
-- [ ] `/v1/responses`，让 Codex 可以接入
+- [x] `/v1/responses`，让 Codex 可以接入；Gemini CLI、OpenCode、Command Code 和 Cline 也已支持
+- [x] 加密密钥存放在操作系统钥匙串中；每天一次更新检查
 - [ ] 在共享团队网关上强制执行按开发者的预算
 - [ ] Embeddings、Ollama/vLLM provider、自定义 fallback 链
 

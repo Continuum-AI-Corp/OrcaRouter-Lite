@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **Ponle un presupuesto a cada agente de código.**
-Mira y limita cuánto gastan Claude Code, Aider, Cursor y tus propias apps, en todos los proveedores
+Mira y limita cuánto gastan Claude Code, Codex, Gemini CLI, OpenCode y tus propias apps, en todos los proveedores
 de modelos, sin que tus prompts salgan de tu máquina. Una app de barra de menús para un desarrollador
 y un enrutador autoalojado para todo un equipo. Licencia MIT.
 
@@ -63,7 +63,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 
 `orca up` sirve el panel en `http://127.0.0.1:8765/desktop/panel.html`; para compilar la propia
 app de barra de menús, consulta [`desktop/`](./desktop/README.md). Cuando salga la primera release,
-los usuarios de Mac con Apple silicon también podrán hacer `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+los usuarios de macOS también podrán hacer `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 El gasto de hoy en la barra de estado de Claude Code: añade esto a `~/.claude/settings.json`.
 
@@ -76,10 +76,13 @@ El gasto de hoy en la barra de estado de Claude Code: añade esto a `~/.claude/s
 | Agente | Cómo se conecta |
 |---|---|
 | Claude Code | Automático: configura `ANTHROPIC_BASE_URL` y una clave dedicada en `~/.claude/settings.json` |
+| Codex | Automático: añade un proveedor `orca` (API Responses) a `~/.codex/config.toml` y lo selecciona con `model = "auto"` |
+| Gemini CLI | Automático: configura `GOOGLE_GEMINI_BASE_URL` y una clave dedicada en `~/.gemini/.env`, y el inicio de sesión por gateway de Gemini CLI en `~/.gemini/settings.json` |
+| OpenCode | Automático: añade un proveedor `orca` a `~/.config/opencode/opencode.json` y selecciona `orca/auto`; la clave se queda en un archivo privado que OpenCode lee |
+| Command Code | Automático: añade un proveedor `orca` a `~/.commandcode/providers.json` cuya clave viene de un archivo privado (Command Code no acepta claves en claro ahí) |
+| Cline | Un paso de copiar y pegar: elige API Provider → OpenAI Compatible en Cline y pega la URL base y la clave que muestra la app |
 | Aider | Automático: configura `openai-api-base`, una clave dedicada y `model: openai/auto` en `~/.aider.conf.yml` |
 | Cursor | Un paso de copiar y pegar: la app muestra una URL base y una clave para la configuración de modelos de Cursor |
-| Codex | Próximamente: necesita la API Responses de OpenAI (`/v1/responses`), que Lite aún no sirve |
-| Gemini CLI | Próximamente |
 
 Cada agente conectado recibe su propia clave: así se reparte el gasto por agente, y por eso al
 desconectarlo se revoca el acceso al instante. Lo que la app puede tocar en tu ordenador se detalla
@@ -269,14 +272,15 @@ Se cargan más de 100 modelos de chat al arrancar desde la [base de datos de pre
 | Plataforma | Cómo |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (se publica a partir de la próxima release etiquetada; verifícala con los comandos de [SECURITY.md](./SECURITY.md)) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Conecta el repo, directorio raíz = `.` |
-| Railway | Plantilla en camino (seguimiento en #181) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): usa [`render.yaml`](./render.yaml), genera los secretos, guarda la base de datos en un disco |
+| Fly.io | `fly launch --no-deploy`, luego los pasos del volumen y de `fly secrets set` al principio de [`fly.toml`](./fly.toml), y después `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, y después `railway up` (se construye con [`railway.json`](./railway.json)) |
 
 ## Qué incluye
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + caché de prompts entre proveedores
 - `POST /v1/messages` — **ingress de la API Messages de Anthropic** (Claude Code / los SDK de Anthropic se conectan directamente; `+ /count_tokens`)
+- `POST /v1/responses` — **ingress de la API Responses de OpenAI** (Codex y los clientes del SDK de Responses; streaming, herramientas de función y personalizadas)
 - `POST /v1beta/models/{model}:generateContent` — **ingress de la API de Gemini** (el SDK google-genai se conecta directamente; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — catálogo de modelos descubrible (100+ modelos desde `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — crea / lista / revoca claves de proveedor cifradas
@@ -378,7 +382,8 @@ packages/
 - [x] Releases firmadas con procedencia y SBOM; dependencias fijadas por hash
 - [x] Presupuesto diario que avisa, o pausa los agentes de código al llegar al límite
 - [x] `orca login` / "Join my company's gateway": usar el gateway de un equipo desde la app
-- [ ] `/v1/responses` para que Codex pueda conectarse
+- [x] `/v1/responses`, para que Codex se conecte; también Gemini CLI, OpenCode, Command Code y Cline
+- [x] Clave de cifrado en el llavero del sistema operativo; una comprobación de actualizaciones al día
 - [ ] Presupuestos por desarrollador aplicados en un gateway de equipo compartido
 - [ ] Embeddings, proveedores Ollama/vLLM, cadenas de respaldo personalizadas
 

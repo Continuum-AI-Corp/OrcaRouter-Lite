@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **Задайте бюджет каждому агенту для кодинга.**
-Отслеживайте и ограничивайте расходы Claude Code, Aider, Cursor и ваших собственных приложений у всех провайдеров моделей — при этом ваши промпты не покидают вашу машину. Приложение в строке меню для одного разработчика и self-hosted-роутер для всей команды. Лицензия MIT.
+Отслеживайте и ограничивайте расходы Claude Code, Codex, Gemini CLI, OpenCode и ваших собственных приложений у всех провайдеров моделей — при этом ваши промпты не покидают вашу машину. Приложение в строке меню для одного разработчика и self-hosted-роутер для всей команды. Лицензия MIT.
 
 [![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
 [![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
@@ -56,7 +56,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
-`orca up` отдаёт панель по адресу `http://127.0.0.1:8765/desktop/panel.html`; как собрать само приложение для строки меню, см. [`desktop/`](./desktop/README.md). Когда выйдет первый релиз, пользователи Mac на Apple silicon смогут также выполнить `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+`orca up` отдаёт панель по адресу `http://127.0.0.1:8765/desktop/panel.html`; как собрать само приложение для строки меню, см. [`desktop/`](./desktop/README.md). Когда выйдет первый релиз, пользователи macOS смогут также выполнить `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 Расходы за сегодня в строке состояния Claude Code: добавьте это в `~/.claude/settings.json`.
 
@@ -69,10 +69,13 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 | Агент | Как подключается |
 |---|---|
 | Claude Code | Автоматически: прописывает `ANTHROPIC_BASE_URL` и выделенный ключ в `~/.claude/settings.json` |
+| Codex | Автоматически: добавляет провайдер `orca` (Responses API) в `~/.codex/config.toml` и выбирает его через `model = "auto"` |
+| Gemini CLI | Автоматически: прописывает `GOOGLE_GEMINI_BASE_URL` и выделенный ключ в `~/.gemini/.env`, а вход Gemini CLI через шлюз — в `~/.gemini/settings.json` |
+| OpenCode | Автоматически: добавляет провайдер `orca` в `~/.config/opencode/opencode.json` и выбирает `orca/auto`; ключ хранится в приватном файле, который читает OpenCode |
+| Command Code | Автоматически: добавляет провайдер `orca` в `~/.commandcode/providers.json`, ключ для которого берётся из приватного файла (Command Code не принимает там ключи в открытом виде) |
+| Cline | Один шаг вручную: выберите в Cline API Provider → OpenAI Compatible и вставьте базовый URL и ключ, которые показывает приложение |
 | Aider | Автоматически: прописывает `openai-api-base`, выделенный ключ и `model: openai/auto` в `~/.aider.conf.yml` |
 | Cursor | Один шаг вручную: приложение показывает базовый URL и ключ, которые нужно вставить в настройки моделей Cursor |
-| Codex | Скоро: нужен OpenAI Responses API (`/v1/responses`), который Lite пока не поддерживает |
-| Gemini CLI | Скоро |
 
 Каждый подключённый агент получает собственный ключ: так расходы разделяются по агентам, и поэтому отключение сразу отзывает доступ. Что приложению разрешено трогать на вашем компьютере, подробно описано в [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch).
 
@@ -259,14 +262,15 @@ client.models.generate_content(model="auto", contents="Hello!")
 | Платформа | Как |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (публикуется начиная со следующего релиза с тегом; проверить образ можно командами из [SECURITY.md](./SECURITY.md)) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Подключите репозиторий, корневая директория = `.` |
-| Railway | Шаблон скоро (задача #181) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): использует [`render.yaml`](./render.yaml), генерирует секреты, хранит базу данных на диске |
+| Fly.io | `fly launch --no-deploy`, затем шаги с volume и `fly secrets set` из начала [`fly.toml`](./fly.toml), затем `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, затем `railway up` (сборка по [`railway.json`](./railway.json)) |
 
 ## Что в коробке
 
 - `POST /v1/chat/completions` — proxy + стриминг + `model="auto"` + кросс-провайдерный кэш промптов
 - `POST /v1/messages` — **ingress для Anthropic Messages API** (Claude Code / Anthropic SDK подключаются напрямую; `+ /count_tokens`)
+- `POST /v1/responses` — **ingress для OpenAI Responses API** (Codex и клиенты Responses SDK; стриминг, function- и custom-инструменты)
 - `POST /v1beta/models/{model}:generateContent` — **ingress для Gemini API** (google-genai SDK подключается напрямую; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — обнаруживаемый каталог моделей (100+ моделей из `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — установка / список / отзыв зашифрованных ключей провайдеров
@@ -368,7 +372,8 @@ packages/
 - [x] Подписанные релизы с provenance и SBOM; зависимости, зафиксированные по хешам
 - [x] Дневной бюджет, который предупреждает или приостанавливает агентов для кодинга при достижении лимита
 - [x] `orca login` / "Join my company's gateway": использование шлюза команды прямо из приложения
-- [ ] `/v1/responses`, чтобы мог подключиться Codex
+- [x] `/v1/responses`, чтобы подключался Codex; а также Gemini CLI, OpenCode, Command Code и Cline
+- [x] Ключ шифрования в хранилище ключей ОС; одна проверка обновлений в день
 - [ ] Бюджеты на разработчика, применяемые на общем шлюзе команды
 - [ ] Embeddings, провайдеры Ollama/vLLM, настраиваемые цепочки fallback
 

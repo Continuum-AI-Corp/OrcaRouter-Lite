@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **모든 코딩 에이전트에 예산을 설정하세요.**
-Claude Code, Aider, Cursor, 그리고 직접 만든 앱이 모든 모델 공급자에서 쓰는 비용을 확인하고
+Claude Code, Codex, Gemini CLI, OpenCode, 그리고 직접 만든 앱이 모든 모델 공급자에서 쓰는 비용을 확인하고
 상한을 정할 수 있습니다. 프롬프트는 내 컴퓨터 밖으로 나가지 않습니다. 개발자 한 명에게는 메뉴 바 앱으로,
 팀 전체에는 자체 호스팅 라우터로 쓸 수 있습니다. MIT 라이센스입니다.
 
@@ -62,7 +62,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
 `orca up`은 `http://127.0.0.1:8765/desktop/panel.html`에서 패널을 제공합니다. 메뉴 바 앱 자체를
-빌드하려면 [`desktop/`](./desktop/README.md)을 참조하세요. 첫 릴리스가 나오면 Apple 실리콘 Mac 사용자는
+빌드하려면 [`desktop/`](./desktop/README.md)을 참조하세요. 첫 릴리스가 나오면 macOS 사용자는
 `brew install --cask continuum-ai-corp/tap/orcarouter-lite`로도 설치할 수 있습니다.
 
 Claude Code 상태 표시줄에 오늘의 지출을 표시하려면 `~/.claude/settings.json`에 다음을 추가하세요.
@@ -76,10 +76,13 @@ Claude Code 상태 표시줄에 오늘의 지출을 표시하려면 `~/.claude/s
 | 에이전트 | 연결 방식 |
 |---|---|
 | Claude Code | 자동: `~/.claude/settings.json`에 `ANTHROPIC_BASE_URL`과 전용 키를 설정 |
+| Codex | 자동: `~/.codex/config.toml`에 `orca` 공급자(Responses API)를 추가하고 `model = "auto"`로 선택 |
+| Gemini CLI | 자동: `~/.gemini/.env`에 `GOOGLE_GEMINI_BASE_URL`과 전용 키를, `~/.gemini/settings.json`에 Gemini CLI의 게이트웨이 로그인을 설정 |
+| OpenCode | 자동: `~/.config/opencode/opencode.json`에 `orca` 공급자를 추가하고 `orca/auto`를 선택. 키는 OpenCode가 읽는 비공개 파일에 보관 |
+| Command Code | 자동: `~/.commandcode/providers.json`에 `orca` 공급자를 추가하며 키는 비공개 파일에서 가져옴(Command Code는 이 파일에 키를 직접 넣는 것을 허용하지 않음) |
+| Cline | 붙여넣기 한 번: Cline에서 API Provider → OpenAI Compatible을 선택하고 앱이 보여 주는 기본 URL과 키를 붙여넣기 |
 | Aider | 자동: `~/.aider.conf.yml`에 `openai-api-base`, 전용 키, `model: openai/auto`를 설정 |
 | Cursor | 붙여넣기 한 번: Cursor 모델 설정에 넣을 기본 URL과 키를 앱이 보여 줌 |
-| Codex | 지원 예정: OpenAI Responses API(`/v1/responses`)가 필요하지만 Lite는 아직 제공하지 않음 |
-| Gemini CLI | 지원 예정 |
 
 연결된 에이전트마다 전용 키가 발급됩니다. 이 덕분에 에이전트별로 지출을 나눌 수 있고, 연결을 해제하면
 즉시 접근이 취소됩니다. 앱이 컴퓨터에서 건드릴 수 있는 범위는
@@ -268,14 +271,15 @@ client.models.generate_content(model="auto", contents="Hello!")
 | 플랫폼 | 방법 |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (다음 태그 릴리스부터 게시. [SECURITY.md](./SECURITY.md)의 명령으로 검증 가능) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | 저장소 연결, 루트 디렉토리 = `.` |
-| Railway | 템플릿 준비 중(#181에서 추적) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) 사용, 시크릿 생성, 데이터베이스는 디스크에 보관 |
+| Fly.io | `fly launch --no-deploy` 후 [`fly.toml`](./fly.toml) 맨 위에 있는 볼륨 및 `fly secrets set` 단계를 거쳐 `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db` 후 `railway up`([`railway.json`](./railway.json)으로 빌드) |
 
 ## 상자 안에 무엇이 들어있나요?
 
 - `POST /v1/chat/completions` — 프록시 + 스트리밍 + `model="auto"` + 교차 제공자 프롬프트 캐시
 - `POST /v1/messages` — **Anthropic Messages API 인그레스**(Claude Code / Anthropic SDK가 직접 연결, `+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI Responses API 인그레스**(Codex 및 Responses SDK 클라이언트용, 스트리밍과 함수·사용자 지정 도구 지원)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API 인그레스**(google-genai SDK가 직접 연결, `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET /v1/models` — 검색 가능한 모델 카탈로그(`litellm.model_cost`의 100개 이상의 모델)
 - `GET/PUT/DELETE /v1/providers/{provider}` — 암호화된 공급자 키 설정/목록/해지
@@ -377,7 +381,8 @@ packages/
 - [x] 출처 증명과 SBOM이 포함된 서명된 릴리스, 해시로 고정된 의존성
 - [x] 알림을 보내거나 한도에서 코딩 에이전트를 일시 중지하는 일일 예산
 - [x] `orca login` / "Join my company's gateway": 앱에서 팀의 게이트웨이 사용
-- [ ] Codex 연결을 위한 `/v1/responses`
+- [x] Codex 연결을 위한 `/v1/responses`, 그리고 Gemini CLI, OpenCode, Command Code, Cline 연결
+- [x] OS 키체인에 저장되는 암호화 키, 하루 한 번의 업데이트 확인
 - [ ] 공유 팀 게이트웨이에서 강제되는 개발자별 예산
 - [ ] 임베딩, Ollama/vLLM 공급자, 사용자 지정 대체 체인
 

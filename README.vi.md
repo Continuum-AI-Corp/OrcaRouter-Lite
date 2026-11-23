@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **Đặt ngân sách cho mọi coding agent.**
-Xem và giới hạn chi tiêu của Claude Code, Aider, Cursor và các ứng dụng của riêng bạn trên mọi
+Xem và giới hạn chi tiêu của Claude Code, Codex, Gemini CLI, OpenCode và các ứng dụng của riêng bạn trên mọi
 nhà cung cấp mô hình, mà prompt không rời khỏi máy của bạn. Một ứng dụng trên thanh menu cho từng
 lập trình viên, và một router tự lưu trữ cho cả đội. Giấy phép MIT.
 
@@ -63,7 +63,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 
 `orca up` phục vụ bảng điều khiển tại `http://127.0.0.1:8765/desktop/panel.html`; để tự build
 ứng dụng thanh menu, xem [`desktop/`](./desktop/README.md). Khi bản phát hành đầu tiên ra mắt,
-người dùng Mac chip Apple silicon cũng có thể `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+người dùng macOS cũng có thể `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 Chi tiêu hôm nay trên thanh trạng thái của Claude Code: thêm dòng này vào `~/.claude/settings.json`.
 
@@ -76,10 +76,13 @@ Chi tiêu hôm nay trên thanh trạng thái của Claude Code: thêm dòng này
 | Agent | Cách kết nối |
 |---|---|
 | Claude Code | Tự động: đặt `ANTHROPIC_BASE_URL` và một khoá riêng trong `~/.claude/settings.json` |
+| Codex | Tự động: thêm một provider `orca` (Responses API) vào `~/.codex/config.toml` và chọn nó bằng `model = "auto"` |
+| Gemini CLI | Tự động: đặt `GOOGLE_GEMINI_BASE_URL` và một khoá riêng trong `~/.gemini/.env`, cùng chế độ đăng nhập qua gateway của Gemini CLI trong `~/.gemini/settings.json` |
+| OpenCode | Tự động: thêm một provider `orca` vào `~/.config/opencode/opencode.json` và chọn `orca/auto`; khoá nằm trong một tệp riêng tư mà OpenCode đọc |
+| Command Code | Tự động: thêm một provider `orca` vào `~/.commandcode/providers.json` với khoá lấy từ một tệp riêng tư (Command Code không chấp nhận khoá ghi trực tiếp ở đó) |
+| Cline | Một bước dán: chọn API Provider → OpenAI Compatible trong Cline rồi dán URL gốc và khoá mà ứng dụng hiển thị |
 | Aider | Tự động: đặt `openai-api-base`, một khoá riêng và `model: openai/auto` trong `~/.aider.conf.yml` |
 | Cursor | Một bước dán: ứng dụng hiển thị URL gốc và khoá để dán vào phần cài đặt mô hình của Cursor |
-| Codex | Sắp có: cần OpenAI Responses API (`/v1/responses`), mà Lite chưa hỗ trợ |
-| Gemini CLI | Sắp có |
 
 Mỗi agent được kết nối có khoá riêng: đó là cách chi tiêu được chia theo agent, và cũng là lý do
 ngắt kết nối sẽ thu hồi quyền truy cập ngay lập tức. Những gì ứng dụng được phép động tới trên máy tính
@@ -268,14 +271,15 @@ Hơn 100 mô hình chat được nạp khi khởi động từ [cơ sở dữ li
 | Nền tảng | Cách làm |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (phát hành từ bản gắn tag tiếp theo; kiểm chứng bằng các lệnh trong [SECURITY.md](./SECURITY.md)) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Kết nối repo, root dir = `.` |
-| Railway | Template sắp có (theo dõi tại #181) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): dùng [`render.yaml`](./render.yaml), tự tạo các secret, lưu cơ sở dữ liệu trên một ổ đĩa |
+| Fly.io | `fly launch --no-deploy`, sau đó làm các bước tạo volume và `fly secrets set` ở đầu [`fly.toml`](./fly.toml), rồi `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, rồi `railway up` (build theo [`railway.json`](./railway.json)) |
 
 ## Có gì trong hộp
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cache prompt liên-provider
 - `POST /v1/messages` — **ngõ vào Anthropic Messages API** (Claude Code / các Anthropic SDK kết nối trực tiếp; `+ /count_tokens`)
+- `POST /v1/responses` — **ngõ vào OpenAI Responses API** (Codex và các client dùng Responses SDK; streaming, function tool và custom tool)
 - `POST /v1beta/models/{model}:generateContent` — **ngõ vào Gemini API** (google-genai SDK kết nối trực tiếp; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — danh mục mô hình có thể khám phá (100+ mô hình từ `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — đặt / liệt kê / thu hồi khoá provider được mã hoá
@@ -377,7 +381,8 @@ packages/
 - [x] Bản phát hành được ký kèm provenance và SBOM; dependency được khoá bằng hash
 - [x] Ngân sách hằng ngày có thể cảnh báo, hoặc tạm dừng các coding agent khi chạm giới hạn
 - [x] `orca login` / "Join my company's gateway": dùng gateway của đội từ ứng dụng
-- [ ] `/v1/responses` để Codex có thể kết nối
+- [x] `/v1/responses`, để Codex kết nối được; cả Gemini CLI, OpenCode, Command Code và Cline
+- [x] Khoá mã hoá nằm trong keychain của hệ điều hành; kiểm tra cập nhật mỗi ngày một lần
 - [ ] Ngân sách theo từng lập trình viên được áp dụng trên gateway dùng chung của đội
 - [ ] Embeddings, provider Ollama/vLLM, chuỗi fallback tuỳ chỉnh
 

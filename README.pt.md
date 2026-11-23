@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **Coloque um orçamento em cada agente de código.**
-Veja e limite quanto Claude Code, Aider, Cursor e seus próprios apps gastam, em todos os provedores de modelos, sem que seus prompts saiam da sua máquina. Um app de barra de menus para um desenvolvedor, e um roteador self-hosted para um time inteiro. Licença MIT.
+Veja e limite quanto Claude Code, Codex, Gemini CLI, OpenCode e seus próprios apps gastam, em todos os provedores de modelos, sem que seus prompts saiam da sua máquina. Um app de barra de menus para um desenvolvedor, e um roteador self-hosted para um time inteiro. Licença MIT.
 
 [![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
 [![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
@@ -56,7 +56,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
-`orca up` serve o painel em `http://127.0.0.1:8765/desktop/panel.html`; para buildar o app de barra de menus em si, veja [`desktop/`](./desktop/README.md). Assim que sair a primeira release, usuários de Mac com Apple silicon também poderão rodar `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+`orca up` serve o painel em `http://127.0.0.1:8765/desktop/panel.html`; para buildar o app de barra de menus em si, veja [`desktop/`](./desktop/README.md). Assim que sair a primeira release, usuários de macOS também poderão rodar `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 O gasto de hoje na barra de status do Claude Code: adicione isto ao `~/.claude/settings.json`.
 
@@ -69,10 +69,13 @@ O gasto de hoje na barra de status do Claude Code: adicione isto ao `~/.claude/s
 | Agente | Como se conecta |
 |---|---|
 | Claude Code | Automático: define `ANTHROPIC_BASE_URL` e uma chave dedicada em `~/.claude/settings.json` |
+| Codex | Automático: adiciona um provedor `orca` (Responses API) em `~/.codex/config.toml` e o seleciona com `model = "auto"` |
+| Gemini CLI | Automático: define `GOOGLE_GEMINI_BASE_URL` e uma chave dedicada em `~/.gemini/.env`, e o login via gateway do Gemini CLI em `~/.gemini/settings.json` |
+| OpenCode | Automático: adiciona um provedor `orca` em `~/.config/opencode/opencode.json` e seleciona `orca/auto`; a chave fica em um arquivo privado que o OpenCode lê |
+| Command Code | Automático: adiciona um provedor `orca` em `~/.commandcode/providers.json` cuja chave vem de um arquivo privado (o Command Code recusa chaves em texto puro ali) |
+| Cline | Um passo de copiar e colar: escolha API Provider → OpenAI Compatible no Cline e cole a base URL e a chave que o app mostra |
 | Aider | Automático: define `openai-api-base`, uma chave dedicada e `model: openai/auto` em `~/.aider.conf.yml` |
 | Cursor | Um passo de copiar e colar: o app mostra uma base URL e uma chave para as configurações de modelo do Cursor |
-| Codex | Em breve: precisa da OpenAI Responses API (`/v1/responses`), que o Lite ainda não serve |
-| Gemini CLI | Em breve |
 
 Cada agente conectado recebe sua própria chave: é assim que o gasto é dividido por agente, e é por isso que desconectar revoga o acesso na hora. O que o app pode mexer no seu computador está detalhado em [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch).
 
@@ -259,14 +262,15 @@ Mais de 100 modelos de chat são carregados na inicialização a partir do [banc
 | Plataforma | Como |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (publicada a partir da próxima release com tag; verifique-a com os comandos do [SECURITY.md](./SECURITY.md)) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Conecte o repo, root dir = `.` |
-| Railway | Template em breve (acompanhado em #181) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): usa o [`render.yaml`](./render.yaml), gera os secrets, mantém o banco de dados em um disco |
+| Fly.io | `fly launch --no-deploy`, depois os passos de volume e `fly secrets set` no topo do [`fly.toml`](./fly.toml), depois `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, depois `railway up` (faz o build com o [`railway.json`](./railway.json)) |
 
 ## O que vem na caixa
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cache de prompt cross-provider
 - `POST /v1/messages` — **ingress da Anthropic Messages API** (Claude Code / SDKs Anthropic se conectam diretamente; `+ /count_tokens`)
+- `POST /v1/responses` — **ingress da OpenAI Responses API** (Codex e clientes de SDKs da Responses API; streaming, ferramentas de função e personalizadas)
 - `POST /v1beta/models/{model}:generateContent` — **ingress da Gemini API** (o SDK google-genai se conecta diretamente; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — catálogo de modelos descobrível (100+ modelos de `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — define / lista / revoga chaves de provider criptografadas
@@ -368,7 +372,8 @@ packages/
 - [x] Releases assinadas com provenance e SBOM; dependências travadas por hash
 - [x] Orçamento diário que alerta, ou pausa os agentes de código no limite
 - [x] `orca login` / "Join my company's gateway": usar o gateway de um time pelo app
-- [ ] `/v1/responses` para que o Codex possa se conectar
+- [x] `/v1/responses`, para que o Codex se conecte; Gemini CLI, OpenCode, Command Code e Cline também
+- [x] Chave de criptografia no keychain do sistema operacional; uma verificação de atualização por dia
 - [ ] Orçamentos por desenvolvedor aplicados em um gateway compartilhado do time
 - [ ] Embeddings, providers Ollama/vLLM, cadeias de fallback personalizadas
 

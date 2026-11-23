@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **हर कोडिंग एजेंट पर बजट लगाएँ।**
-देखें और सीमित करें कि Claude Code, Aider, Cursor और आपके अपने ऐप्स हर मॉडल प्रोवाइडर पर कितना खर्च करते हैं — और आपके प्रॉम्प्ट्स आपकी मशीन से बाहर नहीं जाते। एक डेवलपर के लिए मेन्यू-बार ऐप, और पूरी टीम के लिए self-hosted राउटर। MIT लाइसेंस।
+देखें और सीमित करें कि Claude Code, Codex, Gemini CLI, OpenCode और आपके अपने ऐप्स हर मॉडल प्रोवाइडर पर कितना खर्च करते हैं — और आपके प्रॉम्प्ट्स आपकी मशीन से बाहर नहीं जाते। एक डेवलपर के लिए मेन्यू-बार ऐप, और पूरी टीम के लिए self-hosted राउटर। MIT लाइसेंस।
 
 [![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
 [![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
@@ -56,7 +56,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
-`orca up` पैनल को `http://127.0.0.1:8765/desktop/panel.html` पर सर्व करता है; मेन्यू-बार ऐप खुद बिल्ड करने के लिए [`desktop/`](./desktop/README.md) देखें। पहली रिलीज़ आने के बाद, Apple silicon Mac उपयोगकर्ता `brew install --cask continuum-ai-corp/tap/orcarouter-lite` से भी इंस्टॉल कर सकेंगे।
+`orca up` पैनल को `http://127.0.0.1:8765/desktop/panel.html` पर सर्व करता है; मेन्यू-बार ऐप खुद बिल्ड करने के लिए [`desktop/`](./desktop/README.md) देखें। पहली रिलीज़ आने के बाद, macOS उपयोगकर्ता `brew install --cask continuum-ai-corp/tap/orcarouter-lite` से भी इंस्टॉल कर सकेंगे।
 
 Claude Code के स्टेटस बार में आज का खर्च: इसे `~/.claude/settings.json` में जोड़ें।
 
@@ -69,10 +69,13 @@ Claude Code के स्टेटस बार में आज का खर�
 | एजेंट | कैसे कनेक्ट होता है |
 |---|---|
 | Claude Code | स्वचालित: `~/.claude/settings.json` में `ANTHROPIC_BASE_URL` और एक अलग कुंजी सेट करता है |
+| Codex | स्वचालित: `~/.codex/config.toml` में एक `orca` प्रोवाइडर (Responses API) जोड़ता है और `model = "auto"` से उसे चुनता है |
+| Gemini CLI | स्वचालित: `~/.gemini/.env` में `GOOGLE_GEMINI_BASE_URL` और एक अलग कुंजी सेट करता है, और `~/.gemini/settings.json` में Gemini CLI का gateway साइन-इन |
+| OpenCode | स्वचालित: `~/.config/opencode/opencode.json` में एक `orca` प्रोवाइडर जोड़ता है और `orca/auto` चुनता है; कुंजी एक निजी फ़ाइल में रहती है जिसे OpenCode पढ़ता है |
+| Command Code | स्वचालित: `~/.commandcode/providers.json` में एक `orca` प्रोवाइडर जोड़ता है जिसकी कुंजी एक निजी फ़ाइल से आती है (Command Code वहाँ सीधे लिखी कुंजियाँ स्वीकार नहीं करता) |
+| Cline | एक पेस्ट स्टेप: Cline में API Provider → OpenAI Compatible चुनें और ऐप जो base URL और कुंजी दिखाता है, उन्हें पेस्ट करें |
 | Aider | स्वचालित: `~/.aider.conf.yml` में `openai-api-base`, एक अलग कुंजी और `model: openai/auto` सेट करता है |
 | Cursor | एक पेस्ट स्टेप: ऐप Cursor की मॉडल सेटिंग्स के लिए एक base URL और कुंजी दिखाता है |
-| Codex | जल्द आ रहा है: इसके लिए OpenAI Responses API (`/v1/responses`) चाहिए, जिसे Lite अभी सर्व नहीं करता |
-| Gemini CLI | जल्द आ रहा है |
 
 हर कनेक्टेड एजेंट को अपनी अलग कुंजी मिलती है: इसी से खर्च प्रति एजेंट बँटता है, और इसी वजह से डिस्कनेक्ट करते ही एक्सेस तुरंत रद्द हो जाता है। ऐप आपके कंप्यूटर पर क्या-क्या छू सकता है, यह [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch) में विस्तार से बताया गया है।
 
@@ -259,14 +262,15 @@ Requests को एज पर उसी आंतरिक पाइपलाइ
 | प्लेटफ़ॉर्म | कैसे |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (अगली टैग की गई रिलीज़ से प्रकाशित होगी; [SECURITY.md](./SECURITY.md) में दिए कमांड से इसे सत्यापित करें) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | रेपो कनेक्ट करें, root dir = `.` |
-| Railway | टेम्पलेट जल्द आ रहा है (#181 में ट्रैक किया जा रहा है) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) का इस्तेमाल करता है, secrets जनरेट करता है, डेटाबेस को एक डिस्क पर रखता है |
+| Fly.io | `fly launch --no-deploy`, फिर [`fly.toml`](./fly.toml) में सबसे ऊपर दिए volume और `fly secrets set` वाले स्टेप, फिर `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, फिर `railway up` ([`railway.json`](./railway.json) से बिल्ड होता है) |
 
 ## बॉक्स में क्या है
 
 - `POST /v1/chat/completions` — proxy + स्ट्रीमिंग + `model="auto"` + cross-provider प्रॉम्प्ट कैश
 - `POST /v1/messages` — **Anthropic Messages API इनग्रेस** (Claude Code / Anthropic SDK सीधे कनेक्ट होते हैं; `+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI Responses API इनग्रेस** (Codex और Responses SDK क्लाइंट; स्ट्रीमिंग, function और custom टूल)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API इनग्रेस** (google-genai SDK सीधे कनेक्ट होता है; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — खोज योग्य मॉडल कैटलॉग (`litellm.model_cost` से 100+ मॉडल)
 - `GET/PUT/DELETE /v1/providers/{provider}` — एन्क्रिप्टेड provider कुंजियाँ सेट / सूचीबद्ध / रद्द करें
@@ -368,7 +372,8 @@ packages/
 - [x] provenance और SBOM के साथ साइन की गई रिलीज़; हैश-लॉक्ड dependencies
 - [x] दैनिक बजट जो अलर्ट करता है, या सीमा पर कोडिंग एजेंटों को पॉज़ कर देता है
 - [x] `orca login` / "Join my company's gateway": ऐप से ही किसी टीम के gateway का इस्तेमाल
-- [ ] `/v1/responses`, ताकि Codex कनेक्ट हो सके
+- [x] `/v1/responses`, ताकि Codex कनेक्ट हो; Gemini CLI, OpenCode, Command Code और Cline भी
+- [x] एन्क्रिप्शन कुंजी OS कीचेन में; दिन में एक बार अपडेट जाँच
 - [ ] साझा टीम gateway पर लागू होने वाले प्रति-डेवलपर बजट
 - [ ] Embeddings, Ollama/vLLM providers, कस्टम फ़ॉलबैक चेन
 

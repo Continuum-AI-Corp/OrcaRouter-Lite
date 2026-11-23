@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **すべてのコーディングエージェントに予算を。**
-Claude Code、Aider、Cursor、そして自作アプリの支出を、あらゆるモデルプロバイダーを横断して確認し、上限を設定できます。
+Claude Code、Codex、Gemini CLI、OpenCode、そして自作アプリの支出を、あらゆるモデルプロバイダーを横断して確認し、上限を設定できます。
 プロンプトが手元のマシンから外に出ることはありません。開発者 1 人ならメニューバーアプリとして、
 チーム全体ならセルフホスト型ルーターとして使えます。MIT ライセンスです。
 
@@ -63,7 +63,7 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 
 `orca up` はパネルを `http://127.0.0.1:8765/desktop/panel.html` で配信します。
 メニューバーアプリ本体のビルド方法は [`desktop/`](./desktop/README.md) を参照してください。最初のリリースが出たら、
-Apple シリコン搭載の Mac では `brew install --cask continuum-ai-corp/tap/orcarouter-lite` でもインストールできます。
+macOS ユーザーは `brew install --cask continuum-ai-corp/tap/orcarouter-lite` でもインストールできます。
 
 Claude Code のステータスバーに今日の支出を表示するには、`~/.claude/settings.json` に次を追加します。
 
@@ -76,10 +76,13 @@ Claude Code のステータスバーに今日の支出を表示するには、`~
 | エージェント | 接続方法 |
 |---|---|
 | Claude Code | 自動: `~/.claude/settings.json` に `ANTHROPIC_BASE_URL` と専用キーを設定 |
+| Codex | 自動: `~/.codex/config.toml` に `orca` プロバイダー（Responses API）を追加し、`model = "auto"` で選択 |
+| Gemini CLI | 自動: `~/.gemini/.env` に `GOOGLE_GEMINI_BASE_URL` と専用キーを、`~/.gemini/settings.json` に Gemini CLI のゲートウェイ サインインを設定 |
+| OpenCode | 自動: `~/.config/opencode/opencode.json` に `orca` プロバイダーを追加して `orca/auto` を選択。キーは OpenCode が読み取る非公開ファイルに保存 |
+| Command Code | 自動: `~/.commandcode/providers.json` に `orca` プロバイダーを追加。キーは非公開ファイルから読み込み（Command Code はこのファイルに生のキーを書くことを受け付けないため） |
+| Cline | 貼り付け 1 回: Cline で API Provider → OpenAI Compatible を選び、アプリが表示するベース URL とキーを貼り付け |
 | Aider | 自動: `~/.aider.conf.yml` に `openai-api-base`、専用キー、`model: openai/auto` を設定 |
 | Cursor | 貼り付け 1 回: Cursor のモデル設定に入力するベース URL とキーをアプリが表示 |
-| Codex | 対応予定: OpenAI Responses API（`/v1/responses`）が必要ですが、Lite はまだ提供していません |
-| Gemini CLI | 対応予定 |
 
 接続した各エージェントには専用のキーが割り当てられます。これによってエージェントごとに支出を分けられ、
 接続を解除すると即座にアクセスが取り消されます。アプリがコンピューター上で触れる可能性のある範囲は
@@ -268,14 +271,15 @@ client.models.generate_content(model="auto", contents="Hello!")
 | プラットフォーム | 方法 |
 |---|---|
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>`（次のタグ付きリリースから公開。[SECURITY.md](./SECURITY.md) のコマンドで検証できます） |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | リポジトリを接続し、ルートディレクトリ = `.` |
-| Railway | テンプレートを準備中（#181 で追跡） |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) を使用し、シークレットを生成、データベースはディスク上に保持 |
+| Fly.io | `fly launch --no-deploy`、次に [`fly.toml`](./fly.toml) 冒頭にあるボリュームと `fly secrets set` の手順、最後に `fly deploy` |
+| Railway | `railway init`、`railway volume add --mount-path /data`、`railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`、最後に `railway up`（[`railway.json`](./railway.json) でビルド） |
 
 ## 箱の中身は何ですか
 
 - `POST /v1/chat/completions` — プロキシ + ストリーミング + `model="auto"` + クロスプロバイダー プロンプト キャッシュ
 - `POST /v1/messages` — **Anthropic Messages API イングレス** (Claude Code / Anthropic SDK が直接接続。`+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI Responses API イングレス** (Codex と Responses SDK クライアント向け。ストリーミング、function ツール、custom ツールに対応)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API イングレス** (google-genai SDK が直接接続。`+ :streamGenerateContent`、`GET /v1beta/models`)
 - `GET /v1/models` — 検出可能なモデル カタログ (`litellm.model_cost` からの 100 以上のモデル)
 - `GET/PUT/DELETE /v1/providers/{provider}` — 暗号化されたプロバイダー キーを設定 / リスト / 取り消し
@@ -377,7 +381,8 @@ packages/
 - [x] 来歴情報と SBOM 付きの署名済みリリース、ハッシュで固定した依存関係
 - [x] アラートを出すか、上限でコーディングエージェントを一時停止する 1 日の予算
 - [x] `orca login` / "Join my company's gateway": アプリからチームのゲートウェイを利用
-- [ ] Codex を接続するための `/v1/responses`
+- [x] Codex を接続するための `/v1/responses`、Gemini CLI・OpenCode・Command Code・Cline にも対応
+- [x] OS のキーチェーンに保存する暗号化キー、1 日 1 回の更新チェック
 - [ ] 共有のチームゲートウェイで強制される開発者ごとの予算
 - [ ] 埋め込み、Ollama/vLLM プロバイダー、カスタムフォールバックチェーン
 
