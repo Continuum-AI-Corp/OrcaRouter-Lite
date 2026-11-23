@@ -404,15 +404,31 @@ def _edit_yaml(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
 _TOML_HEADER = re.compile(r"^\s*\[")
 
 
+_TOML_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _toml_key(key: str) -> str:
+    return key if _TOML_BARE_KEY.fullmatch(key) else json.dumps(key, ensure_ascii=False)
+
+
 def _toml_value(value: Any) -> str:
+    """Render a value tomllib produced (ours, or the user's on a restore)."""
+    import datetime as _dt
+
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
-        return str(value)
+        return repr(value) if isinstance(value, float) else str(value)
     if isinstance(value, str):
         # JSON's string escapes are a subset of TOML basic-string escapes.
         return json.dumps(value, ensure_ascii=False)
-    raise AgentConfigError(f"Can't write {value!r} to a TOML file.")  # pragma: no cover - our values only
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
+    raise AgentConfigError(f"Can't write {value!r} to a TOML file.")
 
 
 def _toml_table_span(lines: list[str], table: str) -> tuple[int, int] | None:
@@ -431,7 +447,7 @@ def _edit_toml(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
     for key, value in changes.items():
         if "." in key:  # a whole table, e.g. model_providers.orca
             span = _toml_table_span(lines, key)
-            new = [] if value is _MISSING else [f"[{key}]"] + [f"{k} = {_toml_value(v)}" for k, v in value.items()]
+            new = [] if value is _MISSING else [f"[{key}]"] + [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()]
             if span:
                 lines[span[0] : span[1]] = new + ([""] if new and span[1] < len(lines) else [])
             elif new:
@@ -455,7 +471,10 @@ def _edit_toml(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
     while lines and not lines[-1].strip():
         lines.pop()
     out = "\n".join(lines) + ("\n" if lines else "")
-    parsed = _parse(out.encode(), "toml", path)
+    try:
+        parsed = _parse(out.encode(), "toml", path)
+    except AgentConfigError:
+        raise AgentConfigError(f"Couldn't safely edit {path}; its layout is unusual. Add the settings by hand.") from None
     if not all((_get(parsed, k) is _MISSING) if v is _MISSING else _get(parsed, k) == v for k, v in changes.items()):
         raise AgentConfigError(f"Couldn't safely edit {path}; its layout is unusual. Add the settings by hand.")
     return out.encode("utf-8")
@@ -477,8 +496,10 @@ def _parse_dotenv(text: str) -> dict[str, str]:
         if "=" not in s:
             continue
         key, value = (part.strip() for part in s.split("=", 1))
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]  # single quotes: literal
+        elif len(value) >= 2 and value[0] == value[-1] == '"':
+            value = re.sub(r'\\(["\\n])', lambda m: "\n" if m.group(1) == "n" else m.group(1), value[1:-1])
         else:
             value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
         data[key] = value
@@ -486,7 +507,13 @@ def _parse_dotenv(text: str) -> dict[str, str]:
 
 
 def _dotenv_value(value: str) -> str:
-    return value if _DOTENV_SAFE.fullmatch(value) else json.dumps(value)
+    """Quote a value so _parse_dotenv (and dotenv libraries) read it back unchanged."""
+    if _DOTENV_SAFE.fullmatch(value):
+        return value
+    if "'" not in value and "\n" not in value:
+        return f"'{value}'"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
 
 
 def _edit_dotenv(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
@@ -506,7 +533,7 @@ def _edit_dotenv(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
     out = "\n".join(lines) + ("\n" if lines else "")
     parsed = _parse_dotenv(out)
     if not all((k not in parsed) if v is _MISSING else parsed.get(k) == v for k, v in changes.items()):
-        raise AgentConfigError(f"Couldn't safely edit {path}; add the settings by hand.")  # pragma: no cover
+        raise AgentConfigError(f"Couldn't safely edit {path}; add the settings by hand.")
     return out.encode("utf-8")
 
 
@@ -646,6 +673,33 @@ def _file_entry(path: Path, raw: bytes | None, fmt: str, desired: dict[str, Any]
     }
 
 
+def _reconnect_entry(old: dict, raw: bytes | None, values: dict[str, Any], data: dict[str, Any]) -> dict:
+    """Carry a file's first-connect backup into a reconnect.
+
+    The original bytes stay restorable only while the file is exactly what
+    we last wrote; once the user has edited it, disconnect reverts our
+    settings one by one instead, so their edits survive. Settings this
+    connect adds for the first time record their current values.
+    """
+    entry = dict(old)
+    current_sha = _sha(raw) if raw is not None else None
+    if current_sha != old.get("written_sha256"):
+        entry["restorable"] = False
+    previous = dict(old.get("previous") or {})
+    absent = list(old.get("absent") or [])
+    known = set(old.get("values") or {})
+    for key in values:
+        if key in known or key in previous or key in absent:
+            continue
+        value = _get(data, key)
+        if value is _MISSING:
+            absent.append(key)
+        else:
+            previous[key] = value
+    entry["previous"], entry["absent"] = previous, absent
+    return entry
+
+
 def _file_entries(entry: dict) -> list[dict]:
     # Entries written before multi-file support held one file at the top level.
     return entry["files"] if "files" in entry else [entry]
@@ -692,16 +746,23 @@ def connect_agent(
             values = desired[rel]
             for key in values:
                 _check_containers(data, key, path)
-            fentry = old_files.get(str(path)) or _file_entry(path, raw, fmt, values, data)
-            fentry = {**fentry, "fmt": fmt}
-            plan.append((path, raw, _apply(raw, fmt, values, path), {**fentry, "values": values}))
+            old_file = old_files.get(str(path))
+            if old_file is None:
+                fentry = _file_entry(path, raw, fmt, values, data)
+            else:
+                fentry = _reconnect_entry(old_file, raw, values, data)
+            all_values = {**(fentry.get("values") or {}), **values}
+            plan.append((path, raw, _apply(raw, fmt, values, path), {**fentry, "fmt": fmt, "values": all_values}))
 
-        if key_file is not None:
-            key_file.parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(key_file.parent, 0o700)
-            _write_atomic(key_file, api_key.encode(), 0o600)
+        old_key: bytes | None = None
         done: list[tuple[Path, bytes | None]] = []
         try:
+            if key_file is not None:
+                key_file.parent.mkdir(parents=True, exist_ok=True)
+                os.chmod(key_file.parent, 0o700)
+                old_key = _read(key_file)
+                _write_atomic(key_file, api_key.encode(), 0o600)
+                done.append((key_file, old_key))
             for path, raw, written, _fentry in plan:
                 _write_atomic(path, written)
                 done.append((path, raw))
@@ -727,7 +788,7 @@ def _restore_file(fentry: dict, fmt: str) -> None:
     path = Path(fentry["path"])
     current = _read(path)
     try:
-        if current is not None and _sha(current) == fentry.get("written_sha256"):
+        if current is not None and fentry.get("restorable", True) and _sha(current) == fentry.get("written_sha256"):
             original = fentry.get("original")
             if original is None:
                 _target(path).unlink()
@@ -761,10 +822,24 @@ def disconnect_agent(agent_id: str, *, home: Path, state_dir: Path) -> None:
 
         if not entry.get("manual"):
             default_fmt = spec.files[0][1] if spec.files else "json"
-            for fentry in _file_entries(entry):
-                if not isinstance(fentry, dict) or "path" not in fentry:
-                    raise AgentConfigError(f"The saved connection for {spec.name} is damaged; reconnect it to repair.")
-                _restore_file(fentry, fentry.get("fmt") or default_fmt)
+            files = _file_entries(entry)
+            if not all(isinstance(f, dict) and "path" in f for f in files):
+                raise AgentConfigError(f"The saved connection for {spec.name} is damaged; reconnect it to repair.")
+            # Restore every file even if one fails, so an agent is never left
+            # half pointed at Orca; keep only the failures for another try.
+            failed: list[dict] = []
+            errors: list[str] = []
+            for fentry in files:
+                try:
+                    _restore_file(fentry, fentry.get("fmt") or default_fmt)
+                except AgentConfigError as exc:
+                    failed.append(fentry)
+                    errors.append(str(exc))
+            if failed:
+                state[agent_id] = {**entry, "files": failed}
+                state[agent_id].pop("path", None)
+                _save_state(state_dir, state)
+                raise AgentConfigError("; ".join(errors))
             if entry.get("key_file"):
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(entry["key_file"])

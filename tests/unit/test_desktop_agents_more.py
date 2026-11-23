@@ -387,3 +387,117 @@ def test_reconnect_with_a_new_key_keeps_the_first_backup(home, state_dir, agent_
     # Nothing existed before the first connect, so nothing is left behind.
     leftovers = [p for p in home.rglob("*") if p.is_file()]
     assert leftovers == []
+
+
+# ── review fixes ────────────────────────────────────────────────────────
+
+
+def test_reconnect_after_a_user_edit_then_disconnect_keeps_the_edit(home, state_dir):
+    # A key rotation or joining a gateway reconnects every agent; the first
+    # connect's byte backup must not wipe edits made since then.
+    cfg = home / ".claude" / "settings.json"
+    cfg.parent.mkdir()
+    cfg.write_text('{"theme": "dark"}')
+    _connect("claude-code", home, state_dir)
+    data = json.loads(cfg.read_text())
+    data["model"] = "opus"
+    cfg.write_text(json.dumps(data))
+    _connect("claude-code", home, state_dir, key=KEY.replace("0", "2"))
+
+    _disconnect("claude-code", home, state_dir)
+
+    assert json.loads(cfg.read_text()) == {"theme": "dark", "model": "opus"}
+
+
+def test_reconnect_without_edits_still_restores_bytes(home, state_dir):
+    cfg = home / ".claude" / "settings.json"
+    cfg.parent.mkdir()
+    cfg.write_bytes(b'{\n    "theme": "dark"\n}\n')
+    _connect("claude-code", home, state_dir)
+    _connect("claude-code", home, state_dir, key=KEY.replace("0", "2"))
+    _disconnect("claude-code", home, state_dir)
+    assert cfg.read_bytes() == b'{\n    "theme": "dark"\n}\n'
+
+
+def test_codex_restores_a_previous_orca_table_with_inline_tables_and_arrays(home, state_dir):
+    cfg = _codex(home)
+    cfg.parent.mkdir()
+    cfg.write_text(
+        '[model_providers.orca]\nname = "mine"\nbase_url = "https://x/v1"\n'
+        'query_params = { api-version = "2025-01-01" }\nretries = [1, 2]\n'
+    )
+    before = tomllib.loads(cfg.read_text())["model_providers"]["orca"]
+    _connect("codex", home, state_dir)
+    cfg.write_text(cfg.read_text() + '\n[mcp_servers.docs]\ncommand = "docs"\n')  # user edit
+
+    _disconnect("codex", home, state_dir)
+
+    data = tomllib.loads(cfg.read_text())
+    assert data["model_providers"]["orca"] == before
+    assert data["mcp_servers"]["docs"]["command"] == "docs"
+
+
+@pytest.mark.parametrize("previous", ["abc\\def", 'has "quotes"', "it's", "ünïcode", "a b # c"])
+def test_gemini_restores_awkward_previous_values_exactly(home, state_dir, previous):
+    env, _settings = _gemini(home)
+    env.parent.mkdir()
+    env.write_text(f"GEMINI_API_KEY={ag._dotenv_value(previous)}\n")
+    assert ag._parse_dotenv(env.read_text())["GEMINI_API_KEY"] == previous
+    _connect("gemini-cli", home, state_dir)
+    env.write_text(env.read_text() + "DEBUG=1\n")  # user edit: surgical revert path
+
+    _disconnect("gemini-cli", home, state_dir)
+
+    assert ag._parse_dotenv(env.read_text())["GEMINI_API_KEY"] == previous
+
+
+def test_one_file_failing_to_restore_does_not_stop_the_others(home, state_dir, monkeypatch):
+    env, settings = _gemini(home)
+    settings.parent.mkdir()
+    settings.write_text('{"security": {"auth": {"selectedType": "oauth-personal"}}}')
+    _connect("gemini-cli", home, state_dir)
+
+    real = ag._restore_file
+
+    def flaky(fentry, fmt):
+        if fentry["path"].endswith(".env"):
+            raise ag.AgentConfigError("disk full")
+        return real(fentry, fmt)
+
+    monkeypatch.setattr(ag, "_restore_file", flaky)
+    with pytest.raises(ag.AgentConfigError, match="disk full"):
+        _disconnect("gemini-cli", home, state_dir)
+    # settings.json was still put back, and only .env is left to restore.
+    assert json.loads(settings.read_text())["security"]["auth"]["selectedType"] == "oauth-personal"
+    assert _status(home, state_dir, "gemini-cli").connected
+
+    monkeypatch.setattr(ag, "_restore_file", real)
+    _disconnect("gemini-cli", home, state_dir)
+    assert not env.exists()
+    assert not _status(home, state_dir, "gemini-cli").connected
+
+
+def _fail_writes_to(monkeypatch, name):
+    real = ag._write_atomic
+
+    def write(path, data, mode=None):
+        if path.name == name:
+            raise OSError(28, "No space left on device")
+        return real(path, data, mode)
+
+    monkeypatch.setattr(ag, "_write_atomic", write)
+
+
+def test_a_failed_first_connect_leaves_no_key_file(home, state_dir, monkeypatch):
+    _fail_writes_to(monkeypatch, "opencode.json")
+    with pytest.raises(ag.AgentConfigError):
+        _connect("opencode", home, state_dir)
+    assert not (state_dir / "keys" / "opencode.key").exists()
+
+
+def test_a_failed_reconnect_keeps_the_working_key(home, state_dir, monkeypatch):
+    _connect("opencode", home, state_dir, key=KEY)
+    _fail_writes_to(monkeypatch, "opencode.json")
+    with pytest.raises(ag.AgentConfigError):
+        _connect("opencode", home, state_dir, key=KEY.replace("0", "3"))
+    assert (state_dir / "keys" / "opencode.key").read_text() == KEY
