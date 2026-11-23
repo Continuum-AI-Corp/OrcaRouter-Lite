@@ -11,12 +11,14 @@ pub struct Snapshot {
     pub used_percent: Option<f64>,
     pub daily_cents: Option<i64>,
     pub failures_avoided: i64,
+    /// Budget mode "stop": agents are paused once the budget is reached.
+    pub stops: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Alert {
     BudgetWarn { used_percent: f64, limit: String },
-    BudgetOver { limit: String },
+    BudgetOver { limit: String, stops: bool },
     Rescued { count: i64 },
 }
 
@@ -43,6 +45,7 @@ pub fn parse_summary(v: &Value) -> Option<Snapshot> {
         used_percent: budget.get("used_percent").and_then(Value::as_f64),
         daily_cents: budget.get("daily_cents").and_then(Value::as_i64),
         failures_avoided: week.get("failures_avoided").and_then(Value::as_i64).unwrap_or(0),
+        stops: budget.get("mode").and_then(Value::as_str) == Some("stop"),
     })
 }
 
@@ -84,7 +87,7 @@ pub fn alerts(prev: Option<&Snapshot>, cur: &Snapshot) -> Vec<Alert> {
                 used_percent: cur.used_percent.unwrap_or(0.0),
                 limit: limit(),
             }),
-            "over" => out.push(Alert::BudgetOver { limit: limit() }),
+            "over" => out.push(Alert::BudgetOver { limit: limit(), stops: cur.stops }),
             _ => {}
         }
     }
@@ -100,7 +103,7 @@ impl Alert {
             Alert::BudgetWarn { used_percent, limit } => {
                 format!("{:.0}% of today's {} budget used", used_percent, limit)
             }
-            Alert::BudgetOver { limit } => format!("Today's {} budget is used up", limit),
+            Alert::BudgetOver { limit, .. } => format!("Today's {} budget is used up", limit),
             Alert::Rescued { count } => format!(
                 "{} {} rescued by fallback",
                 count,
@@ -112,7 +115,12 @@ impl Alert {
     pub fn body(&self) -> String {
         match self {
             Alert::BudgetWarn { .. } => "Your coding agents keep working. Open Orca to see which agent is spending.".into(),
-            Alert::BudgetOver { .. } => "Your agents keep working; Orca only alerts. Raise the budget or switch to auto-routing in Orca.".into(),
+            Alert::BudgetOver { stops: true, .. } => {
+                "Orca paused your coding agents for today. Raise the budget in Orca to let them continue.".into()
+            }
+            Alert::BudgetOver { stops: false, .. } => {
+                "Your agents keep working; Orca only alerts. Raise the budget or switch to auto-routing in Orca.".into()
+            }
             Alert::Rescued { .. } => "A provider failed or rate-limited you, and Orca sent the request elsewhere.".into(),
         }
     }
@@ -130,6 +138,7 @@ mod tests {
             used_percent: pct,
             daily_cents: daily,
             failures_avoided: rescued,
+            stops: false,
         }
     }
 
@@ -214,7 +223,7 @@ mod tests {
     fn crossing_into_over_alerts_even_when_skipping_warn() {
         let a = snap(100, "ok", Some(1.0), Some(200), 0);
         let b = snap(2_500_000, "over", Some(125.0), Some(200), 0);
-        assert_eq!(alerts(Some(&a), &b), vec![Alert::BudgetOver { limit: "$2.00".into() }]);
+        assert_eq!(alerts(Some(&a), &b), vec![Alert::BudgetOver { limit: "$2.00".into(), stops: false }]);
     }
 
     #[test]
@@ -232,10 +241,26 @@ mod tests {
     }
 
     #[test]
+    fn over_budget_in_stop_mode_says_agents_are_paused() {
+        let v = json!({
+            "today": {"spend_microcents": 2_000_000},
+            "week": {"failures_avoided": 0},
+            "budget": {"daily_cents": 200, "used_percent": 100.0, "state": "over", "mode": "stop"}
+        });
+        let snap = parse_summary(&v).unwrap();
+        assert!(snap.stops);
+        let a = snap.clone();
+        let prev = Snapshot { budget_state: "ok".into(), ..a };
+        let alerts = alerts(Some(&prev), &snap);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].body().contains("paused"), "{}", alerts[0].body());
+    }
+
+    #[test]
     fn alert_copy_is_specific() {
         let w = Alert::BudgetWarn { used_percent: 85.0, limit: "$20.00".into() };
         assert_eq!(w.title(), "85% of today's $20.00 budget used");
-        let o = Alert::BudgetOver { limit: "$20.00".into() };
+        let o = Alert::BudgetOver { limit: "$20.00".into(), stops: false };
         assert_eq!(o.title(), "Today's $20.00 budget is used up");
         let r = Alert::Rescued { count: 1 };
         assert_eq!(r.title(), "1 request rescued by fallback");

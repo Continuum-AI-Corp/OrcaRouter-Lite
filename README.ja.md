@@ -1,17 +1,18 @@
 # OrcaRouter Lite
 
-**マネージド セーフティ ネットを備えたセルフホスト型 LLM ルーター。**
-OpenAI対応。ビヨク。単一のワークスペース。ストリーミング中。 `モデル="自動"`。
+**すべてのコーディングエージェントに予算を。**
+Claude Code、Aider、Cursor、そして自作アプリの支出を、あらゆるモデルプロバイダーを横断して確認し、上限を設定できます。
+プロンプトが手元のマシンから外に出ることはありません。開発者 1 人ならメニューバーアプリとして、
+チーム全体ならセルフホスト型ルーターとして使えます。MIT ライセンスです。
 
-![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
-
-[![テスト](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
-[![モデル](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
+[![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
 [![ライセンス](https://img.shields.io/badge/license-MIT-blue)](#license)
 
-![OrcaRouter Lite フェイルオーバーデモ](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
-
-*`model="auto"` がプロバイダー障害をリアルタイムで吸収 — コード変更なし。収録手順: [DEMO.md](./DEMO.md)。*
+<p>
+  <img src="docs/screenshots/desktop-panel.png" alt="OrcaRouter Lite のメニューバーパネル: 1 日の予算に対する今日の支出、接続中のコーディングエージェント、プロバイダーの稼働状況" width="340">
+  <img src="docs/screenshots/desktop-setup.png" alt="初回セットアップ: 検出されたコーディングエージェント、リクエストの送信先、1 日の予算" width="420">
+</p>
 
 ## 言語
 
@@ -30,11 +31,67 @@ OpenAI対応。ビヨク。単一のワークスペース。ストリーミン�
 
 **関連プロダクト：**[すべてのモデル API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
-OrcaRouter Lite は、[OrcaRouter](https://www.orcarouter.ai) のオープンソースの単一ワークスペース エディションです。ラップトップで実行するか、製品に同梱するか、キーを管理したくないモデルのロングテールに対してホストされた「api.orcarouter.ai」を直接使用します。
+OrcaRouter Lite は [OrcaRouter](https://www.orcarouter.ai) のオープンソース版です。手元のコンピューターでもサーバーでも動作し、OpenAI・Anthropic・Gemini の API に対応します。また、障害時や、キーを持っていないモデルを使うときのセーフティネットとして、ホスト型の `api.orcarouter.ai` を利用できます。
 
-> **なぜ当社なのか?** LiteLLM はライブラリです。 OpenRouter はクローズドソースでホストされています。オラマは地元限定です。私たちは**管理されたフォールバックを備えた自己ホスト型サーバー**です。これは誰にも言えない言葉です。
+## デスクトップアプリ
 
-## 60 秒のクイックスタート
+Orca アプリはメニューバーに常駐します。ルーターを `127.0.0.1` で起動し、コーディングエージェントを
+そこに接続して、各エージェントの支出を表示します。
+
+- **今日の支出をエージェント別に。** 今日の合計は時計の横に表示され、パネルではエージェントごとの内訳を確認できます。
+- **1 日の予算。** 設定した金額の 80% と 100% に達すると通知します。エージェントは止まらず、Orca はブロックではなくアラートで知らせます。
+- **ワンクリック接続。** Orca がエージェント自身の設定を書き換え、バックアップを取っておき、接続を解除すると元に戻します。
+- **止まらない。** プロバイダーで障害が起きたりレート制限に達したりすると、リクエストは別のプロバイダーまたはホスト型 OrcaRouter にフォールバックし、アプリは救済したリクエストの数を記録します。
+- **デフォルトでプライベート。** プロンプトはエージェントから選択したプロバイダーへ直接送られます。テレメトリはありません。
+
+**インストール。** インストーラー（`.dmg`、`.deb`、`.AppImage`、`.msi`）は
+[`desktop.yml`](./.github/workflows/desktop.yml) でビルドされ、次のタグ付きバージョン以降の各リリースに
+添付されます。それまでは、同じエンジンと CLI をコマンド 1 つで使えます:
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect claude-code
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
+```
+
+`orca up` はパネルを `http://127.0.0.1:8765/desktop/panel.html` で配信します。
+メニューバーアプリ本体のビルド方法は [`desktop/`](./desktop/README.md) を参照してください。
+
+| エージェント | 接続方法 |
+|---|---|
+| Claude Code | 自動: `~/.claude/settings.json` に `ANTHROPIC_BASE_URL` と専用キーを設定 |
+| Aider | 自動: `~/.aider.conf.yml` に `openai-api-base`、専用キー、`model: openai/auto` を設定 |
+| Cursor | 貼り付け 1 回: Cursor のモデル設定に入力するベース URL とキーをアプリが表示 |
+| Codex | 対応予定: OpenAI Responses API（`/v1/responses`）が必要ですが、Lite はまだ提供していません |
+| Gemini CLI | 対応予定 |
+
+接続した各エージェントには専用のキーが割り当てられます。これによってエージェントごとに支出を分けられ、
+接続を解除すると即座にアクセスが取り消されます。アプリがコンピューター上で触れる可能性のある範囲は
+[SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch) に明記しています。
+
+<a id="free-and-open-for-good"></a>
+## ずっと無料でオープン
+
+- **永続的に MIT。** 開発者 1 人、チーム 1 つに必要なものはすべて、MIT ライセンスのままこのリポジトリに残ります: ルーティング、`model="auto"`、予算、ダッシュボード、デスクトップアプリ。Lite の機能を有料プランに移すことはありません。
+- **有料版は組織向け。** 複数チームの統制（SSO/SCIM、ロールベースのアクセス制御、組織全体の予算とポリシー、監査ログの保持、Slack やメールへのアラート）は [ホスト型 OrcaRouter](https://www.orcarouter.ai) で提供します。
+- **検証可能。** リリースは署名済みで、来歴情報（provenance）と SBOM が付属します。[SECURITY.md](./SECURITY.md) を参照してください。
+
+## 比較
+
+| | 向いている用途 | 動作形態 |
+|---|---|---|
+| **OrcaRouter Lite** | 新たなインフラなしで、エージェント別の支出、予算、フェイルオーバーが欲しい個人開発者からチームまで | デスクトップアプリ、`uvx`/`pip`、または Docker。デフォルトは SQLite |
+| LiteLLM proxy | 豊富な設定項目と Python SDK が欲しいチーム | セルフホスト型サーバー。支出の追跡には Postgres |
+| OpenRouter | 1 つの API キーで多数のモデルを使いたい場合（請求は OpenRouter から） | ホスト型のみ。プロンプトは OpenRouter のサービスを経由 |
+| Claude Code 自体のゲートウェイ対応 | Claude だけを使う企業 | 自前で運用するゲートウェイに Claude Code を向ける。Claude モデルのみ |
+
+## サーバーとして動かす（60 秒）
 
 OrcaRouter を使用する 2 つの方法:
 
@@ -69,8 +126,8 @@ docker compose up
 
 以下の例では、パス A のローカルホストのベース URL を使用しています。パス B を使用している場合は、「https://api.orcarouter.ai/v1」に置き換えてください。
 
-<詳細>
-<概要><b>Python</b></summary>
+<details>
+<summary><b>Python</b></summary>
 
 ```python
 from openai import OpenAI
@@ -87,8 +144,8 @@ print(r.choices[0].message.content)
 ```
 </details>
 
-<詳細>
-<概要><b>Node.js</b></summary>
+<details>
+<summary><b>Node.js</b></summary>
 
 ```js
 import OpenAI from "openai";
@@ -106,8 +163,8 @@ console.log(r.choices[0].message.content);
 ```
 </details>
 
-<詳細>
-<概要><b>カール</b></summary>
+<details>
+<summary><b>カール</b></summary>
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -119,21 +176,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ダッシュボードの「http://localhost:8000/」を開きます (プロバイダー、ルーティング、分析、キー (パス A のみ))。
 
-＃＃ なぜ？
-
-| |ライト | LiteLLM ライブラリ |オープンルーター |オラマ |
-|---|---|---|---|---|
-|セルフホスト型サーバー | ✓ |図書館として | ✗ | ✓ |
-| OpenAI対応 | ✓ | ✓ | ✓ | ✓ |
-|マルチプロバイダー (OpenAI/Anthropic/Google/…) | ✓ | ✓ | ✓ | ✗ |
-|内蔵ダッシュボード | ✓ | ✗ | ✓ | ✗ |
-| `model="auto"` (最も安価な機能) | ✓ | ✗ | ✗ |該当なし |
-|ストリーミング | ✓ | ✓ | ✓ | ✓ |
-|ビヨク | ✓ | ✓ | ✗ |該当なし |
-|フォールバックとしてホスト | ✓ | ✗ |該当なし | ✗ |
-| Postgres や Redis は不要 | ✓ |該当なし |該当なし | ✓ |
-
-## `model="auto"` — 見出し機能
+## `model="auto"`
 
 `model="auto"` を送信すると、OrcaRouter は、リクエストの機能要件 (ツール、ビジョン、JSON モード) を満たす構成済みプロバイダーの中で **最も安価** のモデルを選択します。手動ルーティング ルールはありません。レートリミットの体操はありません。コード内の「if x: ...」コストの最適化はありません。
 
@@ -212,12 +255,12 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 ## 別の場所にデプロイする
 
-|プラットフォーム |ワンクリック |
+| プラットフォーム | 方法 |
 |---|---|
-|鉄道 | [![鉄道へのデプロイ](https://railway.app/button.svg)](https://railway.app/new/template) |
-|フライアイオ | `フライ起動 --dockerfile Dockerfile` |
-|レンダリング |リポジトリに接続します。ルート ディレクトリ = `.` |
-|ベア・ドッカー | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (イメージは近日公開予定) |
+| Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>`（次のタグ付きリリースから公開。[SECURITY.md](./SECURITY.md) のコマンドで検証できます） |
+| Fly.io | `fly launch --dockerfile Dockerfile` |
+| Render | リポジトリを接続し、ルートディレクトリ = `.` |
+| Railway | テンプレートを準備中（#181 で追跡） |
 
 ## 箱の中身は何ですか
 
@@ -230,6 +273,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 - `GET /v1/analytics/{recent,spend,latency, Savingss,unreachable}` — ローカル分析、テレメトリはボックスから出ません
 - `GET /v1/hosted` — ホスト型フォールバック ステータス (ダッシュボードの "Get $5 free Credit" カードを駆動します)
 - `GET/POST/DELETE /v1/keys/...` — API キーのリスト化、回転、取り消し
+- `/v1/app/*` — デスクトップアプリ用のエージェント、支出サマリー、予算（`orca up` で起動した場合のみ。[SECURITY.md](./SECURITY.md) を参照）
 - `/` の単一ページのダッシュボード
 - デフォルトでは SQLite。 Postgres は「DATABASE_URL」経由でオプトインします。 Redis はオプション
 
@@ -265,46 +309,20 @@ x-orca-cache: HIT          ← served from cache, no upstream call
 - マルチポッド展開 / Kubernetes
 - アラート用の電子メール / Slack / Webhook
 
-これらについては、ホストされた製品または (今後の) Teams エディションを参照してください。
+これらは組織向けの機能で、[ホスト型 OrcaRouter](https://www.orcarouter.ai) で提供しています。[ずっと無料でオープン](#free-and-open-for-good) を参照してください。
 
 ## テスト
 
-テストファーストで構築。ここに出荷されるすべての動作には、最初に失敗するテストがありました。
+テストファーストで構築しています: ここに含まれるすべての動作には、先に失敗するテストがありました。
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest -v
-# 403 passed
+PYTHONPATH=. pytest                          # router, protocols, desktop API, CLI, supply-chain checks
+cd desktop && npm test                       # desktop view logic (node --test)
+cd desktop/src-tauri && cargo test --lib     # menu-bar title and notification rules
 ```
 
-|スライス |テスト |何を |
-|---|---|---|
-| 1. 設定 | 5 |環境読み込み、デフォルト、`env_provider_keys()` |
-| 2. シード | 3 |ブートストラップ ワークスペース + API キー + RoutingConfig、べき等 |
-| 3. 認証ミドルウェア | 4 |ベアラー トークンの検証、欠落/無効の場合は 401 |
-| 4. アプリファクトリー | 3 | /health、エラー エンベロープ、/v1/* ゲート |
-| 5. プロバイダーキー CRUD | 5 |保存時には暗号化され、平文は往復することはありません。
-| 6.ルーターキャッシュ | 13 | env+DB+hosted デプロイメントアセンブリを優先 |
-| 7. チャットの完了 | 5 | OpenAI 形式、RequestLog、検証 |
-| 8. 分析 | 4 |最近 / 支出 / レイテンシ p50/p99 |
-| 9. /v1/{モデル、キー、ルーティング} | 8 |リスト/作成/取り消し + 戦略の更新 |
-| 10. ストリーミング | 4 | SSE フォーマット、`[DONE]` センチネル、ログ ライトバック |
-| 11. カタログ | 7 | 100 を超えるモデル、機能フラグ、価格設定 |
-| 12. `model="auto"` | 21 |能力検出、最も安価なニーズを満たす (ユニット + 統合) |
-| 13. コスト削減 | 9 |節約と常時 GPT-4 ベースライン + ホスト型自動の比較 |
-| 14. プロンプトキャッシュ | 15 |クロスプロバイダー完全一致キャッシュ + チャット統合 |
-| 15. ベンチマーク | 4 | summary() + render_markdown() 集約 |
-| 16. ホストのステータス | 7 | `/v1/hosted` 設定ソース + サインアップ URL 表面 |
-| 17. ホスト型自動節約 | 3 |合成カタログの「_hosted_auto_ Savings」エッジケース |
-| 18. 到達不可能なモデル | 7 |ホストがオンになっていると「アクセスできないモデル」タイルが消去される |
-| 19. マルチプロトコル認証 | 6 |x-api-key / x-goog-api-key / ?key= のスコープ、/v1beta ガード、プロトコルごとの 401 エンベロープ |
-| 20. Anthropic `/v1/messages` | 53 |リクエスト/レスポンス/ストリームの変換 + イングレス統合 |
-| 21. Gemini `/v1beta` | 40 |schema-enum 正規化を含む変換 + generateContent/ストリーム イングレス |
-| **合計** | **403** | |
-
-スライス行は各スライスの出荷時に追加されたテストを示します。合計は現在の完全なテスト スイートです。
-
-＃＃ 建築
+## アーキテクチャ
 
 ```
 app/
@@ -327,7 +345,13 @@ app/
     ├── hosted.py       /v1/hosted — hosted-fallback status for the dashboard
     └── health.py
 
+desktop/
+├── ui/                 Menu-bar panel + setup pages (served by the engine at /desktop/)
+├── src-tauri/          Native shell: tray title, notifications, starts the engine
+└── engine/             PyInstaller build of the bundled `orca-engine`
+
 packages/
+├── desktop/            Agent connectors (backup/restore) + desktop home folder
 ├── litellm_adapter/    Router wrapper + 100+ model catalog
 ├── auth/               hashing + AES-256-GCM
 └── db/                 models + engine + session
@@ -335,20 +359,20 @@ packages/
 
 ## ロードマップ
 
-- [x] OpenAI 互換のチャット補完
-- [x] ストリーミング (SSE)
-- [x] `model="auto"` 最も安価なルーティング
-- [x] アップストリームとしてホストされる
-- [x] 保存時の暗号化された BYOK
-- [x] ローカル分析ダッシュボード
-- [x] CI (GitHub アクション)
-- [x] プロバイダー間のプロンプト キャッシュ
-- [x] Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK の統合
-- [x] 公開ベンチマーク + 貯蓄請求
-- [ ] 埋め込み + 画像生成プロキシ
+- [x] OpenAI 互換のチャット補完、ストリーミング、`model="auto"`
+- [x] Anthropic と Gemini のネイティブエンドポイント
+- [x] ホスト型アップストリームへのフォールバック、暗号化された BYOK、ローカルダッシュボード
+- [x] プロバイダー横断のプロンプトキャッシュ
+- [x] デスクトップアプリ: メニューバーでの支出表示、1 日の予算アラート、ワンクリックでのエージェント接続
+- [x] 来歴情報と SBOM 付きの署名済みリリース、ハッシュで固定した依存関係
+- [ ] Codex を接続するための `/v1/responses`
+- [ ] 開発者ごとの厳格な予算上限（アラートは提供済み）
+- [ ] `orca login`: アプリからチームのゲートウェイに参加
+- [ ] 埋め込み、Ollama/vLLM プロバイダー、カスタムフォールバックチェーン
 
 フェイルオーバーのデモについては、[DEMO.md](./DEMO.md) を参照してください。
 
+<a id="license"></a>
 ## ライセンス
 
-マサチューセッツ工科大学[ライセンス](./LICENSE) を参照してください。
+MIT。[ライセンス](./LICENSE) を参照してください。

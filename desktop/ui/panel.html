@@ -18,7 +18,7 @@
       <section class="today" id="today" aria-labelledby="today-h">
         <div class="today-top">
           <h2 class="label" id="today-h">Spend today</h2>
-          <button class="btn btn-link btn-sm" id="budget-edit" type="button" aria-expanded="false" aria-controls="budget-collapse">Set daily alert</button>
+          <button class="btn btn-link btn-sm" id="budget-edit" type="button" aria-expanded="false" aria-controls="budget-collapse">Set daily budget</button>
         </div>
         <div class="today-row">
           <span class="big" id="today-spend">—</span>
@@ -28,17 +28,19 @@
         <div class="collapse" id="budget-collapse">
           <div class="inner">
             <form class="budget-form" id="budget-form" novalidate>
-              <label for="budget-input">Alert me at</label>
+              <label for="budget-input">Daily budget</label>
               <div class="money-input"><span aria-hidden="true">$</span><input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="20" aria-describedby="budget-help"></div>
               <span class="per">a day</span>
               <button class="btn btn-primary btn-sm" type="submit">Save</button>
               <button class="btn btn-ghost btn-sm" type="button" id="budget-clear">Remove</button>
-              <p class="fine" id="budget-help">Orca notifies you at 80% and 100%. Your agents keep working.</p>
+              <label class="check-line" for="budget-stop"><input type="checkbox" id="budget-stop"> Pause coding agents when it's reached</label>
+              <p class="fine" id="budget-help">Orca notifies you at 80% and 100%. Unless you tick the box, your agents keep working.</p>
             </form>
           </div>
         </div>
         <p class="week" id="week-line">Last 7 days —</p>
         <p class="rescued" id="rescued" hidden></p>
+        <p class="gateway" id="gateway" hidden><span id="gateway-text"></span> <button class="btn btn-link btn-sm" id="gateway-leave" type="button">Leave</button></p>
       </section>
 
       <section class="callout" id="no-provider" hidden>

@@ -96,7 +96,8 @@ async function load() {
     // Start from what's saved: never silently reset someone's alert.
     const cents = settings.daily_budget_cents;
     $("budget").value = cents === null || cents === undefined ? "" : String(cents / 100);
-    if (cents === null || cents === undefined) $("budget").placeholder = state.providers.length ? "No alert" : "20";
+    if (cents === null || cents === undefined) $("budget").placeholder = state.providers.length ? "No budget" : "20";
+    $("budget-stop").checked = settings.budget_mode === "stop";
     if (!state.providers.length && (cents === null || cents === undefined)) $("budget").value = "20";
   } catch (err) {
     setStatus(err.message, true);
@@ -153,6 +154,20 @@ function invalid(id, message) {
 
 async function saveProviders() {
   const haveAny = state.providers.length > 0;
+  if (route() === "company") {
+    const url = field("gateway-url");
+    const key = field("gateway-key");
+    if (!url) return invalid("gateway-url", "Enter the gateway address your platform team gave you.");
+    if (!key) return invalid("gateway-key", "Paste the key your platform team gave you.");
+    setStatus("Checking the gateway…");
+    try {
+      await engine.joinGateway(url, key);
+    } catch (err) {
+      return invalid("gateway-url", err.message);
+    }
+    state.joinedGateway = true;
+    return true;
+  }
   if (route() === "hosted") {
     const key = field("hosted-key");
     if (!key) return haveAny ? true : invalid("hosted-key", "Paste your OrcaRouter key, or choose your own API keys.");
@@ -175,7 +190,7 @@ $("setup-form").addEventListener("submit", async (e) => {
   const raw = $("budget").value.trim();
   const dollars = Number(raw);
   if (raw !== "" && (!Number.isFinite(dollars) || dollars < 0)) {
-    invalid("budget", "Enter the daily alert in dollars, for example 20, or leave it empty.");
+    invalid("budget", "Enter the daily budget in dollars, for example 20, or leave it empty.");
     return;
   }
   $("go").disabled = true;
@@ -184,8 +199,12 @@ $("setup-form").addEventListener("submit", async (e) => {
   const results = [];
   try {
     if (!(await saveProviders())) return;
-    await engine.saveSettings({ daily_budget_cents: raw === "" ? null : Math.round(dollars * 100) });
-    for (const id of selectedAgents()) {
+    await engine.saveSettings({
+      daily_budget_cents: raw === "" ? null : Math.round(dollars * 100),
+      budget_mode: raw !== "" && $("budget-stop").checked ? "stop" : "alert",
+    });
+    // Joining a gateway already connected every agent it could.
+    for (const id of state.joinedGateway ? [] : selectedAgents()) {
       const name = state.agents.find((a) => a.id === id)?.name || id;
       setStatus(`Connecting ${name}…`);
       try {
@@ -196,6 +215,7 @@ $("setup-form").addEventListener("submit", async (e) => {
       }
     }
     await native.finishSetup().catch(() => {});
+    if (state.joinedGateway) results.push({ name: "Team gateway", ok: true, text: "Agents connected" });
     showDone(results);
   } catch (err) {
     setStatus(err.message, true);

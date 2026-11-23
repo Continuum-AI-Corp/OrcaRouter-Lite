@@ -6,6 +6,7 @@ import {
   budgetView,
   classifyError,
   createSequencer,
+  gatewayLine,
   missingLine,
   money,
   providerRows,
@@ -61,7 +62,7 @@ function renderToday(s) {
   const b = budgetView(s.budget, s.today.spend_microcents);
   $("today-spend").textContent = money(s.today.spend_microcents);
   $("budget-caption").textContent = b.caption;
-  $("budget-edit").textContent = b.hasBudget ? "Edit alert" : "Set daily alert";
+  $("budget-edit").textContent = b.hasBudget ? "Edit budget" : "Set daily budget";
   $("today").className = `today ${b.tone === "warn" || b.tone === "over" ? b.tone : ""}`;
 
   const bar = $("budget-bar");
@@ -81,7 +82,10 @@ function renderToday(s) {
   const rescued = rescuedLine(s.week.failures_avoided || 0);
   $("rescued").hidden = !rescued;
   $("rescued").textContent = rescued;
-  $("no-provider").hidden = (s.providers || []).length > 0 || Boolean(s.hosted?.configured);
+  $("no-provider").hidden = (s.providers || []).length > 0 || Boolean(s.hosted?.configured) || Boolean(s.gateway);
+  const gw = gatewayLine(s.gateway);
+  $("gateway").hidden = !gw;
+  $("gateway-text").textContent = gw;
   if (b.tone === "warn" || b.tone === "over") announce(b.caption);
 }
 
@@ -291,6 +295,7 @@ function openBudget(open) {
   if (open) {
     const cents = lastSummary?.budget?.daily_cents;
     $("budget-input").value = cents === null || cents === undefined ? "" : String(cents / 100);
+    $("budget-stop").checked = lastSummary?.budget?.mode === "stop";
     setTimeout(() => $("budget-input").focus(), 60);
   }
   setTimeout(fitWindow, 240);
@@ -308,7 +313,7 @@ $("budget-form").addEventListener("submit", async (e) => {
   const raw = $("budget-input").value.trim();
   const dollars = Number(raw);
   if (raw === "" || !Number.isFinite(dollars) || dollars < 0) {
-    toast("err", "Enter an amount in dollars", "For example 20 for a $20.00 daily alert.");
+    toast("err", "Enter an amount in dollars", "For example 20 for a $20.00 daily budget.");
     return;
   }
   await saveBudget(Math.round(dollars * 100));
@@ -316,19 +321,32 @@ $("budget-form").addEventListener("submit", async (e) => {
 $("budget-clear").addEventListener("click", () => saveBudget(null));
 
 async function saveBudget(cents) {
+  const mode = cents !== null && $("budget-stop").checked ? "stop" : "alert";
   try {
-    await engine.saveSettings({ daily_budget_cents: cents });
+    await engine.saveSettings({ daily_budget_cents: cents, budget_mode: mode });
     openBudget(false);
-    toast(
-      "ok",
-      cents === null ? "Daily alert removed" : `Daily alert set to ${money(cents * 10_000)}`,
-      cents === null ? "" : "Orca notifies you at 80% and 100%. It won't stop your agents.",
-    );
+    const detail =
+      cents === null
+        ? ""
+        : mode === "stop"
+          ? "Orca notifies you at 80% and pauses your coding agents at 100%."
+          : "Orca notifies you at 80% and 100%. It won't stop your agents.";
+    toast("ok", cents === null ? "Daily budget removed" : `Daily budget set to ${money(cents * 10_000)}`, detail);
     await refresh();
   } catch (err) {
-    toast("err", "Couldn't save the alert", err.message);
+    toast("err", "Couldn't save the budget", err.message);
   }
 }
+
+$("gateway-leave").addEventListener("click", async () => {
+  try {
+    await engine.leaveGateway();
+    toast("ok", "Left your team's gateway", "Your agents' original settings are restored.");
+  } catch (err) {
+    toast("err", "Couldn't leave the gateway", err.message, 6000);
+  }
+  await refresh();
+});
 
 // ── manual setup sheet ──
 

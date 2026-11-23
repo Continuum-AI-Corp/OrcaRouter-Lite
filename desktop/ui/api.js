@@ -57,6 +57,8 @@ export function createEngine(win = window) {
     settings: () => call("GET", "/v1/app/settings"),
     saveSettings: (s) => call("PUT", "/v1/app/settings", s),
     hosted: () => call("GET", "/v1/hosted"),
+    joinGateway: (url, key) => call("POST", "/v1/app/gateway", { url, key }),
+    leaveGateway: () => call("DELETE", "/v1/app/gateway"),
     setProviderKey: (provider, apiKey) => call("PUT", `/v1/providers/${encodeURIComponent(provider)}`, { api_key: apiKey }),
   };
 }

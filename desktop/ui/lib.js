@@ -19,26 +19,30 @@ export function money(microcents) {
   return `$${dollars}.${String(cents % 100).padStart(2, "0")}`;
 }
 
-// The daily budget is an alert, not a cap: agents keep working past it.
+// The daily budget alerts by default; in "stop" mode it also pauses coding
+// agents once it's reached. The words say which one the user chose.
 export function budgetView(budget, spentMicrocents = 0) {
   if (!budget || budget.daily_cents === null || budget.daily_cents === undefined) {
-    return { hasBudget: false, tone: "none", caption: "No daily budget", ariaText: "No daily budget", percent: 0, limit: null };
+    return { hasBudget: false, tone: "none", caption: "No daily budget", ariaText: "No daily budget", percent: 0, limit: null, stops: false };
   }
+  const stops = budget.mode === "stop";
+  const noun = stops ? "budget" : "alert";
   const limitMicro = budget.daily_cents * 10_000;
   const limit = money(limitMicro);
   const used = Math.max(0, Number(budget.used_percent) || 0);
   const pct = Math.round(used);
-  const caption =
-    budget.state === "over"
-      ? `${money(Math.max(0, spentMicrocents - limitMicro))} over your ${limit} alert`
-      : `${pct}% of ${limit} alert`;
+  let caption = `${pct}% of ${limit} ${noun}`;
+  if (budget.state === "over") {
+    caption = stops ? `Agents paused at ${limit}` : `${money(Math.max(0, spentMicrocents - limitMicro))} over your ${limit} alert`;
+  }
   return {
     hasBudget: true,
     tone: budget.state,
     caption,
-    ariaText: `${money(spentMicrocents)} of a ${limit} daily alert used, ${pct}%`,
+    ariaText: `${money(spentMicrocents)} of a ${limit} daily ${noun} used, ${pct}%`,
     percent: Math.min(100, used),
     limit,
+    stops,
   };
 }
 
@@ -190,4 +194,16 @@ export function engineConfig(location, injected) {
   if (injected && injected.key) return { baseUrl, key: injected.key };
   const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
   return { baseUrl, key: params.get("key") || "" };
+}
+
+// Joined a team's gateway: agents' spend is tracked there, not here.
+export function gatewayLine(gateway) {
+  if (!gateway || !gateway.url) return "";
+  let host = gateway.url;
+  try {
+    host = new URL(gateway.url).host;
+  } catch {
+    /* keep the raw value */
+  }
+  return `Your agents use your team's gateway at ${host}`;
 }

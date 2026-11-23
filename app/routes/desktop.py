@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -216,11 +217,75 @@ async def disconnect_agent(
     return _agent_out(ctx, agent_id)
 
 
+# ── team gateway ────────────────────────────────────────────────────────
+
+
+class GatewayJoin(BaseModel):
+    url: str = Field(min_length=1, max_length=512)
+    key: str = Field(min_length=1, max_length=512)
+
+
+@router.post("/gateway")
+async def join_gateway(
+    body: GatewayJoin,
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Point this computer's agents at a team's gateway with the key the team issued."""
+    from starlette.concurrency import run_in_threadpool
+
+    from packages.desktop import gateway as gw
+
+    try:
+        url = gw.normalize_url(body.url)
+        await run_in_threadpool(gw.verify, url, body.key)
+    except gw.GatewayError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    connected = []
+    for status in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which):
+        if not status.installed or status.setup != "auto":
+            continue
+        async with _agent_locks[status.id]:
+            try:
+                ag.connect_agent(status.id, home=ctx.home, state_dir=ctx.state_dir, base_url=url, api_key=body.key)
+            except (ag.AgentConfigError, OSError) as exc:
+                raise HTTPException(status_code=422, detail=f"{status.name}: {exc}") from exc
+            # The agent now uses the team's key; retire its local one.
+            await _revoke_agent_keys(db, kc.workspace_id, status.id)
+            connected.append(status.id)
+    await db.commit()
+    gw.save(ctx.state_dir.parent, url)
+    return {"gateway": {"url": url}, "connected": connected, "agents": _agent_list(ctx)}
+
+
+@router.delete("/gateway")
+async def leave_gateway(
+    _kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+) -> dict:
+    from packages.desktop import gateway as gw
+
+    for status in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which):
+        if status.connected and status.setup == "auto":
+            async with _agent_locks[status.id]:
+                try:
+                    ag.disconnect_agent(status.id, home=ctx.home, state_dir=ctx.state_dir)
+                except (ag.AgentConfigError, OSError) as exc:
+                    raise HTTPException(status_code=422, detail=f"{status.name}: {exc}") from exc
+    gw.forget(ctx.state_dir.parent)
+    return {"gateway": None, "agents": _agent_list(ctx)}
+
+
 # ── settings ────────────────────────────────────────────────────────────
 
 
 class DesktopSettings(BaseModel):
     daily_budget_cents: int | None = Field(default=None, ge=0)
+    # "alert": notify at 80% and 100%. "stop": also refuse coding agents'
+    # requests once today's spend reaches the budget.
+    budget_mode: Literal["alert", "stop"] = "alert"
 
 
 async def _workspace(db: AsyncSession, workspace_id: str) -> Workspace:
@@ -250,11 +315,18 @@ async def put_settings_route(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     ws = await _workspace(db, kc.workspace_id)
+    # Partial update: fields the caller didn't send keep their saved values.
+    current = _desktop_settings(ws).model_dump()
+    current.update(body.model_dump(exclude_unset=True))
+    updated = DesktopSettings(**current)
     merged = dict(ws.settings_json or {})
-    merged["desktop"] = body.model_dump()
+    merged["desktop"] = updated.model_dump()
     ws.settings_json = merged  # reassign so SQLAlchemy sees the JSON change
     await db.commit()
-    return body.model_dump()
+    from packages.desktop import budget as budget_gate
+
+    budget_gate.note_settings_changed()
+    return updated.model_dump()
 
 
 # ── summary ─────────────────────────────────────────────────────────────
@@ -269,15 +341,15 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _budget(daily_cents: int | None, spent_today_microcents: int) -> dict:
+def _budget(daily_cents: int | None, spent_today_microcents: int, mode: str = "alert") -> dict:
     if daily_cents is None:
-        return {"daily_cents": None, "used_percent": None, "state": "none"}
+        return {"daily_cents": None, "used_percent": None, "state": "none", "mode": mode}
     if daily_cents == 0:
         pct = 100.0 if spent_today_microcents > 0 else 0.0
     else:
         pct = round(100 * spent_today_microcents / (daily_cents * 10_000), 1)
     state = "over" if pct >= 100 else "warn" if pct >= WARN_AT_PERCENT else "ok"
-    return {"daily_cents": daily_cents, "used_percent": pct, "state": state}
+    return {"daily_cents": daily_cents, "used_percent": pct, "state": state, "mode": mode}
 
 
 def _baseline_microcents(rows, model) -> int:
@@ -318,10 +390,18 @@ async def _providers(db: AsyncSession, workspace_id: str, recent: list) -> list[
     return out
 
 
+def _gateway_info(ctx: DesktopContext) -> dict | None:
+    from packages.desktop import gateway as gw
+
+    url = gw.load(ctx.state_dir.parent)
+    return {"url": url} if url else None
+
+
 @router.get("/summary")
 async def summary(
     tz_offset_minutes: int = Query(0, ge=-14 * 60, le=14 * 60),
     kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from packages.litellm_adapter.catalog import CATALOG_BY_ID
@@ -411,8 +491,9 @@ async def summary(
             "baseline_model": BASELINE_MODEL,
             "failures_avoided": sum(1 for r in week if (r.fallback_level or 0) > 0),
         },
-        "budget": _budget(settings.daily_budget_cents, spend_today),
+        "budget": _budget(settings.daily_budget_cents, spend_today, settings.budget_mode),
         "agents": sorted(buckets.values(), key=lambda b: (b["id"] == "other", -b["week_microcents"])),
         "providers": await _providers(db, kc.workspace_id, recent),
         "hosted": {"configured": bool(get_settings().orcarouter_api_key or hosted_db)},
+        "gateway": _gateway_info(ctx),
     }

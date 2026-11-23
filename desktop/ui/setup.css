@@ -65,3 +65,6 @@ form { display: flex; flex-direction: column; gap: 14px; }
 .results li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); }
 .results li span { color: var(--ink-2); }
 .results li.bad span { color: var(--err); }
+
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.check-line input { width: 16px; height: 16px; margin: 0; accent-color: var(--brand); }

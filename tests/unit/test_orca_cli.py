@@ -261,3 +261,97 @@ def test_status_hides_zero_savings(orca_home, capsys):
     transport, _ = _transport(lambda r: httpx.Response(200, json=none))
     orca_cli.main(["status"], transport=transport)
     assert "saved" not in capsys.readouterr().out
+
+
+def test_status_says_when_the_budget_pauses_agents(orca_home, capsys):
+    _running(orca_home)
+    stop = {**SUMMARY, "budget": {**SUMMARY["budget"], "mode": "stop"}}
+    transport, _ = _transport(lambda r: httpx.Response(200, json=stop))
+    orca_cli.main(["status"], transport=transport)
+    assert "of $20.00 daily budget (pauses agents)" in capsys.readouterr().out
+
+
+# ── statusline, report, login/logout ────────────────────────────────────
+
+
+def test_statusline_is_one_compact_line(orca_home, capsys):
+    _running(orca_home)
+    transport, _ = _transport(lambda r: httpx.Response(200, json=SUMMARY))
+    assert orca_cli.main(["statusline"], transport=transport) == 0
+    assert capsys.readouterr().out == "orca $3.20 / $20.00\n"
+
+
+def test_statusline_without_budget(orca_home, capsys):
+    _running(orca_home)
+    none = {**SUMMARY, "budget": {"daily_cents": None, "used_percent": None, "state": "none", "mode": "alert"}}
+    transport, _ = _transport(lambda r: httpx.Response(200, json=none))
+    orca_cli.main(["statusline"], transport=transport)
+    assert capsys.readouterr().out == "orca $3.20 today\n"
+
+
+def test_statusline_never_breaks_the_status_bar(orca_home, capsys):
+    # Engine down: print a placeholder, exit 0, nothing on stderr.
+    assert orca_cli.main(["statusline"]) == 0
+    out = capsys.readouterr()
+    assert out.out == "orca —\n" and out.err == ""
+
+
+def test_report_markdown(orca_home, capsys):
+    _running(orca_home)
+    transport, _ = _transport(lambda r: httpx.Response(200, json=SUMMARY))
+    assert orca_cli.main(["report"], transport=transport) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Coding-agent spend")
+    assert "| Claude Code | $2.60 | $11.40 | 200 |" in out
+    assert "Saved $9.10 vs GPT-4o" in out
+
+
+def test_report_csv(orca_home, capsys):
+    _running(orca_home)
+    transport, _ = _transport(lambda r: httpx.Response(200, json=SUMMARY))
+    assert orca_cli.main(["report", "--format", "csv"], transport=transport) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[0] == "agent,today_usd,last_7_days_usd,requests_last_7_days"
+    assert lines[1] == "Claude Code,2.60,11.40,200"
+
+
+def _team_transport(status=200):
+    def handler(request):
+        if request.url.host == "gw.example.com":
+            if status != 200:
+                return httpx.Response(status, json={"error": {"message": "Invalid API key"}})
+            return httpx.Response(200, json={"data": [{"id": "auto"}]})
+        raise AssertionError(f"unexpected request {request.url}")
+
+    return httpx.MockTransport(handler)
+
+
+def test_login_points_installed_agents_at_the_team_gateway(orca_home, tmp_path, monkeypatch, capsys):
+    import json as _json
+
+    home = tmp_path / "user"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    rc = orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
+    assert rc == 0, capsys.readouterr().err
+    env = _json.loads((home / ".claude" / "settings.json").read_text())["env"]
+    assert env == {"ANTHROPIC_BASE_URL": "https://gw.example.com", "ANTHROPIC_AUTH_TOKEN": "sk-orca-team"}
+    assert "Claude Code" in capsys.readouterr().out
+
+
+def test_login_with_a_bad_key_changes_nothing(orca_home, tmp_path, monkeypatch, capsys):
+    home = tmp_path / "user"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    rc = orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-bad"], transport=_team_transport(401))
+    assert rc == 1
+    assert not (home / ".claude" / "settings.json").exists()
+
+
+def test_logout_restores_agents(orca_home, tmp_path, monkeypatch, capsys):
+    home = tmp_path / "user"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
+    assert orca_cli.main(["logout"]) == 0
+    assert not (home / ".claude" / "settings.json").exists()

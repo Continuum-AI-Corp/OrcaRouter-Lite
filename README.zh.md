@@ -1,17 +1,18 @@
 # OrcaRouter Lite
 
-**带托管安全网的自托管 LLM 路由器。**
-兼容 OpenAI。BYOK。单工作区。流式传输。`model="auto"`。
+**为每个编程 Agent 设定预算。**
+查看并限制 Claude Code、Aider、Cursor 以及你自己的应用在所有模型 provider 上的花费，
+提示词不会离开你的机器。对个人开发者，它是一个菜单栏应用；对整个团队，
+它是一个自托管路由器。MIT 许可。
 
-![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
-
-[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
-[![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
+[![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
-![OrcaRouter Lite 故障转移演示](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
-
-*`model="auto"` 实时吸收上游厂商故障 —— 无需改动任何代码。录制方式见 [DEMO.md](./DEMO.md)。*
+<p>
+  <img src="docs/screenshots/desktop-panel.png" alt="OrcaRouter Lite 菜单栏面板：今日花费与每日预算的对比、已连接的编程 Agent，以及 provider 健康状况" width="340">
+  <img src="docs/screenshots/desktop-setup.png" alt="首次运行设置：检测到的编程 Agent、请求的去向，以及每日预算" width="420">
+</p>
 
 ## 语言
 
@@ -30,11 +31,67 @@
 
 **更多产品：**[全部模型 API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
-OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源单工作区版本。在你的笔记本上运行它，把它打包进你的产品里，或者直接使用托管的 `api.orcarouter.ai` 来覆盖那些你不想自己管理密钥的长尾模型。
+OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源版本。它运行在你的电脑或服务器上，支持 OpenAI、Anthropic 和 Gemini API，并且可以把托管的 `api.orcarouter.ai` 作为安全网，用来应对故障，以及调用你没有密钥的模型。
 
-> **为什么选我们？** LiteLLM 是一个库；OpenRouter 是闭源的托管服务；Ollama 仅限本地。我们是**带托管 fallback 的自托管服务器**——这句话其他人都说不出来。
+## 桌面应用
 
-## 60 秒快速开始
+Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你的编程 Agent 接入其中，
+并显示它们的花费。
+
+- **今日花费，按 Agent 拆分。** 今日总额显示在时钟旁边；面板按 Agent 拆分明细。
+- **每日预算。** 达到你设定金额的 80% 和 100% 时发出通知。Agent 照常工作；Orca 只提醒，不拦截。
+- **一键连接。** Orca 修改 Agent 自身的设置，保留一份备份，并在你断开连接时恢复原样。
+- **永不掉线。** 当某个 provider 故障或对你限流时，请求会回退到另一个 provider 或托管的 OrcaRouter，应用会统计它挽救了多少请求。
+- **默认私密。** 提示词从你的 Agent 直接发送到你选择的 provider。没有遥测。
+
+**安装。** 安装包（`.dmg`、`.deb`、`.AppImage`、`.msi`）由
+[`desktop.yml`](./.github/workflows/desktop.yml) 构建，并从下一个打标签的版本开始附加到每个 release。
+在那之前，同样的引擎和 CLI 只需一条命令即可使用：
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect claude-code
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
+```
+
+`orca up` 会在 `http://127.0.0.1:8765/desktop/panel.html` 提供面板；如需构建
+菜单栏应用本身，请见 [`desktop/`](./desktop/README.md)。
+
+| Agent | 连接方式 |
+|---|---|
+| Claude Code | 自动：在 `~/.claude/settings.json` 中设置 `ANTHROPIC_BASE_URL` 和专用密钥 |
+| Aider | 自动：在 `~/.aider.conf.yml` 中设置 `openai-api-base`、专用密钥和 `model: openai/auto` |
+| Cursor | 粘贴一步：应用会显示用于 Cursor 模型设置的 base URL 和密钥 |
+| Codex | 即将支持：需要 OpenAI Responses API（`/v1/responses`），Lite 目前尚未提供 |
+| Gemini CLI | 即将支持 |
+
+每个已连接的 Agent 都有自己的密钥：花费正是借此按 Agent 拆分，断开连接也因此能立即撤销访问。
+应用可以触碰你电脑上的哪些内容，详见
+[SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch)。
+
+<a id="free-and-open-for-good"></a>
+## 永久免费、开放
+
+- **永久 MIT。** 一位开发者或一个团队所需的一切，都以 MIT 许可留在这个仓库里：路由、`model="auto"`、预算、仪表板、桌面应用。我们不会把任何功能从 Lite 挪到付费方案。
+- **付费面向组织。** 管理多个团队（SSO/SCIM、基于角色的访问控制、全组织范围的预算与策略、审计留存、发往 Slack 和邮件的告警）由[托管版 OrcaRouter](https://www.orcarouter.ai) 提供。
+- **可验证。** 每个 release 都经过签名，并附带来源证明（provenance）和 SBOM。详见 [SECURITY.md](./SECURITY.md)。
+
+## 对比
+
+| | 最适合 | 运行方式 |
+|---|---|---|
+| **OrcaRouter Lite** | 从个人开发者到团队，想要按 Agent 统计花费、设置预算和故障转移，又不想新增基础设施 | 桌面应用、`uvx`/`pip` 或 Docker；默认 SQLite |
+| LiteLLM proxy | 需要大量配置项和 Python SDK 的团队 | 自托管服务器；花费追踪需要 Postgres |
+| OpenRouter | 一个 API 密钥使用多种模型，由他们计费 | 仅托管；提示词会经过他们的服务 |
+| Claude Code 自带的网关支持 | 只使用 Claude 的公司 | 把 Claude Code 指向你自己运行的网关；仅限 Claude 模型 |
+
+## 作为服务器运行（60 秒）
 
 使用 OrcaRouter 的两种方式：
 
@@ -119,21 +176,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 打开 `http://localhost:8000/` 进入仪表板 —— providers、路由、分析、密钥（仅路径 A）。
 
-## 为什么？
-
-| | OrcaRouter Lite | LiteLLM 库 | OpenRouter | Ollama |
-|---|---|---|---|---|
-| 自托管服务器 | ✓ | 作为库 | ✗ | ✓ |
-| 兼容 OpenAI | ✓ | ✓ | ✓ | ✓ |
-| 多 provider（OpenAI/Anthropic/Google/…）| ✓ | ✓ | ✓ | ✗ |
-| 内置仪表板 | ✓ | ✗ | ✓ | ✗ |
-| `model="auto"`（最便宜的合适模型）| ✓ | ✗ | ✗ | n/a |
-| 流式传输 | ✓ | ✓ | ✓ | ✓ |
-| BYOK | ✓ | ✓ | ✗ | n/a |
-| 托管作为 fallback | ✓ | ✗ | n/a | ✗ |
-| 不需要 Postgres / 不需要 Redis | ✓ | n/a | n/a | ✓ |
-
-## `model="auto"` —— 招牌特性
+## `model="auto"`
 
 发送 `model="auto"`，OrcaRouter 会在你已配置的 providers 中挑选**最便宜**且能满足请求能力要求（tools、vision、JSON 模式）的模型。无需手写路由规则；无需折腾速率限制；代码里也无需 `if x: ...` 的成本优化。
 
@@ -212,12 +255,12 @@ client.models.generate_content(model="auto", contents="Hello!")
 
 ## 部署到其他平台
 
-| 平台 | 一键部署 |
+| 平台 | 方式 |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
+| Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>`（从下一个打标签的 release 开始发布；可用 [SECURITY.md](./SECURITY.md) 中的命令校验）|
 | Fly.io | `fly launch --dockerfile Dockerfile` |
 | Render | 连接代码仓库，根目录 = `.` |
-| 裸 Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...`（镜像即将发布）|
+| Railway | 模板即将推出（在 #181 中跟踪）|
 
 ## 盒子里都有什么
 
@@ -230,6 +273,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` —— 本地分析数据，没有任何遥测离开容器
 - `GET  /v1/hosted` —— 托管 fallback 状态（驱动仪表板上的 "Get $5 free credit" 卡片）
 - `GET/POST/DELETE /v1/keys/...` —— 列出 / 轮换 / 撤销 API 密钥
+- `/v1/app/*` —— 供桌面应用使用的 Agent、花费汇总和预算（仅在通过 `orca up` 启动时提供；见 [SECURITY.md](./SECURITY.md)）
 - 单页仪表板挂在 `/`
 - 默认 SQLite；可通过 `DATABASE_URL` 切换 Postgres；Redis 可选
 
@@ -265,44 +309,18 @@ x-orca-cache: HIT          ← 来自缓存，无上游调用
 - 多 pod 部署 / Kubernetes
 - 用于告警的邮件 / Slack / webhook
 
-如需这些，请看托管产品或（即将推出的）Teams 版本。
+这些属于组织级功能，由[托管版 OrcaRouter](https://www.orcarouter.ai) 提供；见[永久免费、开放](#free-and-open-for-good)。
 
 ## 测试
 
-测试先行构建。这里发布的每一个行为都先有一个失败的测试。
+测试先行构建：这里发布的每一个行为都先有一个失败的测试。
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest -v
-# 403 passed
+PYTHONPATH=. pytest                          # router, protocols, desktop API, CLI, supply-chain checks
+cd desktop && npm test                       # desktop view logic (node --test)
+cd desktop/src-tauri && cargo test --lib     # menu-bar title and notification rules
 ```
-
-| 切片 | 测试数 | 内容 |
-|---|---|---|
-| 1. 配置 | 5 | env 加载、默认值、`env_provider_keys()` |
-| 2. Seed | 3 | 引导工作区 + API 密钥 + RoutingConfig，幂等 |
-| 3. 鉴权中间件 | 4 | bearer-token 校验，缺失/无效返回 401 |
-| 4. 应用工厂 | 3 | /health、错误信封、/v1/* 网关 |
-| 5. Provider 密钥 CRUD | 5 | 静态加密，明文不会往返 |
-| 6. 路由器缓存 | 13 | env+DB+托管 deployment 装配，按优先级 |
-| 7. 聊天补全 | 5 | OpenAI 格式、RequestLog、校验 |
-| 8. 分析 | 4 | recent / spend / latency p50/p99 |
-| 9. /v1/{models,keys,routing} | 8 | 列出/创建/撤销 + 策略更新 |
-| 10. 流式传输 | 4 | SSE 格式、`[DONE]` 标记、日志回写 |
-| 11. 目录 | 7 | 100+ 模型、能力标志、定价 |
-| 12. `model="auto"` | 21 | 能力检测、最便宜且满足需求（单元 + 集成）|
-| 13. 成本节省 | 9 | 节省 vs 永远 GPT-4 基线 + 托管自动对比 |
-| 14. 提示缓存 | 15 | 跨 provider 精确匹配缓存 + 聊天集成 |
-| 15. 基准测试 | 4 | summarize() + render_markdown() 聚合 |
-| 16. 托管状态 | 7 | `/v1/hosted` 配置来源 + 注册 URL |
-| 17. 托管自动节省 | 3 | 合成目录上的 `_hosted_auto_savings` 边界用例 |
-| 18. 不可达模型 | 7 | 当托管开启时，「你够不到的模型」磁贴会清空 |
-| 19. 多协议鉴权 | 6 | x-api-key / x-goog-api-key / ?key= 作用域、/v1beta 守卫、按协议的 401 信封 |
-| 20. Anthropic `/v1/messages` | 53 | 请求/响应/流的转换 + 入口集成 |
-| 21. Gemini `/v1beta` | 40 | 转换（含 schema-enum 归一化）+ generateContent/流式入口 |
-| **合计** | **403** | |
-
-切片行显示的是各切片交付时新增的测试；合计是当前的完整测试套件。
 
 ## 架构
 
@@ -327,7 +345,13 @@ app/
     ├── hosted.py       /v1/hosted — hosted-fallback status for the dashboard
     └── health.py
 
+desktop/
+├── ui/                 Menu-bar panel + setup pages (served by the engine at /desktop/)
+├── src-tauri/          Native shell: tray title, notifications, starts the engine
+└── engine/             PyInstaller build of the bundled `orca-engine`
+
 packages/
+├── desktop/            Agent connectors (backup/restore) + desktop home folder
 ├── litellm_adapter/    Router wrapper + 100+ model catalog
 ├── auth/               hashing + AES-256-GCM
 └── db/                 models + engine + session
@@ -335,20 +359,20 @@ packages/
 
 ## 路线图
 
-- [x] 兼容 OpenAI 的聊天补全
-- [x] 流式传输 (SSE)
-- [x] `model="auto"` 最便宜且合适的路由
-- [x] 托管作为上游
-- [x] 静态加密的 BYOK
-- [x] 本地分析仪表板
-- [x] CI（GitHub Actions）
+- [x] 兼容 OpenAI 的聊天补全、流式传输、`model="auto"`
+- [x] Anthropic 和 Gemini 原生端点
+- [x] 托管作为上游 fallback、静态加密的 BYOK、本地仪表板
 - [x] 跨 provider 提示缓存
-- [x] Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK 集成
-- [x] 公开基准 + 节省说明
-- [ ] Embeddings + 图像生成代理
+- [x] 桌面应用：菜单栏显示花费、每日预算告警、一键连接 Agent
+- [x] 带来源证明和 SBOM 的签名 release；哈希锁定的依赖
+- [ ] `/v1/responses`，让 Codex 可以接入
+- [ ] 按开发者的硬性预算上限（目前已提供告警）
+- [ ] `orca login`：从应用加入团队的网关
+- [ ] Embeddings、Ollama/vLLM provider、自定义 fallback 链
 
 故障转移演示请见 [DEMO.md](./DEMO.md)。
 
+<a id="license"></a>
 ## 许可证
 
 MIT。详见 [LICENSE](./LICENSE)。

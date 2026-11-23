@@ -18,7 +18,9 @@ body { background: var(--surface); }
 
 .budget-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 2px; }
 .budget-form label, .budget-form .per { font-size: 12px; color: var(--ink-2); }
-.budget-form .fine { flex-basis: 100%; }
+.budget-form .fine, .budget-form .check-line { flex-basis: 100%; }
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink); }
+.check-line input { width: 15px; height: 15px; margin: 0; accent-color: var(--brand); }
 .money-input { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); padding: 0 8px; height: 30px; }
 .money-input span { color: var(--ink-3); }
 .money-input input { border: 0; outline: 0; background: transparent; color: var(--ink); width: 64px; font: inherit; font-variant-numeric: tabular-nums; padding-left: 4px; }
@@ -64,3 +66,4 @@ body { background: var(--surface); }
 .offline h1 { font-size: 15px; font-weight: 600; }
 .offline p { color: var(--ink-2); max-width: 260px; }
 .offline-actions { display: flex; gap: 14px; align-items: center; }
+.gateway { font-size: 12px; color: var(--ink-2); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }

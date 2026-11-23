@@ -353,7 +353,7 @@ async def test_summary_without_budget(desktop_app, seeded):
     root, _ = seeded
     async with _client(desktop_app) as c:
         r = await c.get("/v1/app/summary", headers=_auth(root))
-    assert r.json()["budget"] == {"daily_cents": None, "used_percent": None, "state": "none"}
+    assert r.json()["budget"] == {"daily_cents": None, "used_percent": None, "state": "none", "mode": "alert"}
 
 
 async def test_summary_counts_failures_avoided_and_savings(desktop_app, seeded, db_session):
@@ -538,3 +538,58 @@ async def test_identity_proves_the_engine_holds_the_instance_secret(monkeypatch,
     assert r.status_code == 200
     expected = hmac.new(b"s3cret", b"abc123abc123abc123abc123", hashlib.sha256).hexdigest()
     assert r.json()["proof"] == expected
+
+
+# ── team gateway ────────────────────────────────────────────────────────
+
+
+async def test_join_gateway_points_agents_at_it(desktop_app, seeded, desktop_dirs, monkeypatch):
+    from packages.desktop import gateway as gw
+
+    root, _ = seeded
+    home, _ = desktop_dirs
+    checked = []
+    monkeypatch.setattr(gw, "verify", lambda url, key, **kw: checked.append((url, key)))
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/gateway", headers=_auth(root),
+                         json={"url": "https://gw.example.com/", "key": "sk-orca-team"})
+        summary = (await c.get("/v1/app/summary", headers=_auth(root))).json()
+    assert r.status_code == 200, r.text
+    assert checked == [("https://gw.example.com", "sk-orca-team")]
+    env = json.loads((home / ".claude" / "settings.json").read_text())["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "https://gw.example.com"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-orca-team"
+    assert summary["gateway"] == {"url": "https://gw.example.com"}
+    assert "sk-orca-team" not in r.text  # the team key is never echoed back
+
+
+async def test_join_gateway_with_a_bad_key_changes_nothing(desktop_app, seeded, desktop_dirs, monkeypatch):
+    from packages.desktop import gateway as gw
+
+    root, _ = seeded
+    home, _ = desktop_dirs
+
+    def bad(url, key, **kw):
+        raise gw.GatewayError("The gateway didn't accept that key.")
+
+    monkeypatch.setattr(gw, "verify", bad)
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/gateway", headers=_auth(root), json={"url": "https://gw.example.com", "key": "x"})
+    assert r.status_code == 422
+    assert "didn't accept" in r.text
+    assert not (home / ".claude" / "settings.json").exists()
+
+
+async def test_leave_gateway_restores_agents(desktop_app, seeded, desktop_dirs, monkeypatch):
+    from packages.desktop import gateway as gw
+
+    root, _ = seeded
+    home, _ = desktop_dirs
+    monkeypatch.setattr(gw, "verify", lambda url, key, **kw: None)
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/gateway", headers=_auth(root), json={"url": "https://gw.example.com", "key": "k"})
+        r = await c.delete("/v1/app/gateway", headers=_auth(root))
+        summary = (await c.get("/v1/app/summary", headers=_auth(root))).json()
+    assert r.status_code == 200
+    assert not (home / ".claude" / "settings.json").exists()
+    assert summary["gateway"] is None

@@ -108,3 +108,7 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B"]
 ignore = ["E501", "B008", "E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# Reuses the desktop API fixtures by importing them; pytest needs the names.
+"tests/integration/test_desktop_budget_stop.py" = ["F811"]

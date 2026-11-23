@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   AGENT_COLORS,
+  gatewayLine,
   agentRows,
   budgetView,
   classifyError,
@@ -178,4 +179,20 @@ test("engineConfig falls back to the URL fragment in a browser", () => {
   const cfg = engineConfig({ origin: "http://127.0.0.1:8765", hash: "#key=sk-orca-abc" }, undefined);
   assert.deepEqual(cfg, { baseUrl: "http://127.0.0.1:8765", key: "sk-orca-abc" });
   assert.equal(engineConfig({ origin: "http://127.0.0.1:8765", hash: "" }, undefined).key, "");
+});
+
+test("budgetView in stop mode talks about a budget that pauses agents", () => {
+  const ok = budgetView({ daily_cents: 2000, used_percent: 16, state: "ok", mode: "stop" }, 3_200_000);
+  assert.equal(ok.caption, "16% of $20.00 budget");
+  assert.equal(ok.ariaText, "$3.20 of a $20.00 daily budget used, 16%");
+  assert.equal(ok.stops, true);
+  const over = budgetView({ daily_cents: 2000, used_percent: 100, state: "over", mode: "stop" }, 20_000_000);
+  assert.equal(over.caption, "Agents paused at $20.00");
+  const alert = budgetView({ daily_cents: 2000, used_percent: 16, state: "ok", mode: "alert" }, 3_200_000);
+  assert.equal(alert.stops, false);
+});
+
+test("gatewayLine names the team gateway by host", () => {
+  assert.equal(gatewayLine({ url: "https://ai-gw.example.com" }), "Your agents use your team's gateway at ai-gw.example.com");
+  assert.equal(gatewayLine(null), "");
 });

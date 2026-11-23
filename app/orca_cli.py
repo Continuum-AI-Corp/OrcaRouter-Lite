@@ -23,6 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import TextIO
 
 import httpx
@@ -98,6 +99,13 @@ def _parser() -> argparse.ArgumentParser:
     d.add_argument("agent")
     s = sub.add_parser("status", help="spend today and this week")
     s.add_argument("--json", action="store_true")
+    sub.add_parser("statusline", help="one short line for Claude Code's status bar")
+    r = sub.add_parser("report", help="spend by agent, as Markdown or CSV")
+    r.add_argument("--format", choices=["md", "csv"], default="md")
+    lg = sub.add_parser("login", help="point your agents at your team's gateway")
+    lg.add_argument("url", help="the gateway's address, e.g. https://ai-gw.example.com")
+    lg.add_argument("--key", required=True, help="the key your platform team gave you")
+    sub.add_parser("logout", help="restore your agents' settings after `orca login`")
     return p
 
 
@@ -131,7 +139,13 @@ def _verify_identity(client: httpx.Client, secret: str) -> bool:
     return hmac.compare_digest(proof, expected)
 
 
-def _request(method: str, path: str, *, transport, params=None) -> dict | None:
+def _request(method: str, path: str, *, transport, params=None, quiet: bool = False) -> dict | None:
+    if quiet:
+        import contextlib
+        import io
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            return _request(method, path, transport=transport, params=params)
     home = dh.default_home()
     try:
         info = dh.read_engine_info(home)
@@ -171,7 +185,8 @@ def _print_status(s: dict) -> None:
     budget = s.get("budget") or {}
     line = f"Today        {money(s['today']['spend_microcents'])}"
     if budget.get("daily_cents") is not None:
-        line += f" of {money(budget['daily_cents'] * 10_000)} daily alert ({budget['used_percent']:.0f}%)"
+        kind = "daily budget (pauses agents)" if budget.get("mode") == "stop" else "daily alert"
+        line += f" of {money(budget['daily_cents'] * 10_000)} {kind} ({budget['used_percent']:.0f}%)"
     print(line)
     week = s["week"]
     line = f"Last 7 days  {money(week['spend_microcents'])}"
@@ -189,6 +204,98 @@ def _print_status(s: dict) -> None:
         print(f"{'Agent'.ljust(width)}  {'Today':>10}  {'7 days':>10}")
         for a in agents:
             print(f"{a['name'].ljust(width)}  {money(a['today_microcents']):>10}  {money(a['week_microcents']):>10}")
+
+
+def _report(s: dict, fmt: str) -> str:
+    agents = s.get("agents") or []
+    if fmt == "csv":
+        rows = ["agent,today_usd,last_7_days_usd,requests_last_7_days"]
+        for a in agents:
+            name = a["name"].replace(",", " ")
+            rows.append(f"{name},{money(a['today_microcents'])[1:].replace(',', '')},"
+                        f"{money(a['week_microcents'])[1:].replace(',', '')},{a.get('requests_week', 0)}")
+        return "\n".join(rows) + "\n"
+    week = s["week"]
+    lines = [
+        "# Coding-agent spend",
+        "",
+        f"Today: {money(s['today']['spend_microcents'])} · Last 7 days: {money(week['spend_microcents'])}",
+    ]
+    if week.get("saved_microcents", 0) > 0:
+        vs = MODEL_NAMES.get(week["baseline_model"], week["baseline_model"])
+        lines.append(f"Saved {money(week['saved_microcents'])} vs {vs} by routing simple calls to cheaper models.")
+    n = week.get("failures_avoided") or 0
+    if n:
+        lines.append(f"{n} failed {'request was' if n == 1 else 'requests were'} retried on another provider.")
+    lines += ["", "| Agent | Today | Last 7 days | Requests (7 days) |", "|---|---:|---:|---:|"]
+    for a in agents:
+        lines.append(f"| {a['name']} | {money(a['today_microcents'])} | {money(a['week_microcents'])} | "
+                     f"{a.get('requests_week', 0)} |")
+    lines += ["", "_From OrcaRouter Lite (`orca report`)._"]
+    return "\n".join(lines) + "\n"
+
+
+def _statusline(s: dict) -> str:
+    today = money(s["today"]["spend_microcents"])
+    b = s.get("budget") or {}
+    if b.get("daily_cents") is None:
+        return f"orca {today} today"
+    line = f"orca {today} / {money(b['daily_cents'] * 10_000)}"
+    if b.get("state") == "over" and b.get("mode") == "stop":
+        line += " · agents paused"
+    return line
+
+
+def _login(url: str, key: str, transport) -> int:
+    from packages.desktop import agents as ag
+    from packages.desktop import gateway as gw
+
+    try:
+        base = gw.normalize_url(url)
+        gw.verify(base, key, transport=transport)
+    except gw.GatewayError as exc:
+        _err(str(exc))
+        return 1
+    home = dh.default_home()
+    state_dir = home / "agents"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    connected = []
+    for status in ag.detect_agents(home=Path.home(), state_dir=state_dir):
+        if not status.installed or status.setup != "auto":
+            continue
+        try:
+            ag.connect_agent(status.id, home=Path.home(), state_dir=state_dir, base_url=base, api_key=key)
+            connected.append(status.name)
+        except ag.AgentError as exc:
+            _err(f"{status.name}: {exc}")
+    gw.save(home, base)
+    if connected:
+        print(f"Connected to {base}: {', '.join(connected)}. Restart open sessions to use it.")
+    else:
+        print(f"Signed in to {base}, but found no agent Orca can set up automatically.")
+    return 0
+
+
+def _logout() -> int:
+    from packages.desktop import agents as ag
+    from packages.desktop import gateway as gw
+
+    home = dh.default_home()
+    base = gw.load(home)
+    state_dir = home / "agents"
+    restored = []
+    for status in ag.detect_agents(home=Path.home(), state_dir=state_dir):
+        if status.connected and status.setup == "auto":
+            try:
+                ag.disconnect_agent(status.id, home=Path.home(), state_dir=state_dir)
+                restored.append(status.name)
+            except ag.AgentError as exc:
+                _err(f"{status.name}: {exc}")
+                return 1
+    gw.forget(home)
+    where = f" from {base}" if base else ""
+    print(f"Signed out{where}. Restored: {', '.join(restored) or 'nothing to restore'}.")
+    return 0
 
 
 def main(
@@ -254,6 +361,27 @@ def main(
             return 1
         print(f"{body['name']} disconnected; its original settings are restored.")
         return 0
+
+    if args.cmd == "statusline":
+        # Runs in Claude Code's status bar: never print errors, never fail.
+        body = _request("GET", "/v1/app/summary", transport=transport, quiet=True,
+                        params={"tz_offset_minutes": _tz_offset_minutes()})
+        print(_statusline(body) if body else "orca —")
+        return 0
+
+    if args.cmd == "report":
+        body = _request("GET", "/v1/app/summary", transport=transport,
+                        params={"tz_offset_minutes": _tz_offset_minutes()})
+        if body is None:
+            return 1
+        sys.stdout.write(_report(body, args.format))
+        return 0
+
+    if args.cmd == "login":
+        return _login(args.url, args.key, transport)
+
+    if args.cmd == "logout":
+        return _logout()
 
     if args.cmd == "status":
         body = _request("GET", "/v1/app/summary", transport=transport,

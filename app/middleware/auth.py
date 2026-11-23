@@ -52,6 +52,23 @@ AGENT_ALLOWED_PREFIXES: tuple[str, ...] = (
 )
 
 
+async def _desktop_budget_stop(path: str, key_context) -> str | None:
+    """Desktop mode with budget_mode "stop": refuse agents past today's budget."""
+    from app.config import get_settings
+
+    if not get_settings().orca_desktop_mode:
+        return None
+    from packages.desktop import budget
+
+    if not budget.is_generation(path):
+        return None
+    try:
+        async with session_mod._session_factory() as session:
+            return await budget.stop_reason(session, key_context.workspace_id)
+    except Exception:
+        return None  # never block traffic because the check itself failed
+
+
 def _is_public(path: str) -> bool:
     if path in SKIP_AUTH_PATHS:
         return True
@@ -266,6 +283,11 @@ class AuthMiddleware:
                 send, scope, 403, "This key belongs to a coding agent and can only call models.", "forbidden"
             )
             return
+        if key_context.name.startswith(AGENT_KEY_PREFIX):
+            reason = await _desktop_budget_stop(path, key_context)
+            if reason:
+                await _send_error(send, scope, 429, reason, "budget_exceeded")
+                return
         scope.setdefault("state", {})["key_context"] = key_context
         scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
 
