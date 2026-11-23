@@ -1,7 +1,7 @@
 # OrcaRouter Lite
 
 **Put a budget on every coding agent.**
-See and cap what Claude Code, Aider, Cursor and your own apps spend, across every
+See and cap what Claude Code, Codex, Gemini CLI, OpenCode and your own apps spend, across every
 model provider, without your prompts leaving your machine. A menu-bar app for one
 developer, and a self-hosted router for a whole team. MIT licensed.
 
@@ -76,10 +76,13 @@ Today's spend in Claude Code's status bar: add this to `~/.claude/settings.json`
 | Agent | How it connects |
 |---|---|
 | Claude Code | Automatic: sets `ANTHROPIC_BASE_URL` and a dedicated key in `~/.claude/settings.json` |
+| Codex | Automatic: adds an `orca` provider (Responses API) to `~/.codex/config.toml` and selects it with `model = "auto"` |
+| Gemini CLI | Automatic: sets `GOOGLE_GEMINI_BASE_URL` and a dedicated key in `~/.gemini/.env`, and Gemini CLI's gateway sign-in in `~/.gemini/settings.json` |
+| OpenCode | Automatic: adds an `orca` provider to `~/.config/opencode/opencode.json` and selects `orca/auto`; the key stays in a private file OpenCode reads |
+| Command Code | Automatic: adds an `orca` provider to `~/.commandcode/providers.json` whose key comes from a private file (Command Code refuses raw keys there) |
+| Cline | One paste step: choose API Provider → OpenAI Compatible in Cline and paste the base URL and key the app shows |
 | Aider | Automatic: sets `openai-api-base`, a dedicated key and `model: openai/auto` in `~/.aider.conf.yml` |
 | Cursor | One paste step: the app shows a base URL and key for Cursor's model settings |
-| Codex | Coming: needs the OpenAI Responses API (`/v1/responses`), which Lite doesn't serve yet |
-| Gemini CLI | Coming |
 
 Each connected agent gets its own key: that is how spend is split per agent, and why
 disconnecting revokes access at once. What the app may touch on your computer is spelled
@@ -281,6 +284,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 
 - `POST /v1/chat/completions` — proxy + streaming + `model="auto"` + cross-provider prompt cache
 - `POST /v1/messages` — **Anthropic Messages API ingress** (Claude Code / Anthropic SDKs connect directly; `+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI Responses API ingress** (Codex and Responses SDK clients; streaming, function and custom tools)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API ingress** (google-genai SDK connects directly; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — discoverable model catalog (100+ models from `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys (`decryptable` flags rows that no longer open after a `CREDENTIAL_ENCRYPTION_KEY` rotation)
@@ -403,7 +407,8 @@ packages/
 - [x] Signed releases with provenance and SBOM; hash-locked dependencies
 - [x] Daily budget that alerts, or pauses coding agents at the limit
 - [x] `orca login` / "Join my company's gateway": use a team's gateway from the app
-- [ ] `/v1/responses` so Codex can connect
+- [x] `/v1/responses`, so Codex connects; Gemini CLI, OpenCode, Command Code and Cline too
+- [x] Encryption key in the OS keychain; one update check a day
 - [ ] Per-developer budgets enforced on a shared team gateway
 - [ ] Embeddings, Ollama/vLLM providers, custom fallback chains
 
