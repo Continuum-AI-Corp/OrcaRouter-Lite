@@ -47,6 +47,7 @@ AGENT_KEY_PREFIX = "agent:"
 AGENT_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/v1/chat/completions",
     "/v1/messages",
+    "/v1/responses",
     "/v1/models",
     "/v1beta/",
 )

@@ -285,6 +285,7 @@ def create_app() -> FastAPI:
         models,
         providers,
         quality,
+        responses_compat,
         routing,
     )
 
@@ -293,6 +294,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(anthropic_compat.router)
     app.include_router(gemini_compat.router)
+    app.include_router(responses_compat.router)
     app.include_router(analytics.router)
     app.include_router(models.router)
     app.include_router(keys.router)

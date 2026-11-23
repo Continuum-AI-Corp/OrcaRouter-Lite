@@ -27,7 +27,7 @@ def reset_cache() -> None:
 
 
 def is_generation(path: str) -> bool:
-    if path.startswith("/v1/chat/completions"):
+    if path.startswith(("/v1/chat/completions", "/v1/responses")):
         return True
     if path.startswith("/v1/messages"):
         return not path.startswith("/v1/messages/count_tokens")

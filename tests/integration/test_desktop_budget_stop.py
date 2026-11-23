@@ -38,6 +38,10 @@ def app_with_models(desktop_app, monkeypatch):
     async def _chat():
         return {"ok": True}
 
+    @stub.post("/v1/responses")
+    async def _responses():
+        return {"ok": True}
+
     @stub.post("/v1/messages/count_tokens")
     async def _count():
         return {"input_tokens": 1}
@@ -129,6 +133,19 @@ async def test_stop_mode_leaves_non_generation_calls_and_other_keys_alone(app_wi
     assert models.status_code == 200
     assert count.status_code == 200
     assert script.status_code == 200
+
+
+async def test_agent_keys_may_call_the_responses_api(app_with_models, seeded, desktop_dirs):
+    """Codex speaks only the Responses API: an agent key must reach
+    /v1/responses (it is a model endpoint) while the app API stays closed."""
+    root, _ = seeded
+    home, _ = desktop_dirs
+    async with _client(app_with_models) as c:
+        agent = await _agent_key(c, root, home)
+        r = await c.post("/v1/responses", headers=_auth(agent), json={})
+        app_api = await c.get("/v1/app/summary", headers=_auth(agent))
+    assert r.status_code == 200
+    assert app_api.status_code == 403
 
 
 async def test_summary_reports_the_budget_mode(app_with_models, seeded):
