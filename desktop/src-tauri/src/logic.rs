@@ -63,6 +63,17 @@ pub fn verify_proof(secret: &str, challenge: &str, proof: &str) -> bool {
     mac.verify_slice(&expected).is_ok() // constant-time comparison
 }
 
+/// Native commands are only for the app's own pages: the engine's origin,
+/// under /desktop/. (Tauri matches remote capabilities by origin only.)
+pub fn is_app_page(url: &str, base_url: &str) -> bool {
+    let prefix = format!("{}/desktop/", base_url.trim_end_matches('/'));
+    let Some(rest) = url.strip_prefix(&prefix) else {
+        return false;
+    };
+    let path = rest.split(['#', '?']).next().unwrap_or("");
+    !path.split('/').any(|seg| seg == ".." || seg.eq_ignore_ascii_case("%2e%2e"))
+}
+
 pub fn tray_title(s: &Snapshot) -> String {
     money(s.today_microcents)
 }
@@ -199,6 +210,19 @@ mod tests {
         assert!(!verify_proof("s3cret", "abc123abc123abc123abc123", good));
         assert!(!verify_proof("wrong", "abc123abc123abc123abc123", &real));
         assert!(!verify_proof("s3cret", "abc123abc123abc123abc123", ""));
+    }
+
+    #[test]
+    fn only_the_apps_own_pages_may_call_native_commands() {
+        let base = "http://127.0.0.1:8765";
+        assert!(is_app_page("http://127.0.0.1:8765/desktop/panel.html", base));
+        assert!(is_app_page("http://127.0.0.1:8765/desktop/setup.html#key=x", base));
+        assert!(!is_app_page("http://127.0.0.1:8765/", base));
+        assert!(!is_app_page("http://127.0.0.1:8765/static/app.js", base));
+        assert!(!is_app_page("http://127.0.0.1:8765/desktopx/panel.html", base));
+        assert!(!is_app_page("http://127.0.0.1:87650/desktop/panel.html", base));
+        assert!(!is_app_page("http://evil.example/desktop/panel.html", base));
+        assert!(!is_app_page("http://127.0.0.1:8765/desktop/../docs", base));
     }
 
     #[test]

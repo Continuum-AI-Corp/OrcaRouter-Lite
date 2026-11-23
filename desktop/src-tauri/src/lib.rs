@@ -14,7 +14,7 @@ use engine::Engine;
 use tauri::ipc::CapabilityBuilder;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -94,7 +94,9 @@ fn show_panel(app: &AppHandle) {
             let built = engine_window(app, "panel", &eng, "/desktop/panel.html", key_script(&eng)).and_then(|b| {
                 b.title("OrcaRouter Lite")
                     .inner_size(360.0, 640.0)
-                    .resizable(false)
+                    // Resizable so GTK honours set_size from resize_panel;
+                    // without decorations there is no handle to drag.
+                    .resizable(true)
                     .decorations(false)
                     .always_on_top(true)
                     .skip_taskbar(true)
@@ -149,8 +151,20 @@ fn open_window(app: &AppHandle, label: &str, path: &str, title: &str, size: (f64
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn open_dashboard(app: AppHandle) -> Result<(), String> {
+/// Every native command checks its caller: only the app's own pages under
+/// /desktop/ on the engine's origin (Tauri's remote capability is per origin).
+fn guard(window: &WebviewWindow) -> Result<(), String> {
+    let state = window.app_handle().state::<AppState>();
+    let eng = engine(&state)?;
+    let url = window.url().map_err(|e| e.to_string())?;
+    if logic::is_app_page(url.as_str(), &eng.base_url) {
+        Ok(())
+    } else {
+        Err("Not allowed from this page.".into())
+    }
+}
+
+fn dashboard_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let eng = engine(&state)?;
     // The dashboard reads its key from localStorage on the same origin.
@@ -159,48 +173,67 @@ fn open_dashboard(app: AppHandle) -> Result<(), String> {
         o = serde_json::to_string(&eng.base_url).unwrap(),
         k = serde_json::to_string(&eng.key()).unwrap(),
     );
-    open_window(&app, "dashboard", "/", "OrcaRouter Lite", (1200.0, 820.0), &seed)
+    open_window(app, "dashboard", "/", "OrcaRouter Lite", (1200.0, 820.0), &seed)
 }
 
-#[tauri::command]
-fn open_setup(app: AppHandle) -> Result<(), String> {
+fn setup_window(app: &AppHandle) -> Result<(), String> {
     if let Some(p) = app.get_webview_window("panel") {
         let _ = p.hide();
     }
-    open_window(&app, "setup", "/desktop/setup.html", "Set up OrcaRouter Lite", (600.0, 860.0), "")
+    open_window(app, "setup", "/desktop/setup.html", "Set up OrcaRouter Lite", (600.0, 860.0), "")
 }
 
 #[tauri::command]
-fn close_setup(app: AppHandle) {
-    if let Some(w) = app.get_webview_window("setup") {
+fn open_dashboard(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    dashboard_window(window.app_handle())
+}
+
+#[tauri::command]
+fn open_setup(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    setup_window(window.app_handle())
+}
+
+#[tauri::command]
+fn close_setup(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    if let Some(w) = window.app_handle().get_webview_window("setup") {
         let _ = w.close();
     }
+    Ok(())
 }
 
 #[tauri::command]
-fn finish_setup(state: State<'_, AppState>) -> Result<(), String> {
+fn finish_setup(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    let state = window.app_handle().state::<AppState>();
     let eng = engine(&state)?;
     std::fs::write(eng.home.join("setup.json"), b"{\"done\": true}\n").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
+    guard(&window)?;
     if !url.starts_with("https://") {
         return Err("Only https links can be opened.".into());
     }
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    window.app_handle().opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn quit_app(app: AppHandle) {
-    app.exit(0);
+fn quit_app(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    window.app_handle().exit(0);
+    Ok(())
 }
 
 /// The panel reports its content height so the window has no dead space.
 #[tauri::command]
-fn resize_panel(app: AppHandle, height: f64) -> Result<(), String> {
+fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
+    guard(&window)?;
     let h = height.clamp(360.0, 680.0);
-    if let Some(w) = app.get_webview_window("panel") {
+    if let Some(w) = window.app_handle().get_webview_window("panel") {
         w.set_size(tauri::LogicalSize::new(360.0, h)).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -215,7 +248,7 @@ fn start_engine(app: AppHandle) {
                 // Let only the engine's own pages call the commands above.
                 // Only the app's own pages, never the dashboard or other paths.
                 let cap = CapabilityBuilder::new("engine-pages")
-                    .remote(format!("{}/desktop/*", eng.base_url))
+                    .remote(format!("{}/*", eng.base_url))
                     .windows(["panel", "setup"])
                     .permission("allow-open-dashboard")
                     .permission("allow-open-setup")
@@ -235,7 +268,7 @@ fn start_engine(app: AppHandle) {
                 let h = app.clone();
                 if first_run {
                     let _ = app.run_on_main_thread(move || {
-                        let _ = open_setup(h);
+                        let _ = setup_window(&h);
                     });
                 } else if launched_by_user {
                     let _ = app.run_on_main_thread(move || show_panel(&h));
@@ -339,10 +372,10 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_panel(app),
                     "dashboard" => {
-                        let _ = open_dashboard(app.clone());
+                        let _ = dashboard_window(app);
                     }
                     "setup" => {
-                        let _ = open_setup(app.clone());
+                        let _ = setup_window(app);
                     }
                     "quit" => app.exit(0),
                     _ => {}
