@@ -208,10 +208,16 @@ test("gatewayLine names the team gateway by host", () => {
 
 test("updateLine offers a newer release and its page", () => {
   const url = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/tag/v0.3.0";
-  assert.deepEqual(updateLine({ version: "0.3.0", url }), { text: "OrcaRouter Lite 0.3.0 is available", url });
+  assert.deepEqual(updateLine({ version: "0.3.0", url }), { text: "OrcaRouter Lite 0.3.0 is available", url, action: "Download" });
   assert.equal(updateLine(null), null);
   assert.equal(updateLine({ version: "0.3.0" }), null);
   // Only this repository's release pages are ever opened.
   assert.equal(updateLine({ version: "0.3.0", url: "https://evil.example/OrcaRouter-Lite.dmg" }), null);
   assert.equal(updateLine({ version: "0.3.0", url: "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite.evil/releases/x" }), null);
+});
+
+test("updateLine installs in place when this build can update itself", () => {
+  const url = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/tag/v0.3.0";
+  assert.equal(updateLine({ version: "0.3.0", url }).action, "Download");
+  assert.equal(updateLine({ version: "0.3.0", url }, { canInstall: true }).action, "Install and restart");
 });

@@ -31,6 +31,7 @@ let lastAgents = null;
 let confirming = null; // { id, armedAt }
 let confirmTimer = null;
 let lastAnnounced = "";
+let canInstallUpdates = false; // set once at startup from the native shell
 
 function announce(text) {
   if (text && text !== lastAnnounced) {
@@ -87,10 +88,11 @@ function renderToday(s) {
   const gw = gatewayLine(s.gateway);
   $("gateway").hidden = !gw;
   $("gateway-text").textContent = gw;
-  const upd = updateLine(s.update);
+  const upd = updateLine(s.update, { canInstall: canInstallUpdates });
   $("update").hidden = !upd;
   $("update-text").textContent = upd ? upd.text : "";
   $("update-get").dataset.url = upd ? upd.url : "";
+  if (upd && !$("update-get").disabled) $("update-get").textContent = upd.action;
   if (b.tone === "warn" || b.tone === "over") announce(b.caption);
 }
 
@@ -343,9 +345,23 @@ async function saveBudget(cents) {
   }
 }
 
-$("update-get").addEventListener("click", () => {
+$("update-get").addEventListener("click", async () => {
   const url = $("update-get").dataset.url;
-  if (url) native.openExternal(url);
+  if (!url) return;
+  if (!canInstallUpdates) {
+    native.openExternal(url);
+    return;
+  }
+  const btn = $("update-get");
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    await native.installUpdate(); // restarts the app when it's done
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Install and restart";
+    toast("err", "Couldn't install the update", String(err?.message || err), 8000);
+  }
 });
 
 $("gateway-leave").addEventListener("click", async () => {
@@ -394,6 +410,13 @@ $("retry").addEventListener("click", async () => {
   $("retry").disabled = false;
 });
 if (native.available()) {
+  native
+    .canInstallUpdates()
+    .then((yes) => {
+      canInstallUpdates = Boolean(yes);
+      if (lastSummary) renderToday(lastSummary);
+    })
+    .catch(() => {});
   for (const id of ["quit", "offline-quit"]) {
     $(id).hidden = false;
     $(id).addEventListener("click", () => native.quit());

@@ -12,6 +12,8 @@ fn main() {
             "open_external",
             "quit_app",
             "resize_panel",
+            "can_install_updates",
+            "install_update",
         ]),
     ))
     .expect("failed to run tauri-build");

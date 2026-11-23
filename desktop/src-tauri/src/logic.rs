@@ -164,6 +164,22 @@ pub fn alerts(prev: Option<&Snapshot>, cur: &Snapshot) -> Vec<Alert> {
     out
 }
 
+/// In-app updates are on only in builds made with the updater's public key
+/// and an https endpoint (release CI adds them when the signing key is
+/// configured). Without them the updater plugin isn't loaded at all, and the
+/// panel links to the release page instead.
+pub fn updates_installable(plugins: &Value) -> bool {
+    let Some(updater) = plugins.get("updater") else {
+        return false;
+    };
+    let has_key = updater.get("pubkey").and_then(Value::as_str).is_some_and(|k| !k.trim().is_empty());
+    let endpoints = updater.get("endpoints").and_then(Value::as_array);
+    let https = endpoints.is_some_and(|e| {
+        !e.is_empty() && e.iter().all(|u| u.as_str().is_some_and(|u| u.starts_with("https://")))
+    });
+    has_key && https
+}
+
 /// Announce a newer release once per version; the caller remembers which.
 pub fn update_notice(last_announced: Option<&str>, s: &Snapshot) -> Option<(String, Alert)> {
     let version = s.update_version.as_deref()?;
@@ -313,6 +329,17 @@ mod tests {
         assert_eq!(update_notice(Some("0.3.0"), &s), None);
         s.update_version = Some("0.4.0".into());
         assert!(update_notice(Some("0.3.0"), &s).is_some());
+    }
+
+    #[test]
+    fn in_app_updates_need_a_key_and_an_https_endpoint() {
+        let ok = json!({"updater": {"pubkey": "dW50cnVzdGVk", "endpoints": [
+            "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest/download/latest.json"]}});
+        assert!(updates_installable(&ok));
+        assert!(!updates_installable(&json!({})));
+        assert!(!updates_installable(&json!({"updater": {"pubkey": "", "endpoints": ["https://x/latest.json"]}})));
+        assert!(!updates_installable(&json!({"updater": {"pubkey": "k", "endpoints": []}})));
+        assert!(!updates_installable(&json!({"updater": {"pubkey": "k", "endpoints": ["http://x/latest.json"]}})));
     }
 
     #[test]

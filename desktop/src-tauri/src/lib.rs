@@ -29,6 +29,8 @@ struct AppState {
     // When the panel last hid itself on blur. A tray click that closes the
     // panel blurs it first, so a show request right after is ignored.
     panel_hidden_at: Mutex<Option<std::time::Instant>>,
+    // Built with the updater's public key: updates install in place.
+    updates_installable: bool,
 }
 
 fn engine(state: &AppState) -> Result<Arc<Engine>, String> {
@@ -221,6 +223,40 @@ fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
     window.app_handle().opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Whether this build can install updates itself (it carries the updater's
+/// public key). Otherwise the panel links to the release page.
+#[tauri::command]
+fn can_install_updates(window: WebviewWindow) -> Result<bool, String> {
+    guard(&window)?;
+    Ok(window.app_handle().state::<AppState>().updates_installable)
+}
+
+/// Download the latest release, check its signature against the public key
+/// built into this app, install it and restart. The updater plugin does the
+/// verification; nothing unsigned is ever installed.
+#[tauri::command]
+async fn install_update(window: WebviewWindow) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    guard(&window)?;
+    let app = window.app_handle().clone();
+    if !app.state::<AppState>().updates_installable {
+        return Err("This build can't install updates itself; download the new version instead.".into());
+    }
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| format!("Couldn't check for the update: {e}"))?
+        .ok_or_else(|| "You already have the latest version.".to_string())?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("Couldn't install the update: {e}"))?;
+    app.restart();
+}
+
 #[tauri::command]
 fn quit_app(window: WebviewWindow) -> Result<(), String> {
     guard(&window)?;
@@ -256,7 +292,9 @@ fn start_engine(app: AppHandle) {
                     .permission("allow-finish-setup")
                     .permission("allow-open-external")
                     .permission("allow-quit-app")
-                    .permission("allow-resize-panel");
+                    .permission("allow-resize-panel")
+                    .permission("allow-can-install-updates")
+                    .permission("allow-install-update");
                 if let Err(e) = app.add_capability(cap) {
                     eprintln!("orca: capability: {e}");
                 }
@@ -363,12 +401,22 @@ fn poll(app: AppHandle, mut eng: Arc<Engine>) {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let plugins = serde_json::Value::Object(context.config().plugins.0.clone().into_iter().collect());
+    let updates_installable = logic::updates_installable(&plugins);
+
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_panel(app)))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_positioner::init())
-        .manage(AppState::default())
+        .plugin(tauri_plugin_positioner::init());
+    if updates_installable {
+        // Without a public key the plugin refuses to start, so it's only
+        // loaded in builds that have one.
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    let app = builder
+        .manage(AppState { updates_installable, ..AppState::default() })
         .invoke_handler(tauri::generate_handler![
             open_dashboard,
             open_setup,
@@ -376,7 +424,9 @@ pub fn run() {
             finish_setup,
             open_external,
             quit_app,
-            resize_panel
+            resize_panel,
+            can_install_updates,
+            install_update
         ])
         .setup(|app| {
             // A menu-bar app: no Dock icon on macOS.
@@ -419,7 +469,7 @@ pub fn run() {
             start_engine(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building OrcaRouter Lite");
 
     app.run(|app, event| match event {

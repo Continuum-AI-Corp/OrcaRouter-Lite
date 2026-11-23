@@ -120,6 +120,40 @@ Create `Continuum-AI-Corp/homebrew-tap` once. After each release, copy the
 `GOOGLE_API_KEY`, `GROQ_API_KEY`) or one `ORCAROUTER_API_KEY`. Without them the
 nightly job fails instead of publishing a report of failures.
 
+### 7. Windows code signing
+
+Without a certificate the `.msi` and `.exe` are built unsigned and SmartScreen
+warns on first run. Add repository secrets:
+
+| Secret | What it is |
+|---|---|
+| `WINDOWS_CERTIFICATE` | base64 of the code-signing certificate exported as `.pfx` |
+| `WINDOWS_CERTIFICATE_PASSWORD` | the `.pfx` export password |
+
+The Windows job imports it, signs both installers with SHA-256 and a DigiCert
+timestamp, and checks each file carries a signature. Pull requests sign with a
+throwaway self-signed certificate so that path stays tested.
+
+### 8. In-app updates
+
+Released apps announce new versions either way. To have them **install**
+updates in place (download, verify the signature, restart), create the
+updater's signing key once, on a trusted machine:
+
+```bash
+cd desktop && npx tauri signer generate -w ~/.tauri/orcarouter-lite.key
+```
+
+Then add the private key as the secret `TAURI_SIGNING_PRIVATE_KEY` (the file's
+contents), its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the
+contents of the `.pub` file as the repository **variable**
+`TAURI_UPDATER_PUBKEY`. Tagged releases then build the public key into the
+app, sign each platform's update, and attach `latest.json`; the app fetches it
+from `releases/latest/download/latest.json` and refuses anything not signed by
+that key. Keep the private key backed up: losing it means shipped apps can't
+take updates until users reinstall. Pull requests sign with a throwaway key so
+the updater build stays tested.
+
 ---
 
 ## Cutting a release

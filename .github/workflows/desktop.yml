@@ -159,12 +159,108 @@ jobs:
               { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
             fi
           done
+      # In-app updates: a tagged release builds them in only with the real
+      # signing key (secret TAURI_SIGNING_PRIVATE_KEY, optional
+      # TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the public key in the
+      # repository variable TAURI_UPDATER_PUBKEY). Pull requests sign with a
+      # throwaway key so the whole updater path is built and checked; their
+      # artifacts are never published.
+      - name: updater signing key
+        working-directory: desktop
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          npm ci
+          pub="$RUNNER_TEMP/updater.pub"
+          if [ -n "$SIGNING_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
+            printf '%s' "$UPDATER_PUBKEY" > "$pub"
+            { echo "TAURI_SIGNING_PRIVATE_KEY<<__EOF__"; echo "$SIGNING_KEY"; echo "__EOF__"; } >> "$GITHUB_ENV"
+            { echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__EOF__"; echo "$SIGNING_KEY_PASSWORD"; echo "__EOF__"; } >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            npx tauri signer generate --ci -w "$RUNNER_TEMP/updater.key"
+            cp "$RUNNER_TEMP/updater.key.pub" "$pub"
+            echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/updater.key" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No updater signing key: this release links to downloads instead of installing updates in place."
+            exit 0
+          fi
+          python ../packaging/updater/updater_config.py --pubkey-file "$pub" --out "$RUNNER_TEMP/tauri.updater.conf.json"
+          echo "UPDATER_CONFIG=$RUNNER_TEMP/tauri.updater.conf.json" >> "$GITHUB_ENV"
+      # Windows code signing: the real certificate on tags when the secrets
+      # WINDOWS_CERTIFICATE (base64 .pfx) and WINDOWS_CERTIFICATE_PASSWORD are
+      # set; a throwaway self-signed one on pull requests, so the signing step
+      # is exercised. Tags without a certificate stay unsigned.
+      - name: Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+            Remove-Item $pfx
+          } elseif (-not $env:GITHUB_REF.StartsWith("refs/tags/v")) {
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=OrcaRouter Lite CI (untrusted)" -CertStoreLocation Cert:\CurrentUser\My
+          } else {
+            Write-Host "::notice::No Windows certificate: the installers are unsigned."
+            exit 0
+          }
+          $conf = Join-Path $env:RUNNER_TEMP "tauri.windows-sign.conf.json"
+          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } |
+            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $conf
+          "WINDOWS_SIGN_CONFIG=$conf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: tauri build
         working-directory: desktop
         shell: bash
         run: |
-          npm ci
-          npx tauri build
+          args=()
+          if [ -n "$UPDATER_CONFIG" ]; then args+=(--config "$UPDATER_CONFIG"); fi
+          if [ -n "$WINDOWS_SIGN_CONFIG" ]; then args+=(--config "$WINDOWS_SIGN_CONFIG"); fi
+          npx tauri build "${args[@]}"
+      - name: check the Windows installers are signed
+        if: runner.os == 'Windows' && env.WINDOWS_SIGN_CONFIG != ''
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem desktop/src-tauri/target/release/bundle/msi/*.msi, desktop/src-tauri/target/release/bundle/nsis/*.exe
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if (-not $sig.SignerCertificate) { Write-Error "$($f.Name) is not signed"; exit 1 }
+            Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject) ($($sig.Status))"
+          }
+      - name: collect the signed updater files
+        if: env.UPDATER_CONFIG != ''
+        shell: bash
+        run: |
+          v=$(python -c "import json; print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
+          b=desktop/src-tauri/target/release/bundle
+          mkdir -p updater
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            macOS)
+              # Both Mac builds name it "OrcaRouter Lite.app.tar.gz"; add the
+              # version and architecture so they can share one release.
+              arch=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x64)
+              cp "$b/macos/OrcaRouter Lite.app.tar.gz" "updater/OrcaRouter Lite_${v}_${arch}.app.tar.gz"
+              cp "$b/macos/OrcaRouter Lite.app.tar.gz.sig" "updater/OrcaRouter Lite_${v}_${arch}.app.tar.gz.sig" ;;
+            Linux) cp "$b"/appimage/*.AppImage "$b"/appimage/*.AppImage.sig updater/ ;;
+            Windows) cp "$b"/nsis/*-setup.exe "$b"/nsis/*-setup.exe.sig updater/ ;;
+          esac
+          ls -la updater
+          test -n "$(ls updater/*.sig)" || { echo "::error::no updater signature was produced"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: env.UPDATER_CONFIG != ''
+        with:
+          name: orcarouter-lite-updater-${{ matrix.os }}
+          path: updater/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: orcarouter-lite-${{ matrix.os }}
@@ -192,6 +288,37 @@ jobs:
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage \
             desktop/src-tauri/target/release/bundle/msi/*.msi \
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+  updater-manifest:
+    name: updater manifest
+    needs: bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orcarouter-lite-updater-*
+          path: updater
+          merge-multiple: true
+      - name: render latest.json for all four platforms
+        shell: bash
+        run: |
+          if [ -z "$(ls -A updater 2>/dev/null)" ]; then
+            echo "::notice::No signed updater files (no signing key for this release); skipping latest.json."
+            exit 0
+          fi
+          v=$(python -c "import json; print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
+          python packaging/updater/render_latest_json.py --version "$v" updater > latest.json
+          cat latest.json
+          python -c "import json,sys; p=json.load(open('latest.json'))['platforms']; sys.exit(0 if len(p)==4 else f'only {sorted(p)}')"
+          echo "HAVE_MANIFEST=1" >> "$GITHUB_ENV"
+      - name: attach latest.json and the updater files to the release
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAVE_MANIFEST == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" latest.json updater/* --clobber
 
   homebrew-cask:
     name: homebrew cask

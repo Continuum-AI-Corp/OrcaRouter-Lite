@@ -94,6 +94,13 @@ export const native = {
   async resizePanel(height) {
     if (this.available()) return this.invoke("resize_panel", { height });
   },
+  async canInstallUpdates() {
+    if (this.available()) return this.invoke("can_install_updates");
+    return false;
+  },
+  async installUpdate() {
+    if (this.available()) return this.invoke("install_update");
+  },
   async quit() {
     if (this.available()) return this.invoke("quit_app");
   },

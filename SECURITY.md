@@ -116,8 +116,11 @@ person on one computer:
 - **One update check a day.** The engine asks GitHub's API for this
   repository's latest release (`api.github.com/repos/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest`)
   with a generic user agent and nothing about you, and the app links only to
-  this repository's release pages. It never downloads or installs anything.
-  Set `ORCA_NO_UPDATE_CHECK=1` to switch it off.
+  this repository's release pages. The check itself downloads nothing. In
+  releases built with the project's updater key, choosing "Install and
+  restart" downloads the update and installs it only if its signature matches
+  the public key built into the app; other builds just link to the download.
+  Set `ORCA_NO_UPDATE_CHECK=1` to switch the check off.
 
 Desktop installers are built in GitHub Actions from tagged commits. macOS
 builds are signed and notarised when the project's Apple credentials are

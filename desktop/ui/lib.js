@@ -215,7 +215,13 @@ export function gatewayLine(gateway) {
 // repository's release pages are offered as a link.
 const RELEASE_PAGES = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/";
 
-export function updateLine(update) {
+// `canInstall`: this build carries the updater's public key, so the app can
+// download, verify and install the update itself.
+export function updateLine(update, { canInstall = false } = {}) {
   if (!update || typeof update.url !== "string" || !update.url.startsWith(RELEASE_PAGES)) return null;
-  return { text: `OrcaRouter Lite ${update.version} is available`, url: update.url };
+  return {
+    text: `OrcaRouter Lite ${update.version} is available`,
+    url: update.url,
+    action: canInstall ? "Install and restart" : "Download",
+  };
 }
