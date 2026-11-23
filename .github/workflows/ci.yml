@@ -96,7 +96,8 @@ jobs:
             if curl -sf http://localhost:8000/health; then
               echo "✓ healthy"
               docker exec lite sh -c 'test -s /data/orca.db && [ "$(stat -c %U /data/orca.db)" = orca ]' || { echo "::error::no orca-owned database on /data"; exit 1; }
-              docker top lite -o user,args | grep -q "^orca " || { echo "::error::server isn't running as orca"; docker top lite -o user,args; exit 1; }
+              # The entrypoint execs the server, so it is PID 1.
+              docker exec lite sh -c '[ "$(stat -c %U /proc/1)" = orca ]' || { echo "::error::server isn't running as orca"; exit 1; }
               docker rm -f lite
               exit 0
             fi
