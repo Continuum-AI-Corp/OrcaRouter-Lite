@@ -57,7 +57,8 @@ def main() -> int:
     out = ROOT / "desktop" / "src-tauri" / "binaries" / f"orca-engine-{target_triple()}{exe}"
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(dist / f"orca-engine{exe}", out)
-    print(f"✓ {out} ({out.stat().st_size // (1024 * 1024)} MB)")
+    # ASCII only: Windows consoles default to cp1252.
+    print(f"built {out} ({out.stat().st_size // (1024 * 1024)} MB)")
     return 0
 
 
