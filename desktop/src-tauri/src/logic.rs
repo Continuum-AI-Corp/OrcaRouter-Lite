@@ -17,6 +17,8 @@ pub struct Snapshot {
     /// What the same requests would have cost on `baseline_model`, minus spend.
     pub week_saved_microcents: i64,
     pub baseline_model: String,
+    /// A newer release the engine found, if any.
+    pub update_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +27,7 @@ pub enum Alert {
     BudgetOver { limit: String, stops: bool },
     Rescued { count: i64 },
     Weekly { spend: i64, saved: i64, vs: String, rescued: i64 },
+    Update { version: String },
 }
 
 /// What to do about the weekly summary notification on this poll.
@@ -94,6 +97,11 @@ pub fn parse_summary(v: &Value) -> Option<Snapshot> {
         week_spend_microcents: week.get("spend_microcents").and_then(Value::as_i64).unwrap_or(0),
         week_saved_microcents: week.get("saved_microcents").and_then(Value::as_i64).unwrap_or(0),
         baseline_model: week.get("baseline_model").and_then(Value::as_str).unwrap_or("").to_string(),
+        update_version: v
+            .get("update")
+            .and_then(|u| u.get("version"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -156,6 +164,15 @@ pub fn alerts(prev: Option<&Snapshot>, cur: &Snapshot) -> Vec<Alert> {
     out
 }
 
+/// Announce a newer release once per version; the caller remembers which.
+pub fn update_notice(last_announced: Option<&str>, s: &Snapshot) -> Option<(String, Alert)> {
+    let version = s.update_version.as_deref()?;
+    if last_announced == Some(version) {
+        return None;
+    }
+    Some((version.to_string(), Alert::Update { version: version.to_string() }))
+}
+
 fn requests(n: i64) -> String {
     format!("{} {}", n, if n == 1 { "request" } else { "requests" })
 }
@@ -169,6 +186,7 @@ impl Alert {
             Alert::BudgetOver { limit, .. } => format!("Today's {} budget is used up", limit),
             Alert::Rescued { count } => format!("{} rescued by fallback", requests(*count)),
             Alert::Weekly { spend, .. } => format!("Last 7 days: {} on coding agents", money(*spend)),
+            Alert::Update { version } => format!("OrcaRouter Lite {version} is available"),
         }
     }
 
@@ -182,6 +200,7 @@ impl Alert {
                 "Your agents keep working; Orca only alerts. Raise the budget or switch to auto-routing in Orca.".into()
             }
             Alert::Rescued { .. } => "A provider failed or rate-limited you, and Orca sent the request elsewhere.".into(),
+            Alert::Update { .. } => "Open Orca from the menu bar and choose Download.".into(),
             Alert::Weekly { saved, vs, rescued, .. } => {
                 let mut parts = Vec::new();
                 if *saved > 0 {
@@ -216,6 +235,7 @@ mod tests {
             week_spend_microcents: 0,
             week_saved_microcents: 0,
             baseline_model: String::new(),
+            update_version: None,
         }
     }
 
@@ -267,6 +287,32 @@ mod tests {
             weekly_digest(at(2026, 11, 23, 10), Some("2026-W47"), &week(0, 0, 0)),
             Digest::Record { week: "2026-W48".into() }
         );
+    }
+
+    #[test]
+    fn parses_an_available_update() {
+        let v = json!({
+            "today": {"spend_microcents": 0}, "week": {},
+            "budget": {"state": "none"},
+            "update": {"version": "0.3.0", "url": "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/tag/v0.3.0"}
+        });
+        assert_eq!(parse_summary(&v).unwrap().update_version.as_deref(), Some("0.3.0"));
+        let none = json!({"today": {"spend_microcents": 0}, "week": {}, "budget": {"state": "none"}, "update": null});
+        assert_eq!(parse_summary(&none).unwrap().update_version, None);
+    }
+
+    #[test]
+    fn an_update_is_announced_once_per_version() {
+        let mut s = snap(0, "ok", None, None, 0);
+        assert_eq!(update_notice(None, &s), None);
+        s.update_version = Some("0.3.0".into());
+        let (version, alert) = update_notice(None, &s).expect("announce 0.3.0");
+        assert_eq!(version, "0.3.0");
+        assert_eq!(alert.title(), "OrcaRouter Lite 0.3.0 is available");
+        assert_eq!(alert.body(), "Open Orca from the menu bar and choose Download.");
+        assert_eq!(update_notice(Some("0.3.0"), &s), None);
+        s.update_version = Some("0.4.0".into());
+        assert!(update_notice(Some("0.3.0"), &s).is_some());
     }
 
     #[test]

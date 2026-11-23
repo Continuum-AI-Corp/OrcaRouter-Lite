@@ -614,3 +614,16 @@ async def test_leave_gateway_restores_agents(desktop_app, seeded, desktop_dirs, 
     assert r.status_code == 200
     assert not (home / ".claude" / "settings.json").exists()
     assert summary["gateway"] is None
+
+
+async def test_summary_reports_an_available_update(desktop_app, seeded, monkeypatch):
+    from packages.desktop import updates
+
+    root, _ = seeded
+    async with _client(desktop_app) as c:
+        r = await c.get("/v1/app/summary", headers=_auth(root))
+        assert r.json()["update"] is None
+        release = {"version": "9.0.0", "url": "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/tag/v9.0.0"}
+        monkeypatch.setattr(updates.CHECKER, "latest", release)
+        r = await c.get("/v1/app/summary", headers=_auth(root))
+    assert r.json()["update"] == release

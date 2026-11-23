@@ -6,6 +6,8 @@ the full lifespan and pre-create tables themselves.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -53,6 +55,8 @@ def _find_desktop_ui_dir() -> str | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    update_task: asyncio.Task | None = None
 
     from app.config import get_settings
     from packages.db import session as session_mod
@@ -153,6 +157,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await ensure_app_key(s, desktop_home)
         log.info("desktop_mode", home=str(desktop_home))
 
+        from packages.desktop import updates
+
+        if updates.UpdateChecker.enabled():
+            update_task = asyncio.create_task(updates.CHECKER.run_forever(), name="orca-update-check")
+
     from app import cache_invalidation_bus
 
     await cache_invalidation_bus.start_invalidation_listener()
@@ -161,6 +170,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     log.info("lite_shutting_down")
+    if update_task is not None:
+        update_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await update_task
     await cache_invalidation_bus.stop_invalidation_listener()
     await dispose_engine()
 

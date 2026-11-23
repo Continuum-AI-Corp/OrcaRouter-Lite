@@ -36,6 +36,7 @@ from packages.db.models.provider_key import ProviderKey
 from packages.db.models.request_log import RequestLog
 from packages.db.models.workspace import Workspace
 from packages.desktop import agents as ag
+from packages.desktop import updates
 
 router = APIRouter(prefix="/v1/app", tags=["desktop"])
 # Unauthenticated on purpose: it proves which process owns the port before
@@ -496,4 +497,5 @@ async def summary(
         "providers": await _providers(db, kc.workspace_id, recent),
         "hosted": {"configured": bool(get_settings().orcarouter_api_key or hosted_db)},
         "gateway": _gateway_info(ctx),
+        "update": updates.CHECKER.latest,
     }

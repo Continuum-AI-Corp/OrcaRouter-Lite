@@ -69,6 +69,13 @@ def _isolate_orcarouter_remote(request, monkeypatch):
     monkeypatch.setattr(orcarouter_models, "_fetch_remote", _no_network)
 
 
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """The desktop engine checks GitHub for releases; never from tests.
+    Tests of the check itself use a mock transport or delete this variable."""
+    monkeypatch.setenv("ORCA_NO_UPDATE_CHECK", "1")
+
+
 @pytest.fixture
 def isolated_env(monkeypatch) -> Generator[None, None, None]:
     """Strip every ORCA_*/OPENAI_*/ANTHROPIC_*/etc env var before a test.

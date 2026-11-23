@@ -7,6 +7,7 @@ import {
   classifyError,
   createSequencer,
   gatewayLine,
+  updateLine,
   missingLine,
   money,
   providerRows,
@@ -86,6 +87,10 @@ function renderToday(s) {
   const gw = gatewayLine(s.gateway);
   $("gateway").hidden = !gw;
   $("gateway-text").textContent = gw;
+  const upd = updateLine(s.update);
+  $("update").hidden = !upd;
+  $("update-text").textContent = upd ? upd.text : "";
+  $("update-get").dataset.url = upd ? upd.url : "";
   if (b.tone === "warn" || b.tone === "over") announce(b.caption);
 }
 
@@ -337,6 +342,11 @@ async function saveBudget(cents) {
     toast("err", "Couldn't save the budget", err.message);
   }
 }
+
+$("update-get").addEventListener("click", () => {
+  const url = $("update-get").dataset.url;
+  if (url) native.openExternal(url);
+});
 
 $("gateway-leave").addEventListener("click", async () => {
   try {

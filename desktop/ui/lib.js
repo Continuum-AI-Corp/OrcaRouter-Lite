@@ -210,3 +210,12 @@ export function gatewayLine(gateway) {
   }
   return `Your agents use your team's gateway at ${host}`;
 }
+
+// A newer release, as reported by the engine's daily check. Only this
+// repository's release pages are offered as a link.
+const RELEASE_PAGES = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/";
+
+export function updateLine(update) {
+  if (!update || typeof update.url !== "string" || !update.url.startsWith(RELEASE_PAGES)) return null;
+  return { text: `OrcaRouter Lite ${update.version} is available`, url: update.url };
+}

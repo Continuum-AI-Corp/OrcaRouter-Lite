@@ -106,6 +106,11 @@ person on one computer:
 - **No telemetry.** Prompts and request logs stay in
   `~/.orcarouter-lite/orca.db` unless you configure a hosted provider, in which
   case requests go to that provider.
+- **One update check a day.** The engine asks GitHub's API for this
+  repository's latest release (`api.github.com/repos/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest`)
+  with a generic user agent and nothing about you, and the app links only to
+  this repository's release pages. It never downloads or installs anything.
+  Set `ORCA_NO_UPDATE_CHECK=1` to switch it off.
 
 Desktop installers are built in GitHub Actions from tagged commits. macOS
 builds are signed and notarised when the project's Apple credentials are

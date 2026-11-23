@@ -62,3 +62,42 @@ async def test_desktop_startup_never_prints_the_seed_admin_key(desktop_env, caps
     async with lifespan(create_app()):
         pass
     assert "sk-orca-" not in capsys.readouterr().out
+
+
+async def test_desktop_startup_runs_the_update_check_and_stops_it_on_shutdown(desktop_env, monkeypatch):
+    import asyncio
+
+    from app.main import create_app, lifespan
+    from packages.desktop import updates
+
+    monkeypatch.delenv("ORCA_NO_UPDATE_CHECK", raising=False)
+    events = []
+
+    async def fake_run_forever():
+        events.append("started")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("stopped")
+            raise
+
+    monkeypatch.setattr(updates.CHECKER, "run_forever", fake_run_forever)
+    async with lifespan(create_app()):
+        await asyncio.sleep(0)
+        assert events == ["started"]
+    assert events == ["started", "stopped"]
+
+
+async def test_update_check_can_be_switched_off(desktop_env, monkeypatch):
+    from app.main import create_app, lifespan
+    from packages.desktop import updates
+
+    called = []
+
+    async def fake_run_forever():  # pragma: no cover - must not run
+        called.append(True)
+
+    monkeypatch.setattr(updates.CHECKER, "run_forever", fake_run_forever)
+    async with lifespan(create_app()):
+        pass
+    assert called == []

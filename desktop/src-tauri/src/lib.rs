@@ -311,6 +311,18 @@ fn weekly_digest(app: &AppHandle, snap: &logic::Snapshot) {
     }
 }
 
+/// One notification per new release; the version announced last is kept in
+/// the Orca folder so restarts don't repeat it.
+fn announce_update(app: &AppHandle, snap: &logic::Snapshot) {
+    let path = engine::orca_home().join("update-announced");
+    let last = std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string());
+    if let Some((version, alert)) = logic::update_notice(last.as_deref(), snap) {
+        if std::fs::write(&path, version).is_ok() {
+            let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
+        }
+    }
+}
+
 fn poll(app: AppHandle, mut eng: Arc<Engine>) {
     let mut prev: Option<logic::Snapshot> = None;
     let mut failures = 0u32;
@@ -325,6 +337,7 @@ fn poll(app: AppHandle, mut eng: Arc<Engine>) {
                     let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
                 }
                 weekly_digest(&app, &snap);
+                announce_update(&app, &snap);
                 prev = Some(snap);
             }
             None => {
