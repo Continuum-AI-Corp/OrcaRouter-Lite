@@ -41,7 +41,7 @@ Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你�
 - **今日花费，按 Agent 拆分。** 今日总额显示在时钟旁边；面板按 Agent 拆分明细。
 - **每日预算。** 达到你设定金额的 80% 和 100% 时发出通知。默认只提醒；勾选一个复选框，达到上限后 Orca 就会暂停你的编程 Agent。
 - **一键连接。** Orca 修改 Agent 自身的设置，保留一份备份，并在你断开连接时恢复原样。
-- **永不掉线。** 当某个 provider 故障或对你限流时，请求会回退到另一个 provider 或托管的 OrcaRouter，应用会统计它挽救了多少请求。
+- **永不掉线。** 当某个 provider 故障或对你限流时，请求会回退到另一个 provider 或托管的 OrcaRouter，应用会统计它挽救了多少请求。用 `orca link --key sk-orca-…` 或在设置窗口中关联你的账户。
 - **默认私密。** 提示词从你的 Agent 直接发送到你选择的 provider。没有遥测。
 - **支持团队网关。** `orca login https://ai-gw.example.com --key …`（或在设置中选择 "Join my company's gateway"）会让你的 Agent 指向平台团队运行的网关；`orca logout` 恢复原样。
 

@@ -41,7 +41,7 @@ coding agents to it, and shows what they spend.
 - **Spend today, per agent.** Today's total sits next to the clock; the panel splits it by agent.
 - **A daily budget.** Notifications at 80% and 100% of the amount you set. Alerts only by default; tick one box and Orca pauses your coding agents once it's reached.
 - **One-click connect.** Orca edits the agent's own settings, keeps a backup, and restores it when you disconnect.
-- **Never down.** When a provider fails or rate-limits you, requests fall back to another provider or to hosted OrcaRouter, and the app counts how many it rescued.
+- **Never down.** When a provider fails or rate-limits you, requests fall back to another provider or to hosted OrcaRouter, and the app counts how many it rescued. Link your account with `orca link --key sk-orca-…` or in setup.
 - **Private by default.** Prompts go straight from your agents to the provider you choose. No telemetry.
 - **Works with your team's gateway.** `orca login https://ai-gw.example.com --key …` (or "Join my company's gateway" in setup) points your agents at the gateway your platform team runs; `orca logout` restores them.
 

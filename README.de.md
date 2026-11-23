@@ -41,7 +41,7 @@ Coding-Agenten damit und zeigt, was sie ausgeben.
 - **Heutige Ausgaben, pro Agent.** Die Tagessumme steht neben der Uhr; das Panel schlüsselt sie nach Agent auf.
 - **Ein Tagesbudget.** Benachrichtigungen bei 80 % und 100 % des festgelegten Betrags. Standardmäßig nur Warnungen; mit einem Häkchen pausiert Orca Ihre Coding-Agenten, sobald der Betrag erreicht ist.
 - **Verbinden mit einem Klick.** Orca passt die Einstellungen des Agenten selbst an, legt ein Backup an und stellt es wieder her, wenn Sie die Verbindung trennen.
-- **Nie offline.** Fällt ein Provider aus oder bremst Sie per Rate-Limit aus, weichen Anfragen auf einen anderen Provider oder auf das gehostete OrcaRouter aus, und die App zählt, wie viele sie gerettet hat.
+- **Nie offline.** Fällt ein Provider aus oder bremst Sie per Rate-Limit aus, weichen Anfragen auf einen anderen Provider oder auf das gehostete OrcaRouter aus, und die App zählt, wie viele sie gerettet hat. Ihr Konto verknüpfen Sie mit `orca link --key sk-orca-…` oder im Setup.
 - **Standardmäßig privat.** Prompts gehen direkt von Ihren Agenten an den Provider Ihrer Wahl. Keine Telemetrie.
 - **Funktioniert mit dem Gateway Ihres Teams.** `orca login https://ai-gw.example.com --key …` (oder "Join my company's gateway" in der Einrichtung) richtet Ihre Agenten auf das Gateway aus, das Ihr Plattform-Team betreibt; `orca logout` stellt den vorherigen Zustand wieder her.
 

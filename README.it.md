@@ -41,7 +41,7 @@ di coding e mostra quanto spendono.
 - **Spesa di oggi, per agente.** Il totale di oggi compare accanto all'orologio; il pannello lo suddivide per agente.
 - **Un budget giornaliero.** Notifiche all'80% e al 100% dell'importo che imposti. Per impostazione predefinita solo avvisi; spunta una casella e Orca mette in pausa i tuoi agenti di coding una volta raggiunto l'importo.
 - **Connessione con un clic.** Orca modifica le impostazioni dell'agente stesso, ne conserva un backup e lo ripristina quando lo disconnetti.
-- **Mai giù.** Quando un provider va in errore o ti applica un rate-limit, le richieste ripiegano su un altro provider o su OrcaRouter hosted, e l'app conta quante ne ha salvate.
+- **Mai giù.** Quando un provider va in errore o ti applica un rate-limit, le richieste ripiegano su un altro provider o su OrcaRouter hosted, e l'app conta quante ne ha salvate. Collega il tuo account con `orca link --key sk-orca-…` o dalla configurazione iniziale.
 - **Privata per impostazione predefinita.** I prompt vanno direttamente dai tuoi agenti al provider che scegli. Nessuna telemetria.
 - **Funziona con il gateway del tuo team.** `orca login https://ai-gw.example.com --key …` (o "Join my company's gateway" nella configurazione iniziale) indirizza i tuoi agenti al gateway gestito dal tuo team di piattaforma; `orca logout` li ripristina.
 

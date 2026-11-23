@@ -5,6 +5,11 @@
     orca connect <agent>         point an agent at the engine (backs up its config)
     orca disconnect <agent>      restore the agent's original config
     orca status [--json]         spend today and this week, by agent
+    orca statusline              one short line for Claude Code's status bar
+    orca report [--format csv]   spend by agent, as Markdown or CSV
+    orca link --key sk-orca-…    use your OrcaRouter account as the hosted fallback
+    orca login <url> --key …     point your agents at your team's gateway
+    orca logout                  undo `orca login`
 
 The desktop app runs `orca up` and talks to the same /v1/app API, so every
 action here is also a button in the app.
@@ -102,6 +107,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("statusline", help="one short line for Claude Code's status bar")
     r = sub.add_parser("report", help="spend by agent, as Markdown or CSV")
     r.add_argument("--format", choices=["md", "csv"], default="md")
+    lk = sub.add_parser("link", help="use your OrcaRouter account as the hosted fallback")
+    lk.add_argument("--key", required=True, help="your sk-orca-… key from orcarouter.ai")
     lg = sub.add_parser("login", help="point your agents at your team's gateway")
     lg.add_argument("url", help="the gateway's address, e.g. https://ai-gw.example.com")
     lg.add_argument("--key", required=True, help="the key your platform team gave you")
@@ -139,13 +146,13 @@ def _verify_identity(client: httpx.Client, secret: str) -> bool:
     return hmac.compare_digest(proof, expected)
 
 
-def _request(method: str, path: str, *, transport, params=None, quiet: bool = False) -> dict | None:
+def _request(method: str, path: str, *, transport, params=None, json_body=None, quiet: bool = False) -> dict | None:
     if quiet:
         import contextlib
         import io
 
         with contextlib.redirect_stderr(io.StringIO()):
-            return _request(method, path, transport=transport, params=params)
+            return _request(method, path, transport=transport, params=params, json_body=json_body)
     home = dh.default_home()
     try:
         info = dh.read_engine_info(home)
@@ -160,7 +167,8 @@ def _request(method: str, path: str, *, transport, params=None, quiet: bool = Fa
             if not _verify_identity(client, secret):
                 _err(NOT_OURS.format(url=base_url))
                 return None
-            resp = client.request(method, path, params=params, headers={"Authorization": f"Bearer {key}"})
+            resp = client.request(method, path, params=params, json=json_body,
+                                  headers={"Authorization": f"Bearer {key}"})
     except httpx.TimeoutException:
         _err(SLOW)
         return None
@@ -375,6 +383,18 @@ def main(
         if body is None:
             return 1
         sys.stdout.write(_report(body, args.format))
+        return 0
+
+    if args.cmd == "link":
+        key = args.key.strip()
+        if not key.startswith("sk-orca-"):
+            _err("That isn't an OrcaRouter key; they start with sk-orca-.")
+            return 2
+        body = _request("PUT", "/v1/providers/orcarouter", transport=transport, json_body={"api_key": key})
+        if body is None:
+            return 1
+        print(f"Linked to OrcaRouter ({body.get('key_prefix', 'key saved')}). "
+              "Requests fall back to it when your own providers fail.")
         return 0
 
     if args.cmd == "login":

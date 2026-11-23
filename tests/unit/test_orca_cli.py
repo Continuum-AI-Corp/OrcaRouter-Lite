@@ -355,3 +355,34 @@ def test_logout_restores_agents(orca_home, tmp_path, monkeypatch, capsys):
     orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
     assert orca_cli.main(["logout"]) == 0
     assert not (home / ".claude" / "settings.json").exists()
+
+
+# ── orca link ───────────────────────────────────────────────────────────
+
+
+def test_link_saves_the_orcarouter_key_as_the_hosted_provider(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={
+        "provider": "orcarouter", "key_prefix": "sk-orca-…7f3a", "is_enabled": True}))
+    assert orca_cli.main(["link", "--key", "  sk-orca-live-7f3a  "], transport=transport) == 0
+    req = seen[0]
+    assert req.method == "PUT"
+    assert str(req.url) == "http://127.0.0.1:8765/v1/providers/orcarouter"
+    assert req.headers["authorization"] == "Bearer sk-orca-app"
+    assert json.loads(req.content) == {"api_key": "sk-orca-live-7f3a"}
+    out = capsys.readouterr().out
+    assert "OrcaRouter" in out
+    assert "sk-orca-live-7f3a" not in out  # never echo the key back
+
+
+def test_link_refuses_a_key_that_is_not_an_orcarouter_key(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(500))
+    assert orca_cli.main(["link", "--key", "sk-ant-abc"], transport=transport) == 2
+    assert seen == []
+    assert "sk-orca-" in capsys.readouterr().err
+
+
+def test_link_reports_when_the_engine_is_not_running(orca_home, capsys):
+    assert orca_cli.main(["link", "--key", "sk-orca-x"]) == 1
+    assert "orca up" in capsys.readouterr().err

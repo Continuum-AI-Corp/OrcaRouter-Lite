@@ -41,7 +41,7 @@ vos agents de code et affiche ce qu'ils dépensent.
 - **Dépenses du jour, par agent.** Le total du jour s'affiche à côté de l'horloge ; le panneau le ventile par agent.
 - **Un budget quotidien.** Notifications à 80 % et 100 % du montant que vous fixez. Simples alertes par défaut ; cochez une case et Orca met en pause vos agents de code une fois le montant atteint.
 - **Connexion en un clic.** Orca modifie les réglages propres à l'agent, en garde une sauvegarde et la restaure quand vous le déconnectez.
-- **Jamais en panne.** Quand un fournisseur tombe ou vous impose un rate-limit, les requêtes basculent vers un autre fournisseur ou vers OrcaRouter hébergé, et l'app compte combien elle en a sauvées.
+- **Jamais en panne.** Quand un fournisseur tombe ou vous impose un rate-limit, les requêtes basculent vers un autre fournisseur ou vers OrcaRouter hébergé, et l'app compte combien elle en a sauvées. Liez votre compte avec `orca link --key sk-orca-…` ou dans la configuration.
 - **Privé par défaut.** Les prompts vont directement de vos agents au fournisseur de votre choix. Aucune télémétrie.
 - **Compatible avec la gateway de votre équipe.** `orca login https://ai-gw.example.com --key …` (ou "Join my company's gateway" dans la configuration) dirige vos agents vers la gateway gérée par votre équipe plateforme ; `orca logout` les rétablit.
 

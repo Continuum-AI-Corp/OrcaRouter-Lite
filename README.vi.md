@@ -41,7 +41,7 @@ của bạn vào đó và cho bạn thấy chúng tiêu bao nhiêu.
 - **Chi tiêu hôm nay, theo từng agent.** Tổng hôm nay hiển thị cạnh đồng hồ; bảng điều khiển chia nhỏ theo agent.
 - **Ngân sách hằng ngày.** Thông báo khi đạt 80% và 100% số tiền bạn đặt. Mặc định chỉ cảnh báo; đánh dấu một ô là Orca sẽ tạm dừng các coding agent của bạn khi chạm mức đó.
 - **Kết nối một cú nhấp.** Orca sửa cấu hình riêng của agent, giữ một bản sao lưu và khôi phục lại khi bạn ngắt kết nối.
-- **Không bao giờ sập.** Khi một provider gặp lỗi hoặc giới hạn rate của bạn, request sẽ fallback sang provider khác hoặc sang OrcaRouter hosted, và ứng dụng đếm số request mà nó đã cứu được.
+- **Không bao giờ sập.** Khi một provider gặp lỗi hoặc giới hạn rate của bạn, request sẽ fallback sang provider khác hoặc sang OrcaRouter hosted, và ứng dụng đếm số request mà nó đã cứu được. Liên kết tài khoản bằng `orca link --key sk-orca-…` hoặc trong màn hình thiết lập.
 - **Riêng tư theo mặc định.** Prompt đi thẳng từ agent của bạn tới provider bạn chọn. Không có telemetry.
 - **Dùng được với gateway của đội.** `orca login https://ai-gw.example.com --key …` (hoặc "Join my company's gateway" trong phần thiết lập) trỏ các agent của bạn tới gateway do đội platform vận hành; `orca logout` khôi phục lại như cũ.
 
