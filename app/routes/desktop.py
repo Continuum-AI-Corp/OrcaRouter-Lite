@@ -1070,3 +1070,118 @@ async def diagnostics_report(
         home=ctx.home,
     )
     return {"text": text}
+
+
+# ── weekly report (H7) ──────────────────────────────────────────────────
+
+_ReportFormat = Literal["markdown", "md", "csv"]
+_ReportWeek = Literal["last", "this"]
+
+
+async def _weekly(db: AsyncSession, workspace_id: str, fmt: str, week: str, tz_offset_minutes: int):
+    """(filename, content) of one Monday-to-Sunday week in the caller's timezone."""
+    from packages.desktop import report
+
+    now = datetime.now(timezone.utc)
+    local_today = (now + timedelta(minutes=tz_offset_minutes)).date()
+    monday = local_today - timedelta(days=local_today.weekday())
+    if week == "last":
+        monday -= timedelta(days=7)
+    start = datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc) - timedelta(minutes=tz_offset_minutes)
+    end = start + timedelta(days=7)
+    rows = [r for r in await _log_rows(db, workspace_id, start) if r.created_at < end and r.status_code < 400]
+    agent_of = await _agent_key_ids(db, workspace_id)
+
+    def name(api_key_id: str) -> str:
+        spec = ag.AGENTS.get(agent_of.get(api_key_id, ""))
+        return spec.name if spec else "Other apps"
+
+    built = report.build_week(monday, rows, name)
+    kind = "csv" if fmt == "csv" else "markdown"
+    return report.filename(built, kind), report.weekly(built, kind)
+
+
+@router.get("/report")
+async def weekly_report(
+    format: _ReportFormat = Query("markdown"),  # noqa: A002 - the query parameter's name
+    week: _ReportWeek = Query("last"),
+    tz_offset_minutes: int = Query(0, ge=-14 * 60, le=14 * 60),
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One week's spend by agent and model, Monday to Sunday, as Markdown to
+    copy or CSV to save (the same code as `orca report`)."""
+    name, content = await _weekly(db, kc.workspace_id, format, week, tz_offset_minutes)
+    return {"filename": name, "content": content}
+
+
+class ReportSave(BaseModel):
+    format: _ReportFormat = "csv"
+    week: _ReportWeek = "last"
+    tz_offset_minutes: int = Field(default=0, ge=-14 * 60, le=14 * 60)
+
+
+@router.post("/report/save")
+async def save_weekly_report(
+    body: ReportSave,
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Write the report to ~/Downloads (or the home folder without one)."""
+    from packages.desktop.agent_test import display_path
+
+    name, content = await _weekly(db, kc.workspace_id, body.format, body.week, body.tz_offset_minutes)
+    folder = ctx.home / "Downloads"
+    if not folder.is_dir():
+        folder = ctx.home
+    path = folder / name
+    try:
+        await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"Couldn't save {display_path(path, ctx.home)}: "
+                                                    f"{exc.strerror or exc}") from exc
+    return {"path": display_path(path, ctx.home)}
+
+
+# ── sharing (V2, V3) ────────────────────────────────────────────────────
+
+
+@router.get("/share/card")
+async def share_card(
+    tz_offset_minutes: int = Query(0, ge=-14 * 60, le=14 * 60),
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The week's totals for the savings card: no prompts, models or keys."""
+    from packages.desktop.links import CARD, LANDING_URL, with_ref
+
+    s = await summary(tz_offset_minutes=tz_offset_minutes, kc=kc, ctx=ctx, db=db)
+    week = s["week"]
+    return {
+        "week_saved_microcents": week["saved_microcents"],
+        "week_spend_microcents": week["spend_microcents"],
+        "rescued": week["failures_avoided"],
+        "agents": [a["name"] for a in s["agents"] if a["id"] != "other" and a["requests_week"] > 0],
+        "local_requests": week["local_requests"],
+        "link": with_ref(LANDING_URL, CARD),
+    }
+
+
+@router.get("/share/setup")
+async def share_setup(
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """An orca://setup link a teammate can open: agent ids and the daily
+    budget only, never a key."""
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    agents = [s.id for s in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which) if s.connected]
+    params = []
+    if agents:
+        params.append(f"agents={','.join(agents)}")
+    if settings.daily_budget_cents is not None:
+        params.append(f"budget={settings.daily_budget_cents}")
+    return {"link": "orca://setup" + (f"?{'&'.join(params)}" if params else "")}

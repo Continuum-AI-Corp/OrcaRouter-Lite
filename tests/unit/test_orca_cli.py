@@ -420,6 +420,16 @@ def test_disconnect_needs_an_agent_or_all(orca_home, capsys):
     assert orca_cli.main(["disconnect"]) == 2
 
 
+def test_report_for_a_week_comes_from_the_engine(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={"filename": "orca-week-2026-11-16.csv",
+                                                                     "content": "week_start,agent\n"}))
+    assert orca_cli.main(["report", "--week", "last", "--format", "csv"], transport=transport) == 0
+    assert seen[0].url.path == "/v1/app/report"
+    assert seen[0].url.params["week"] == "last" and seen[0].url.params["format"] == "csv"
+    assert capsys.readouterr().out == "week_start,agent\n"
+
+
 # ── diagnostics (D8) ────────────────────────────────────────────────────
 
 
