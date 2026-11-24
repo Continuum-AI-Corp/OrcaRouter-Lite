@@ -1,7 +1,7 @@
 """Tests for GET /v1/hosted — the "Hosted fallback" status endpoint.
 
 The dashboard's hosted CTA card calls this on mount to decide whether to
-show the "Get free $5 credit" sign-up flow or the "Active" pill. If this
+show the "get your key" flow or the "Active" pill. If this
 endpoint lies about state, the conversion funnel breaks.
 """
 

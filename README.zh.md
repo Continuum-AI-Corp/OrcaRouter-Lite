@@ -33,6 +33,8 @@
 
 OrcaRouter Lite 是 [OrcaRouter](https://www.orcarouter.ai) 的开源版本。它运行在你的电脑或服务器上，支持 OpenAI、Anthropic 和 Gemini API，并且可以把托管的 `api.orcarouter.ai` 作为安全网，用来应对故障，以及调用你没有密钥的模型。
 
+**OrcaRouter** 是 Lite 安全网背后的托管网关：一个密钥用于所有模型，在 provider 之间故障转移，先用免费模型起步，付费模型按请求付费。桌面应用会优先推荐它，并让 agent 从免费模型开始；你自己的 provider 密钥始终是完整的替代方案，用不用 OrcaRouter 都可以。
+
 ## 桌面应用
 
 Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你的编程 Agent 接入其中，
@@ -146,7 +148,7 @@ Base URL：`http://localhost:8000/v1`。使用启动时打印出来的 `sk-orca-
 # 2. 使用 https://api.orcarouter.ai/v1 作为 base URL
 ```
 
-**需要账号。** 托管服务负责路由、计费以及 provider 长尾——按 token 在你的 OrcaRouter 账户上计费。详见 [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)。
+**需要账号。** 先用免费模型起步；付费模型按请求在你的 OrcaRouter 账户上计费。托管服务负责路由、provider 之间的故障转移以及模型长尾。详见 [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)。
 
 ### 然后从任意 OpenAI SDK 调用
 
@@ -229,7 +231,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 使用场景：
-- **先试后买** —— 不需要本地 provider 密钥
+- **免费起步** —— 免费模型不需要 provider 密钥；只有你选择时才使用付费模型
 - **本地日志** —— 托管负责路由，Lite 把 RequestLog 写入数据库供仪表板使用
 - **故障转移** —— 本地 provider 失败时，托管作为安全网兜底
 
@@ -298,7 +300,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 - `GET/PUT/DELETE /v1/providers/{provider}` —— 设置 / 列出 / 撤销加密的 provider 密钥
 - `GET/PUT /v1/routing` —— 切换策略（`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` —— 本地分析数据，没有任何遥测离开容器
-- `GET  /v1/hosted` —— 托管 fallback 状态（驱动仪表板上的 "Get $5 free credit" 卡片）
+- `GET /v1/hosted` —— 托管网关状态（驱动仪表板上的 OrcaRouter 卡片）
 - `GET/POST/DELETE /v1/keys/...` —— 列出 / 轮换 / 撤销 API 密钥
 - `/v1/app/*` —— 供桌面应用使用的 Agent、花费汇总和预算（仅在通过 `orca up` 启动时提供；见 [SECURITY.md](./SECURITY.md)）
 - 单页仪表板挂在 `/`

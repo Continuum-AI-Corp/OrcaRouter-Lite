@@ -67,9 +67,12 @@ Setup opens by itself:
 
 1. **Coding agents on this computer.** The agents Orca found are ticked. It
    backs up each agent's settings before changing them.
-2. **Where should requests go?** Use an OrcaRouter key, or add your own keys
-   (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral, Groq, Together,
-   Fireworks). Each key is checked with its provider before it's saved. More
+2. **Where should requests go?** The OrcaRouter gateway comes first: one key
+   for every model, failover between providers, and free models to start.
+   Paid models are billed per request, and only when you choose them. Or add
+   your own keys instead (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral,
+   Groq, Together, Fireworks); they work with or without OrcaRouter. Each key
+   is checked with its provider before it's saved. More
    providers, and how `model="auto"` picks a model, are in the dashboard
    (menu → Open dashboard).
 3. **Daily budget.** Notifications at 80% and 100%; optionally pause agents

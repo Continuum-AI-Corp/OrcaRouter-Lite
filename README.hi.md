@@ -31,6 +31,8 @@
 
 OrcaRouter Lite, [OrcaRouter](https://www.orcarouter.ai) का ओपन-सोर्स संस्करण है। यह आपके कंप्यूटर या आपके सर्वर पर चलता है, OpenAI, Anthropic और Gemini API बोलता है, और आउटेज के समय तथा उन मॉडलों के लिए जिनकी कुंजियाँ आपके पास नहीं हैं, hosted `api.orcarouter.ai` को सेफ्टी नेट के रूप में उपयोग कर सकता है।
 
+**OrcaRouter** वह hosted gateway है जो Lite के सेफ्टी नेट के पीछे है: हर मॉडल के लिए एक कुंजी, providers के बीच failover, शुरुआत के लिए मुफ़्त मॉडल, और paid मॉडलों के लिए प्रति अनुरोध भुगतान। डेस्कटॉप ऐप सबसे पहले इसी का सुझाव देता है और agents को मुफ़्त मॉडलों पर शुरू करता है; आपकी अपनी provider कुंजियाँ, OrcaRouter के साथ या उसके बिना, पूरा विकल्प बनी रहती हैं।
+
 ## डेस्कटॉप ऐप
 
 Orca ऐप आपके मेन्यू बार में रहता है। यह `127.0.0.1` पर राउटर चलाता है, आपके कोडिंग एजेंटों को उससे कनेक्ट करता है, और दिखाता है कि वे कितना खर्च करते हैं।
@@ -137,7 +139,7 @@ docker compose up
 # 2. बेस URL के रूप में https://api.orcarouter.ai/v1 का उपयोग करें
 ```
 
-**खाता आवश्यक।** Hosted, रूटिंग, बिलिंग और providers की लंबी टेल को संभालता है — आपके OrcaRouter खाते पर प्रति-टोकन बिलिंग के साथ। देखें [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)।
+**खाता आवश्यक।** शुरुआत मुफ़्त मॉडलों से; paid मॉडलों का बिल आपके OrcaRouter खाते पर प्रति अनुरोध बनता है। Hosted रूटिंग, providers के बीच failover और मॉडलों की लंबी टेल को संभालता है। देखें [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)।
 
 ### फिर इसे किसी भी OpenAI SDK से कॉल करें
 
@@ -220,7 +222,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 उपयोग के मामले:
-- **खरीदने-से-पहले-आज़माएँ** — local provider कुंजियों की आवश्यकता नहीं
+- **मुफ़्त में शुरू करें** — मुफ़्त मॉडलों के लिए provider कुंजियों की ज़रूरत नहीं; paid मॉडल केवल तब जब आप उन्हें चुनें
 - **लोकल लॉगिंग** — hosted रूटिंग संभालता है, Lite डैशबोर्ड के लिए RequestLog रिकॉर्ड संग्रहित करता है
 - **Failover** — local providers विफल होते हैं, hosted सेफ्टी नेट है
 
@@ -289,7 +291,7 @@ Requests को एज पर उसी आंतरिक पाइपलाइ
 - `GET/PUT/DELETE /v1/providers/{provider}` — एन्क्रिप्टेड provider कुंजियाँ सेट / सूचीबद्ध / रद्द करें
 - `GET/PUT /v1/routing` — रणनीति बदलें (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, कोई टेलीमेट्री बॉक्स से बाहर नहीं जाती
-- `GET  /v1/hosted` — hosted-fallback स्थिति (डैशबोर्ड के "Get $5 free credit" कार्ड को चलाती है)
+- `GET  /v1/hosted` — hosted gateway स्थिति (डैशबोर्ड के OrcaRouter कार्ड को चलाती है)
 - `GET/POST/DELETE /v1/keys/...` — API कुंजियाँ सूचीबद्ध / रोटेट / रद्द करें
 - `/v1/app/*` — डेस्कटॉप ऐप के लिए एजेंट, खर्च सारांश और बजट (केवल तब जब `orca up` से शुरू किया गया हो; देखें [SECURITY.md](./SECURITY.md))
 - `/` पर सिंगल-पेज डैशबोर्ड

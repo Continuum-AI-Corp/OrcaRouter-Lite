@@ -31,6 +31,8 @@ Veja e limite quanto Claude Code, Codex, Gemini CLI, OpenCode e seus próprios a
 
 OrcaRouter Lite é a edição open source do [OrcaRouter](https://www.orcarouter.ai). Ele roda no seu computador ou no seu servidor, fala as APIs da OpenAI, da Anthropic e do Gemini, e pode usar o `api.orcarouter.ai` hospedado como rede de segurança para quedas e para modelos dos quais você não tem chaves.
 
+**OrcaRouter** é o gateway hospedado por trás da rede de segurança do Lite: uma chave para todos os modelos, failover entre providers, modelos gratuitos para começar e pagamento por requisição para modelos pagos. O app desktop o sugere primeiro e inicia os agentes nos modelos gratuitos; suas próprias chaves de provider continuam sendo uma alternativa completa, com ou sem ele.
+
 ## O app desktop
 
 O app Orca fica na sua barra de menus. Ele roda o roteador em `127.0.0.1`, conecta seus agentes de código a ele e mostra quanto eles gastam.
@@ -137,7 +139,7 @@ Sem clone, sem docker. Registre-se, pegue uma chave, aponte qualquer SDK OpenAI 
 # 2. Use https://api.orcarouter.ai/v1 como URL base
 ```
 
-**Conta necessária.** O hospedado cuida de roteamento, faturamento e da long tail de providers — cobrado por token na sua conta OrcaRouter. Veja [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Conta necessária.** Modelos gratuitos para começar; modelos pagos são cobrados por requisição na sua conta OrcaRouter. O hospedado cuida de roteamento, failover entre providers e da long tail de modelos. Veja [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Depois chame de qualquer SDK OpenAI
 
@@ -220,7 +222,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Casos de uso:
-- **Teste-antes-de-comprar** — sem precisar de chaves de provider locais
+- **Comece grátis** — modelos gratuitos não precisam de chaves de provider; modelos pagos só quando você escolhe
 - **Logging local** — o hospedado cuida do roteamento, o Lite armazena linhas de RequestLog para o dashboard
 - **Failover** — providers locais falham, o hospedado é a rede de segurança
 
@@ -289,7 +291,7 @@ Mais de 100 modelos de chat são carregados na inicialização a partir do [banc
 - `GET/PUT/DELETE /v1/providers/{provider}` — define / lista / revoga chaves de provider criptografadas
 - `GET/PUT /v1/routing` — muda a estratégia (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — analytics locais, nenhuma telemetria sai da caixa
-- `GET  /v1/hosted` — status do fallback hospedado (alimenta o card "Get $5 free credit" do dashboard)
+- `GET  /v1/hosted` — status do gateway hospedado (alimenta o card do OrcaRouter no dashboard)
 - `GET/POST/DELETE /v1/keys/...` — lista / rotaciona / revoga chaves API
 - `/v1/app/*` — agentes, resumo de gastos e orçamento para o app desktop (apenas quando iniciado com `orca up`; veja [SECURITY.md](./SECURITY.md))
 - Dashboard single-page em `/`

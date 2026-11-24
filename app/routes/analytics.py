@@ -277,8 +277,8 @@ async def unreachable_models(
 
     A model is "unreachable" when neither (a) the user has a provider key
     for its provider, nor (b) hosted upstream is configured. Powers the
-    dashboard's conversion tile that nudges Lite users to enable hosted
-    fallback for free $5 credit.
+    dashboard's tile that suggests the hosted OrcaRouter gateway (one key
+    for every model, free models to start).
 
     Returns the curated list intersected with what's actually unreachable,
     capped at `limit`. When hosted is configured, the list is empty —

@@ -1,9 +1,11 @@
-"""Hosted-fallback status endpoint.
+"""Hosted-gateway status endpoint.
 
-Powers the dashboard's "Hosted fallback" card: tells the SPA whether
-hosted upstream is configured (env or DB), where the configuration came
-from, the token-console URL where users copy their sk-orca-* key, and
-the signup URL for users without an account yet (free $5 trial credit).
+Powers the dashboard's OrcaRouter card: tells the SPA whether hosted
+upstream is configured (env or DB), where the configuration came from,
+the token-console URL where users copy their sk-orca-* key, and the
+signup URL for users without an account yet. OrcaRouter is a hosted
+gateway: one key for every model, failover between providers, free
+models to start and pay per request for paid models.
 """
 
 from __future__ import annotations

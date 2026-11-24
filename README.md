@@ -33,6 +33,8 @@ developer, and a self-hosted router for a whole team. MIT licensed.
 
 OrcaRouter Lite is the open-source edition of [OrcaRouter](https://www.orcarouter.ai). It runs on your computer or your server, speaks the OpenAI, Anthropic and Gemini APIs, and can use hosted `api.orcarouter.ai` as a safety net for outages and for models you don't hold keys for.
 
+**OrcaRouter** is the hosted gateway behind Lite's safety net: one key for every model, failover between providers, free models to start, and pay per request for paid models. The desktop app suggests it first and starts agents on its free models; your own provider keys remain a full alternative, with or without it.
+
 ## The desktop app
 
 The Orca app lives in your menu bar. It runs the router on `127.0.0.1`, connects your
@@ -146,7 +148,7 @@ No clone, no docker. Register, get a key, point any OpenAI SDK at hosted.
 # 2. Use https://api.orcarouter.ai/v1 as the base URL
 ```
 
-**Account required.** Hosted handles routing, billing, and the long tail of providers — billed per-token on your OrcaRouter account. See [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Account required.** Free models to start; paid models are billed per request on your OrcaRouter account. Hosted handles routing, failover between providers and the long tail of models. See [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Then call it from any OpenAI SDK
 
@@ -229,7 +231,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Use cases:
-- **Try-before-you-buy** — no local provider keys needed
+- **Free models to start** — no provider keys needed; paid models only when you choose them
 - **Local logging** — hosted handles routing, Lite stores RequestLog rows for the dashboard
 - **Failover** — local providers fail, hosted is the safety net
 
@@ -304,7 +306,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 - `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys (`decryptable` flags rows that no longer open after a `CREDENTIAL_ENCRYPTION_KEY` rotation)
 - `GET/PUT /v1/routing` — change strategy (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, no telemetry leaves the box
-- `GET  /v1/hosted` — hosted-fallback status (drives the dashboard's "Get $5 free credit" card)
+- `GET  /v1/hosted` — hosted-gateway status (drives the dashboard's OrcaRouter card)
 - `GET/POST/DELETE /v1/keys/...` — list / rotate / revoke API keys
 - `/v1/app/*` — agents, spend summary and budget for the desktop app (only when started with `orca up`; see [SECURITY.md](./SECURITY.md))
 - Single-page dashboard at `/`

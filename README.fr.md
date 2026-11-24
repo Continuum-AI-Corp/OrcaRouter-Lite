@@ -33,6 +33,8 @@ menus pour un développeur seul, et un routeur auto-hébergé pour toute une éq
 
 OrcaRouter Lite est l'édition open source d'[OrcaRouter](https://www.orcarouter.ai). Il tourne sur votre ordinateur ou votre serveur, parle les API OpenAI, Anthropic et Gemini, et peut utiliser `api.orcarouter.ai` hébergé comme filet de sécurité en cas de panne et pour les modèles dont vous n'avez pas les clés.
 
+**OrcaRouter** est la passerelle hébergée derrière le filet de sécurité de Lite : une seule clé pour tous les modèles, un failover entre fournisseurs, des modèles gratuits pour démarrer et un paiement à la requête pour les modèles payants. L'application de bureau la propose en premier et démarre les agents sur ses modèles gratuits ; vos propres clés de fournisseur restent une alternative complète, avec ou sans elle.
+
 ## L'application de bureau
 
 L'app Orca vit dans votre barre de menus. Elle fait tourner le routeur sur `127.0.0.1`, y connecte
@@ -147,7 +149,7 @@ Pas de clone, pas de docker. Inscrivez-vous, récupérez une clé, pointez n'imp
 # 2. Utilisez https://api.orcarouter.ai/v1 comme URL de base
 ```
 
-**Compte requis.** L'instance hébergée gère le routage, la facturation et la longue traîne de fournisseurs — facturé au token sur votre compte OrcaRouter. Voir [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Compte requis.** Des modèles gratuits pour démarrer ; les modèles payants sont facturés à la requête sur votre compte OrcaRouter. L'instance hébergée gère le routage, le failover entre fournisseurs et la longue traîne de modèles. Voir [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Puis appelez-le depuis n'importe quel SDK OpenAI
 
@@ -230,7 +232,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Cas d'usage :
-- **Essayer avant d'acheter** — pas besoin de clés de fournisseur locales
+- **Démarrer gratuitement** — les modèles gratuits ne demandent aucune clé de fournisseur ; les modèles payants seulement quand vous les choisissez
 - **Logging local** — l'hébergé gère le routage, Lite stocke les lignes RequestLog pour le tableau de bord
 - **Failover** — les fournisseurs locaux échouent, l'hébergé est le filet de sécurité
 
@@ -299,7 +301,7 @@ Plus de 100 modèles de chat sont chargés au démarrage depuis la [base de donn
 - `GET/PUT/DELETE /v1/providers/{provider}` — définir / lister / révoquer des clés de fournisseur chiffrées
 - `GET/PUT /v1/routing` — changer la stratégie (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — analytics locales, aucune télémétrie ne sort de la boîte
-- `GET  /v1/hosted` — statut du fallback hébergé (alimente la carte « Get $5 free credit » du tableau de bord)
+- `GET  /v1/hosted` — statut de la passerelle hébergée (alimente la carte OrcaRouter du tableau de bord)
 - `GET/POST/DELETE /v1/keys/...` — lister / faire tourner / révoquer des clés API
 - `/v1/app/*` — agents, résumé des dépenses et budget pour l'app de bureau (uniquement si lancé avec `orca up` ; voir [SECURITY.md](./SECURITY.md))
 - Tableau de bord en page unique sur `/`

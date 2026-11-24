@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     # ── Hosted-as-upstream (standard fallback) ──
     # When configured (env or via dashboard), every catalog model gets an extra
     # deployment routed through hosted — so requests for a model the user has
-    # no local key for still succeed. Free trial credit available via the
-    # signup URL surfaced in the Lite dashboard's "Hosted fallback" card.
+    # no local key for still succeed. OrcaRouter offers free models to start;
+    # the signup URL is surfaced in the Lite dashboard's OrcaRouter card.
     orcarouter_api_key: str | None = None
     orcarouter_base_url: str = "https://api.orcarouter.ai/v1"
     orcarouter_signup_url: str = "https://www.orcarouter.ai/register"
