@@ -247,6 +247,17 @@ def _goose(home):
     return p["base_url"], key, cfg["GOOSE_MODEL"]
 
 
+def _browser(script: str, *args: str) -> dict:
+    """Run a Playwright script from tests/e2e and return its JSON report;
+    skip where Playwright or its browser isn't installed (as on CI runners)."""
+    r = subprocess.run(["node", str(ROOT / "tests" / "e2e" / script), *args], cwd=ROOT / "desktop",
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 and ("Cannot find module 'playwright'" in r.stderr or "Executable doesn't exist" in r.stderr):
+        pytest.skip("playwright or its browser isn't installed")
+    assert r.returncode == 0, r.stderr[-1500:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
 # ── the tests, in order ─────────────────────────────────────────────────
 
 
@@ -490,13 +501,7 @@ def test_10_the_panel_connects_and_disconnects_an_agent(stack):
 def test_10b_paste_steps_open_where_the_user_can_see_them(stack):
     # With every agent installed the list is long; the values to paste for a
     # one-paste-step agent must still appear on screen, not below the fold.
-    script = ROOT / "tests" / "e2e" / "manual_card.cjs"
-    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"], "Cursor"], cwd=ROOT / "desktop",
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
-        pytest.skip("browser unavailable")
-    assert r.returncode == 0, r.stderr[-1500:]
-    report = json.loads(r.stdout.strip().splitlines()[-1])
+    report = _browser("manual_card.cjs", stack["base"], stack["app_key"], "Cursor")
     assert report["errors"] == []
     assert report["title"] == "Finish in Cursor"
     assert report["onScreen"], report["box"]
@@ -504,13 +509,7 @@ def test_10b_paste_steps_open_where_the_user_can_see_them(stack):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
 def test_10c_setup_checks_keys_with_the_provider(stack):
-    script = ROOT / "tests" / "e2e" / "setup_flow.cjs"
-    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"], "sk-e2e-upstream"], cwd=ROOT / "desktop",
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
-        pytest.skip("browser unavailable")
-    assert r.returncode == 0, r.stderr[-1500:]
-    report = json.loads(r.stdout.strip().splitlines()[-1])
+    report = _browser("setup_flow.cjs", stack["base"], stack["app_key"], "sk-e2e-upstream")
     assert report["errors"] == []
     assert {"Anthropic", "OpenAI", "Google Gemini", "DeepSeek", "xAI Grok"} <= set(report["providers"])
     assert "two OpenAI keys" in report["duplicate"]
@@ -528,13 +527,7 @@ def test_10d_disconnect_all_from_the_panel(stack):
     for agent in ("claude-code", "opencode"):
         assert _orca(stack, "connect", agent).returncode == 0
     key = _opencode(stack["home"])[1]
-    script = ROOT / "tests" / "e2e" / "disconnect_all.cjs"
-    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"]], cwd=ROOT / "desktop",
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
-        pytest.skip("browser unavailable")
-    assert r.returncode == 0, r.stderr[-1500:]
-    report = json.loads(r.stdout.strip().splitlines()[-1])
+    report = _browser("disconnect_all.cjs", stack["base"], stack["app_key"])
     assert report["errors"] == []
     assert report["label"] == "Disconnect all 2 agents" and "again" in report["armed"]
     assert "Claude Code" in report["toast"] and "OpenCode" in report["toast"]
