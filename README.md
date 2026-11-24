@@ -14,6 +14,35 @@ developer, and a self-hosted router for a whole team. MIT licensed.
   <img src="docs/screenshots/desktop-setup.png" alt="First-run setup: detected coding agents, where requests go, and a daily budget" width="420">
 </p>
 
+## Works with
+
+<p>
+  <img src="desktop/ui/assets/agents/claude-code.svg" alt="Claude Code" title="Claude Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/codex.svg" alt="Codex" title="Codex" width="32" height="32">
+  <img src="desktop/ui/assets/agents/gemini-cli.svg" alt="Gemini CLI" title="Gemini CLI" width="32" height="32">
+  <img src="desktop/ui/assets/agents/opencode.svg" alt="OpenCode" title="OpenCode" width="32" height="32">
+  <img src="desktop/ui/assets/agents/cline.svg" alt="Cline" title="Cline" width="32" height="32">
+  <img src="desktop/ui/assets/agents/command-code.svg" alt="Command Code" title="Command Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/hermes.svg" alt="Hermes Agent" title="Hermes Agent" width="32" height="32">
+  <img src="desktop/ui/assets/agents/pi.svg" alt="Pi" title="Pi" width="32" height="32">
+  <img src="desktop/ui/assets/agents/omp.svg" alt="OMP" title="OMP" width="32" height="32">
+  <img src="desktop/ui/assets/agents/kilo.svg" alt="Kilo Code" title="Kilo Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/openclaw.svg" alt="OpenClaw" title="OpenClaw" width="32" height="32">
+  <img src="desktop/ui/assets/agents/kimi-code.svg" alt="Kimi Code" title="Kimi Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/goose.svg" alt="Goose" title="Goose" width="32" height="32">
+  <img src="desktop/ui/assets/agents/cursor.svg" alt="Cursor" title="Cursor" width="32" height="32">
+  <img src="desktop/ui/assets/agents/aider.svg" alt="Aider" title="Aider" width="32" height="32">
+  <img src="desktop/ui/assets/agents/zed.svg" alt="Zed" title="Zed" width="32" height="32">
+  <img src="desktop/ui/assets/agents/openhands.svg" alt="OpenHands" title="OpenHands" width="32" height="32">
+  <img src="desktop/ui/assets/agents/deepseek-harness.svg" alt="DeepSeek Harness" title="DeepSeek Harness" width="32" height="32">
+  <img src="desktop/ui/assets/agents/zcode.svg" alt="ZCode" title="ZCode" width="32" height="32">
+</p>
+
+Claude Code, Codex, Gemini CLI, OpenCode, Cline, Command Code, Hermes Agent, Pi, OMP, Kilo Code, OpenClaw,
+Kimi Code, Goose, Cursor, Aider, Zed, OpenHands, DeepSeek Harness and ZCode, plus anything that speaks the
+OpenAI, Anthropic or Gemini API. <sub>Names and logos are their owners' trademarks, shown only to identify
+each agent; no endorsement implied. Sources and licences: [NOTICE](desktop/ui/assets/agents/NOTICE.md).</sub>
+
 ## Languages
 
 - [English](./README.md)
@@ -429,6 +458,18 @@ packages/
 - [ ] Embeddings, Ollama/vLLM providers, custom fallback chains
 
 See [DEMO.md](./DEMO.md) for the failover demo.
+
+## Badge
+
+Using Orca to keep a project's agent spend in check? Add the badge to its README:
+
+[![budgeted with OrcaRouter Lite](https://img.shields.io/badge/budgeted%20with-OrcaRouter%20Lite-2D7FF9)](https://continuum-ai-corp.github.io/OrcaRouter-Lite/?ref=lite-badge)
+
+```md
+[![budgeted with OrcaRouter Lite](https://img.shields.io/badge/budgeted%20with-OrcaRouter%20Lite-2D7FF9)](https://continuum-ai-corp.github.io/OrcaRouter-Lite/?ref=lite-badge)
+```
+
+It's a static shields.io image, so there's nothing to set up. The link goes to the landing page.
 
 ## License
 
