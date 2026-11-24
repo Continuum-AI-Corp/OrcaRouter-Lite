@@ -141,6 +141,17 @@ jobs:
           curl -sf http://127.0.0.1:8791/desktop/panel.html | grep -q "OrcaRouter Lite"
           test -s "$ORCA_HOME/app.key"
           kill %1 || true
+      # The shipped binary, end to end: every agent connects, each speaks its
+      # own protocol through the engine to a fake provider, spend is
+      # attributed, the budget stop trips and disconnect restores every file.
+      # Pull requests only, so release builds install nothing extra.
+      - name: end to end against the frozen engine
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python -m pip install "pytest==9.1.1" "pytest-asyncio==1.5.0"
+          ORCA_E2E_ENGINE=$(ls "$PWD"/desktop/src-tauri/binaries/orca-engine-*) PYTHONPATH=. \
+            python -m pytest -p no:cacheprovider -q tests/e2e
       # Signing secrets are exported only when they exist, so forks and
       # unsigned builds don't hand Tauri empty values to try to use.
       - name: macOS signing identity (when configured)

@@ -66,8 +66,13 @@ async def _desktop_budget_stop(path: str, key_context) -> str | None:
     try:
         async with session_mod._session_factory() as session:
             return await budget.stop_reason(session, key_context.workspace_id)
-    except Exception:
-        return None  # never block traffic because the check itself failed
+    except Exception as exc:
+        # Never block traffic because the check itself failed, but say so:
+        # a silently failing check means the budget isn't enforced.
+        import structlog
+
+        structlog.get_logger().error("budget_stop_check_failed", error=repr(exc))
+        return None
 
 
 def _is_public(path: str) -> bool:

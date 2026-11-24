@@ -102,6 +102,7 @@ testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
     "real_remote: opt out of the network-isolation autouse fixture (for tests of the real fetcher path)",
+    "e2e: end to end against a real engine process (tests/e2e; ORCA_E2E_ENGINE runs a frozen engine)",
 ]
 
 [tool.ruff]
