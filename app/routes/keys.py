@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,8 +19,22 @@ from packages.litellm_adapter.catalog import CATALOG_BY_ID
 router = APIRouter(prefix="/v1/keys", tags=["keys"])
 
 
+# Names the desktop app gives meaning to: its own key (trusted by /v1/app)
+# and the per-agent keys (limited to model calls). Neither may be minted here.
+_RESERVED_NAME = "desktop-app"
+_RESERVED_PREFIX = "agent:"
+
+
 class CreateKey(BaseModel):
     name: str
+
+    @field_validator("name")
+    @classmethod
+    def _not_reserved(cls, v: str) -> str:
+        bare = v.strip().lower()
+        if bare == _RESERVED_NAME or bare.startswith(_RESERVED_PREFIX):
+            raise ValueError("This name is reserved for the desktop app's own keys. Choose another name.")
+        return v
     # None (omitted) = unrestricted. [] = deny everything. See UpdateKey.
     model_allowlist: list[str] | None = None
 

@@ -78,3 +78,27 @@ def test_report_layout():
     assert "openai healthy" in text
     assert "Last 1 engine log lines (keys masked)" in text or "engine log" in text
     assert "sk-orca-AbCdEf" not in text
+
+
+def test_prompt_text_after_a_bracket_inside_a_message_is_left_out():
+    line = "request body messages=[{'role': 'user', 'content': 'see a[0] then the secret plan'}] model=gpt-4o"
+    out = dg.redact(line, home=HOME)
+    assert "secret plan" not in out
+
+
+def test_a_line_that_continues_a_message_is_left_out():
+    # A prompt printed over several lines: the continuation lines carry no
+    # field name, but they still hold message structure.
+    out = dg.redact("    {'role': 'user', 'content': 'the merger closes friday'},", home=HOME)
+    assert "merger" not in out
+
+
+def test_windows_profiles_in_any_case_and_with_spaces_become_tilde():
+    out = dg.redact(r"opened c:\users\bob\x and C:\Users\John Smith\.claude\settings.json", home=HOME)
+    assert "bob" not in out and "John" not in out and "Smith" not in out
+
+
+def test_a_bare_key_parameter_in_a_url_is_masked():
+    secret = "AbCdEf0123456789AbCdEf0123456789"  # unprefixed, 32 chars
+    out = dg.redact(f"GET https://api.example.com/v1/models?key={secret}", home=HOME)
+    assert secret not in out

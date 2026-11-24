@@ -111,6 +111,12 @@ def build_week(start: date, rows: Iterable, agent_name) -> Week:
     return Week(start, lines)
 
 
+def _cell(text: str) -> str:
+    """Text a spreadsheet would run as a formula (=, +, -, @) gets a leading
+    quote, so opening the report can't execute anything."""
+    return f"'{text}" if text[:1] in ("=", "+", "-", "@") else text
+
+
 def filename(week: Week, fmt: str) -> str:
     return f"orca-week-{week.start.isoformat()}.{'csv' if fmt == 'csv' else 'md'}"
 
@@ -122,8 +128,8 @@ def weekly(week: Week, fmt: str) -> str:
         w.writerow(["week_start", "agent", "model", "provider", "requests", "input_tokens", "output_tokens",
                     "spend_usd"])
         for x in week.lines:
-            w.writerow([week.start.isoformat(), x.agent, x.model, x.provider, x.requests, x.input_tokens,
-                        x.output_tokens, _plain(x.spend)])
+            w.writerow([week.start.isoformat(), _cell(x.agent), _cell(x.model), _cell(x.provider), x.requests,
+                        x.input_tokens, x.output_tokens, _plain(x.spend)])
         return out.getvalue()
 
     def _fmt_day(d: date) -> str:

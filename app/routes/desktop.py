@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import route_notes
 from app.deps import get_db, get_key_context
 from packages.auth.hashing import generate_api_key
 from packages.auth.types import KeyContext
@@ -38,6 +39,7 @@ from packages.db.models.request_log import RequestLog
 from packages.db.models.workspace import Workspace
 from packages.desktop import agents as ag
 from packages.desktop import updates
+from packages.litellm_adapter.hosted_catalog import is_free_hosted
 
 router = APIRouter(prefix="/v1/app", tags=["desktop"])
 # Unauthenticated on purpose: it proves which process owns the port before
@@ -637,11 +639,27 @@ def _backup_offer(failed: list[_Row], agent_of: dict[str, str]) -> dict | None:
     }
 
 
+def _is_substitution(r: _Row) -> bool:
+    """The agent named a model and a different one answered, without the
+    user's own model map choosing it. "free" and "local" outrank
+    "substituted" as notes, so those rows are compared by name."""
+    if r.route_note == route_notes.SUBSTITUTED:
+        return True
+    if r.route_note not in (route_notes.FREE, route_notes.LOCAL) or r.model_requested in ("", "auto"):
+        return False
+    from app.auto_routing import canonical_model_base
+
+    def base(m: str) -> str:
+        return canonical_model_base(m.rsplit("/", 1)[-1]).replace(".", "-")
+
+    return base(r.model_requested) != base(r.model_resolved)
+
+
 def _substitutions(rows: list[_Row], kept: set[str]) -> list[dict]:
     """H3: what an agent asked for and what answered instead."""
     pairs = Counter(
         (r.model_requested, r.model_resolved) for r in rows
-        if r.route_note == "substituted" and r.model_requested not in kept
+        if _is_substitution(r) and r.model_requested not in kept
     )
     return [{"requested": req, "served": served, "count": n} for (req, served), n in pairs.most_common()]
 
@@ -688,7 +706,6 @@ async def summary(
     ctx: DesktopContext = Depends(get_desktop_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    from app import route_notes
     from packages.desktop import hosted_state
     from packages.desktop.links import PANEL
     from packages.litellm_adapter.catalog import CATALOG_BY_ID
@@ -705,7 +722,12 @@ async def summary(
 
     agent_of = await _agent_key_ids(db, kc.workspace_id)
     settings = _desktop_settings(await _workspace(db, kc.workspace_id))
-    statuses = {s.id: s for s in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)}
+    # Off the event loop: detection checks PATH and reads each agent's config.
+    statuses = {
+        s.id: s for s in await asyncio.to_thread(
+            ag.detect_agents, home=ctx.home, state_dir=ctx.state_dir, which=ctx.which,
+        )
+    }
 
     buckets: dict[str, dict] = {}
 
@@ -767,7 +789,12 @@ async def summary(
         "today": {
             "spend_microcents": spend_today,
             "requests": len(today),
-            "free_requests": sum(1 for r in today if r.route_note == route_notes.FREE),
+            # Every free answer, whatever its note (a model map can choose a
+            # free model too).
+            "free_requests": sum(
+                1 for r in today
+                if r.route_note == route_notes.FREE or (r.provider == "orcarouter" and is_free_hosted(r.model_resolved))
+            ),
             # Spend through OrcaRouter today: its free models cost nothing,
             # so this is what its paid models cost.
             "paid_spend_microcents": sum(r.cost_microcents for r in today if r.provider == route_notes.HOSTED_PROVIDER),
@@ -1056,7 +1083,7 @@ async def diagnostics_report(
 
     settings = _desktop_settings(await _workspace(db, kc.workspace_id))
     recent = await _log_rows(db, kc.workspace_id, datetime.now(timezone.utc) - HEALTH_WINDOW)
-    statuses = ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)
+    statuses = await asyncio.to_thread(ag.detect_agents, home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)
     app_version, engine_version = dg.versions()
     text = dg.build(
         version=app_version,
@@ -1121,6 +1148,12 @@ class ReportSave(BaseModel):
     tz_offset_minutes: int = Field(default=0, ge=-14 * 60, le=14 * 60)
 
 
+def _write_new(path: Path, content: str) -> None:
+    # "x": fail rather than replace a file that appeared since the check.
+    with open(path, "x", encoding="utf-8") as f:
+        f.write(content)
+
+
 @router.post("/report/save")
 async def save_weekly_report(
     body: ReportSave,
@@ -1135,9 +1168,14 @@ async def save_weekly_report(
     folder = ctx.home / "Downloads"
     if not folder.is_dir():
         folder = ctx.home
+    stem, dot, ext = name.rpartition(".")
     path = folder / name
+    n = 2
+    while path.exists():  # never overwrite an earlier save
+        path = folder / f"{stem}-{n}{dot}{ext}"
+        n += 1
     try:
-        await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+        await asyncio.to_thread(_write_new, path, content)
     except OSError as exc:
         raise HTTPException(status_code=422, detail=f"Couldn't save {display_path(path, ctx.home)}: "
                                                     f"{exc.strerror or exc}") from exc

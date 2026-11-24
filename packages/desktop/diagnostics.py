@@ -37,7 +37,7 @@ _KEY_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
 )
 _BEARER = re.compile(r"(\b(?:Bearer|Basic)\s+)([A-Za-z0-9_\-\.=+/]{8,})")
 _KEY_FIELD = re.compile(
-    r"""((?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|x-api-key|x-goog-api-key)"""
+    r"""((?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|x-api-key|x-goog-api-key|\bkey)"""
     r"""["']?\s*[:=]\s*["']?)(?!Bearer\b|Basic\b)([^"'\s,;}\]]{6,})""",
     re.IGNORECASE,
 )
@@ -45,12 +45,15 @@ _KEY_FIELD = re.compile(
 _LONG_TOKEN = re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{40,}\b")
 _PROMPT_FIELD = re.compile(
     r"""(["']?\b(?:messages|content|prompt|input|text|instructions|system|contents|parts|query)\b["']?\s*[:=]\s*)"""
-    r"""(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|\[[^\]]*\]?|\{[^}]*\}?)""",
+    # A list or object (a messages array) runs to the end of the line: its
+    # strings can hold brackets, so it can't be matched to its close.
+    r"""(?:"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|[\[{].*$)""",
     re.IGNORECASE,
 )
 _OTHER_HOMES = (
     re.compile(r"/(?:home|Users)/[^/\s\"':]+"),
-    re.compile(r"[A-Za-z]:\\\\?Users\\\\?[^\\\s\"':]+"),
+    # Any case (c:\users\bob) and names with spaces (C:\Users\John Smith).
+    re.compile(r"[A-Za-z]:\\\\?Users\\\\?[^\\\"':]+", re.IGNORECASE),
 )
 
 

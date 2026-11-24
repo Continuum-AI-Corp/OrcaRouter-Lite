@@ -935,7 +935,13 @@ def detect_agents(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[AgentStatus]:
     home = Path(home)
-    state = _load_state(state_dir)
+    try:
+        state = _load_state(state_dir)
+    except AgentConfigError:
+        # Read-only callers (the panel's poll, diagnostics, the statusline)
+        # show nothing connected rather than fail; connect and disconnect
+        # still refuse a damaged file, so the backups in it aren't lost.
+        state = {}
     out: list[AgentStatus] = []
     for spec in AGENTS.values():
         config_path = home / spec.config_file if spec.config_file else None
@@ -969,13 +975,33 @@ def detect_agents(
 _ANCHOR_MARKS = ("key", "token", "provider", "selectedtype")
 
 
+# Model strings that also pick the provider (OpenCode's "orca/auto", Kimi
+# Code's "orca-auto"): any other orca model keeps going through Orca, so
+# only the prefix has to survive.
+_PROVIDER_MODEL_PREFIXES = (f"{PROVIDER_ID}/", f"{PROVIDER_ID}-")
+
+
+def _provider_model_prefix(value: Any) -> str | None:
+    if isinstance(value, str):
+        return next((p for p in _PROVIDER_MODEL_PREFIXES if value.startswith(p)), None)
+    return None
+
+
 def _anchors(prefix: str, value: Any) -> list[tuple[str, Any]]:
     """The (dotted key, value) leaves of what Orca wrote that route the agent."""
     if isinstance(value, dict):
         return [leaf for k, v in value.items() for leaf in _anchors(f"{prefix}.{k}", v)]
     name = prefix.rsplit(".", 1)[-1].lower()
     is_url = isinstance(value, str) and value.startswith(("http://", "https://"))
-    return [(prefix, value)] if is_url or any(m in name for m in _ANCHOR_MARKS) else []
+    routes = is_url or any(m in name for m in _ANCHOR_MARKS) or _provider_model_prefix(value) is not None
+    return [(prefix, value)] if routes else []
+
+
+def _still_routes(current: Any, written: Any) -> bool:
+    prefix = _provider_model_prefix(written)
+    if prefix is not None and current != written:
+        return isinstance(current, str) and current.startswith(prefix)
+    return current == written
 
 
 def _file_replaced(fentry: dict, data: dict[str, Any] | None) -> bool:
@@ -985,7 +1011,7 @@ def _file_replaced(fentry: dict, data: dict[str, Any] | None) -> bool:
         return True
     for key, written in (fentry.get("values") or {}).items():
         for dotted, value in _anchors(key, written):
-            if _get(data, dotted) != value:
+            if not _still_routes(_get(data, dotted), value):
                 return True
     return False
 
@@ -1032,14 +1058,18 @@ def _reconnect_entry(old: dict, raw: bytes | None, values: dict[str, Any], data:
     connect adds for the first time record their current values.
 
     A file whose Orca settings were replaced wholesale (D5: an update or the
-    agent's own setup rewrote it) is different: reconnecting re-applies
-    Orca's values over it, and the very first original stays the backup, so
-    disconnect still puts back what the user had before Orca.
+    agent's own setup rewrote it) keeps the very first original as its
+    backup only if it is that original again (or gone). Otherwise the update
+    brought settings of its own, so disconnect takes out Orca's values one by
+    one rather than roll the file back to before the update.
     """
     entry = dict(old)
     current_sha = _sha(raw) if raw is not None else None
     replaced = _file_replaced(old, data if raw is not None else None)
-    if current_sha != old.get("written_sha256") and not replaced:
+    original = old.get("original")
+    original_sha = _sha(base64.b64decode(original)) if original else None
+    back_to_original = raw is None or current_sha == original_sha
+    if current_sha != old.get("written_sha256") and not (replaced and back_to_original):
         entry["restorable"] = False
     previous = dict(old.get("previous") or {})
     absent = list(old.get("absent") or [])

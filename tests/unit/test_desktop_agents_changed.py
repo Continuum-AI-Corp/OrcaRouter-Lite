@@ -104,7 +104,7 @@ def test_reconnect_restores_orcas_values_and_disconnect_the_first_original(home,
     settings = home / ".claude/settings.json"
     settings.write_bytes(ORIGINAL)
     _connect(home, state_dir)
-    settings.write_text(json.dumps({"theme": "dark"}))  # the updater's rewrite
+    settings.write_bytes(ORIGINAL)  # the agent's own setup put its file back
     assert _status(home, state_dir, "claude-code").changed is True
 
     _connect(home, state_dir, key=KEY2)
@@ -119,10 +119,52 @@ def test_reconnect_restores_orcas_values_and_disconnect_the_first_original(home,
 def test_reconnect_after_a_change_to_a_file_orca_created_removes_it_on_disconnect(home, state_dir):
     settings = home / ".claude/settings.json"
     _connect(home, state_dir)
-    settings.write_text("{}")
+    settings.unlink()  # the update removed it
     _connect(home, state_dir, key=KEY2)
     ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
     assert not settings.exists()
+
+
+def test_what_an_update_added_survives_reconnect_and_disconnect(home, state_dir):
+    # An update rewrote the file with new settings of its own (and without
+    # Orca's). Reconnect re-applies Orca's values; disconnect must then take
+    # out only Orca's values, not roll the file back to before the update.
+    settings = home / ".claude/settings.json"
+    settings.write_bytes(ORIGINAL)
+    _connect(home, state_dir)
+    updated = {"theme": "dark", "hooks": {"Stop": [{"command": "notify"}]}}
+    settings.write_text(json.dumps(updated, indent=2))
+    _connect(home, state_dir, key=KEY2)
+    ag.disconnect_agent("claude-code", home=home, state_dir=state_dir)
+    assert json.loads(settings.read_text()) == updated
+
+
+@pytest.mark.parametrize(("agent", "path", "old", "new"), [
+    ("opencode", ".config/opencode/opencode.json", '"orca/auto"', '"anthropic/claude-sonnet-4-6"'),
+    ("kimi-code", ".kimi-code/config.toml", 'default_model = "orca-auto"', 'default_model = "kimi-k2"'),
+])
+def test_selecting_another_provider_by_model_name_is_a_change(home, state_dir, agent, path, old, new):
+    # These agents pick the provider through the model string; moving it off
+    # orca/ (or orca-) means requests no longer go through Orca.
+    _connect(home, state_dir, agent)
+    cfg = home / path
+    assert old in cfg.read_text()
+    cfg.write_text(cfg.read_text().replace(old, new))
+    assert _status(home, state_dir, agent).changed is True
+
+
+def test_picking_another_orca_model_by_name_is_not_a_change(home, state_dir):
+    _connect(home, state_dir, "opencode")
+    cfg = home / ".config/opencode/opencode.json"
+    cfg.write_text(cfg.read_text().replace('"orca/auto"', '"orca/gpt-4o"'))
+    assert _status(home, state_dir, "opencode").changed is False
+
+
+def test_a_damaged_state_file_reads_as_nothing_connected(home, state_dir):
+    # Read-only callers (the panel's poll, diagnostics) must not fail on it.
+    (state_dir / "connections.json").write_text("{not json")
+    agents = ag.detect_agents(home=home, state_dir=state_dir, which=lambda _n: None)
+    assert agents and not any(a.connected for a in agents)
 
 
 def test_ordinary_user_edits_still_survive_a_disconnect(home, state_dir):

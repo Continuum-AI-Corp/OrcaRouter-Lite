@@ -228,7 +228,8 @@ async def test_reconnecting_a_changed_agent_through_the_api(desktop_app, seeded,
         assert r.status_code == 200 and r.json()["changed"] is False
         assert "ANTHROPIC_BASE_URL" in json.loads(settings.read_text())["env"]
         await c.post("/v1/app/agents/claude-code/disconnect", headers=_auth(root))
-    assert settings.read_bytes() == original
+    # Orca's values are gone and what the update added stays.
+    assert json.loads(settings.read_text()) == {"theme": "dark", "autoUpdates": True}
 
 
 async def test_agent_substitutions_today_skip_kept_ones(desktop_app, seeded, db_session):
@@ -332,3 +333,42 @@ async def test_summary_keys_present(desktop_app, seeded, field):
     root, _ = seeded
     async with _client(desktop_app) as c:
         assert field in await _summary(c, root)
+
+
+async def test_free_requests_count_every_free_answer_whatever_its_note(desktop_app, seeded, db_session):
+    # A request an agent's model map sent to a free model is noted "mapped",
+    # but it was still answered for free.
+    root, _ = seeded
+    rid = await _key_id(db_session, "default")
+    db_session.add_all([
+        _row(rid, provider="orcarouter", note="free", resolved="deepseek/deepseek-v4-pro-free"),
+        _row(rid, provider="orcarouter", note="mapped", resolved="qwen/qwen3.8-27b-free"),
+    ])
+    await db_session.commit()
+    async with _client(desktop_app) as c:
+        s = await _summary(c, root)
+    assert s["today"]["free_requests"] == 2
+
+
+async def test_a_substitution_answered_by_a_free_or_local_model_is_shown(desktop_app, seeded, db_session):
+    # Claude Code asked for Claude; a free (or local) model answered. The note
+    # says "free"/"local" (it outranks "substituted"), but the user still
+    # wasn't given the model the agent asked for.
+    root, _ = seeded
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+        cc = await _key_id(db_session, "agent:claude-code")
+        db_session.add_all([
+            _row(cc, requested="claude-sonnet-4-6", note="free", provider="orcarouter",
+                 resolved="deepseek/deepseek-v4-pro-free"),
+            _row(cc, requested="claude-sonnet-4-6", note="local", provider="local", resolved="ollama/qwen3-coder:30b"),
+            _row(cc, requested="auto", note="free", provider="orcarouter", resolved="orcarouter/free"),  # asked for auto
+            _row(cc, requested="claude-sonnet-4-6", note="mapped", provider="orcarouter",
+                 resolved="qwen/qwen3.8-27b-free"),  # the user's own map
+        ])
+        await db_session.commit()
+        agents = {a["id"]: a for a in (await _summary(c, root))["agents"]}
+    assert agents["claude-code"]["substitutions"] == [
+        {"requested": "claude-sonnet-4-6", "served": "deepseek/deepseek-v4-pro-free", "count": 1},
+        {"requested": "claude-sonnet-4-6", "served": "ollama/qwen3-coder:30b", "count": 1},
+    ]

@@ -145,3 +145,14 @@ async def test_share_setup_link_names_agents_and_budget_only(desktop_app, seeded
         r = await c.get("/v1/app/share/setup", headers=_auth(root))
     assert r.json() == {"link": "orca://setup?agents=claude-code,codex&budget=500"}
     assert "sk-" not in r.text
+
+
+async def test_saving_twice_never_overwrites_the_first_file(desktop_app, seeded, desktop_dirs):
+    root, _ = seeded
+    home, _ = desktop_dirs
+    (home / "Downloads").mkdir(exist_ok=True)
+    async with _client(desktop_app) as c:
+        first = (await c.post("/v1/app/report/save", headers=_auth(root), json={"format": "csv"})).json()["path"]
+        second = (await c.post("/v1/app/report/save", headers=_auth(root), json={"format": "csv"})).json()["path"]
+    assert first != second
+    assert second.endswith("-2.csv")
