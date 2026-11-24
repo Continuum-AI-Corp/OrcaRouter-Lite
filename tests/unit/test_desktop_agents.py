@@ -84,7 +84,11 @@ def test_cursor_needs_manual_setup(home, state_dir):
 
 def test_every_agent_has_a_display_name(home, state_dir):
     ids = {a.id for a in ag.detect_agents(home=home, state_dir=state_dir, which=_no_binaries)}
-    assert ids == {"claude-code", "codex", "cursor", "aider", "gemini-cli", "opencode", "cline", "command-code"}
+    assert ids == {
+        "claude-code", "codex", "cursor", "aider", "gemini-cli", "opencode", "cline", "command-code",
+        "hermes", "pi", "omp", "kilo", "openclaw", "kimi-code", "goose",
+        "zed", "openhands", "deepseek-harness", "zcode",
+    }
     for a in ag.detect_agents(home=home, state_dir=state_dir, which=_no_binaries):
         assert a.name
 

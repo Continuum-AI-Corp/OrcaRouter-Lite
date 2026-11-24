@@ -93,6 +93,11 @@ class AgentSpec:
 
 PROVIDER_ID = "orca"  # the provider entry we add to agents that list providers
 
+_WINDOWS = os.name == "nt"
+# Hermes keeps its home in %LOCALAPPDATA% on Windows; Goose in %APPDATA%.
+_HERMES_DIR = "AppData/Local/hermes" if _WINDOWS else ".hermes"
+_GOOSE_DIR = "AppData/Roaming/Block/goose/config" if _WINDOWS else ".config/goose"
+
 
 AGENTS: dict[str, AgentSpec] = {
     spec.id: spec
@@ -156,12 +161,77 @@ AGENTS: dict[str, AgentSpec] = {
             files=((".commandcode/providers.json", "json"),),
         ),
         AgentSpec(
+            id="hermes",
+            name="Hermes Agent",
+            binaries=("hermes",),
+            config_dirs=(_HERMES_DIR,),
+            setup="auto",
+            note="Hermes uses the orca provider's auto model while connected; switch with /model.",
+            files=((f"{_HERMES_DIR}/config.yaml", "yaml"),),
+        ),
+        AgentSpec(
+            id="pi",
+            name="Pi",
+            binaries=("pi",),
+            config_dirs=(".pi",),
+            setup="auto",
+            note="Pi starts on Lite's auto model while connected; choose another with /model.",
+            files=((".pi/agent/models.json", "json"), (".pi/agent/settings.json", "json")),
+        ),
+        AgentSpec(
+            id="omp",
+            name="OMP",
+            binaries=("omp",),
+            config_dirs=(".omp",),
+            setup="auto",
+            note="OMP's default role uses orca/auto while connected; other roles keep their models.",
+            files=((".omp/agent/models.yml", "yaml"), (".omp/agent/config.yml", "yaml")),
+        ),
+        AgentSpec(
+            id="kilo",
+            name="Kilo Code",
+            binaries=("kilo", "kilocode"),
+            config_dirs=(".config/kilo",),
+            setup="auto",
+            note="Kilo uses the orca/auto model while connected. A model set in kilo.jsonc takes precedence.",
+            files=((".config/kilo/kilo.json", "json"),),
+        ),
+        AgentSpec(
+            id="openclaw",
+            name="OpenClaw",
+            binaries=("openclaw",),
+            config_dirs=(".openclaw",),
+            setup="auto",
+            note="OpenClaw agents use orca/auto as their primary model while connected; fallbacks stay as they are.",
+            files=((".openclaw/openclaw.json", "json"),),
+        ),
+        AgentSpec(
+            id="kimi-code",
+            name="Kimi Code",
+            binaries=("kimi",),
+            config_dirs=(".kimi-code",),
+            setup="auto",
+            note="Kimi Code starts on Lite's auto model while connected; choose another with /model.",
+            files=((".kimi-code/config.toml", "toml"),),
+        ),
+        AgentSpec(
+            id="goose",
+            name="Goose",
+            binaries=("goose",),
+            config_dirs=(_GOOSE_DIR,),
+            setup="auto",
+            note="Goose uses the orca provider's auto model while connected.",
+            files=((f"{_GOOSE_DIR}/custom_providers/orca.json", "json"), (f"{_GOOSE_DIR}/config.yaml", "yaml")),
+        ),
+        AgentSpec(
             id="cursor",
             name="Cursor",
             binaries=("cursor",),
             config_dirs=(".cursor",),
             setup="manual",
-            note="Cursor keeps this setting in its own app. Paste the base URL and key under Settings → Models.",
+            note=(
+                "Cursor keeps this setting in its own app. Under Settings → Models, turn on Override OpenAI Base URL, paste the base URL and key, and add a custom model named auto."
+            ),
         ),
         AgentSpec(
             id="aider",
@@ -172,11 +242,56 @@ AGENTS: dict[str, AgentSpec] = {
             note="Aider uses model openai/auto while connected.",
             files=((".aider.conf.yml", "yaml"),),
         ),
+        AgentSpec(
+            id="zed",
+            name="Zed",
+            binaries=("zed", "zeditor"),
+            config_dirs=(".config/zed",),
+            setup="manual",
+            note=(
+                "Zed keeps API keys in your keychain. In settings.json add "
+                "language_models.openai_compatible.Orca with the base URL as api_url and a model named auto, "
+                "then paste the key in the Agent panel's Orca settings (or set ORCA_API_KEY before starting Zed)."
+            ),
+        ),
+        AgentSpec(
+            id="openhands",
+            name="OpenHands",
+            binaries=("openhands",),
+            config_dirs=(".openhands",),
+            setup="manual",
+            note=(
+                "In OpenHands, open /settings → Advanced, set the custom model to openai/auto, "
+                "and paste the base URL and key."
+            ),
+        ),
+        AgentSpec(
+            id="deepseek-harness",
+            name="DeepSeek Harness",
+            binaries=("dsh",),
+            config_dirs=(".dsh",),
+            setup="manual",
+            note=(
+                "In DeepSeek Harness, add a custom OpenAI-compatible provider under Settings → Models "
+                "with the base URL and key, and use model auto."
+            ),
+        ),
+        AgentSpec(
+            id="zcode",
+            name="ZCode",
+            binaries=("zcode",),
+            config_dirs=(".zcode",),
+            setup="manual",
+            note=(
+                "In ZCode, choose Add provider → Create custom provider, pick OpenAI chat completions, "
+                "paste the base URL and key, and add model auto."
+            ),
+        ),
     )
 }
 
 # Agents whose config reads the key from a file we keep, not a literal.
-KEY_FILE_AGENTS = frozenset({"opencode", "command-code"})
+KEY_FILE_AGENTS = frozenset({"opencode", "command-code", "kilo", "goose"})
 
 
 @dataclass(frozen=True)
@@ -363,43 +478,124 @@ def _yaml_scalar(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _yaml_key_span(lines: list[str], key: str) -> tuple[int, int] | None:
-    """Line range [start, end) of a top-level `key:` and its indented continuation."""
-    pat = re.compile(rf"^{re.escape(key)}\s*:")
-    for i, line in enumerate(lines):
-        if pat.match(line):
-            j = i + 1
-            while j < len(lines) and lines[j][:1] in (" ", "\t") and lines[j].strip():
+_YAML_PLAIN_KEY = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+
+
+def _yaml_lines(key: str, value: Any, indent: str) -> list[str]:
+    """`key: value` as YAML lines at `indent`; mappings and lists in block style."""
+    if isinstance(value, (dict, list)) and value:
+        dumped = yaml.safe_dump({key: value}, sort_keys=False, allow_unicode=True, default_flow_style=False, width=1 << 20)
+        return [indent + line for line in dumped.splitlines()]
+    name = key if _YAML_PLAIN_KEY.fullmatch(key) else json.dumps(key, ensure_ascii=False)
+    return [f"{indent}{name}: {_yaml_scalar(value)}"]
+
+
+def _indent_of(line: str) -> str:
+    return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _yaml_key_span(lines: list[str], key: str, start: int = 0, end: int | None = None, indent: str = "") -> tuple[int, int] | None:
+    """Line range [first, last) of `key:` at `indent` and everything nested under it.
+
+    Blank and comment lines inside the block belong to it; trailing ones
+    belong to whatever follows.
+    """
+    end = len(lines) if end is None else end
+    pat = re.compile(rf"^{re.escape(indent)}(?:{re.escape(key)}|\"{re.escape(key)}\"|'{re.escape(key)}')\s*:(\s|$)")
+    for i in range(start, end):
+        if not pat.match(lines[i]):
+            continue
+        last, j = i, i + 1
+        while j < end:
+            line = lines[j]
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
                 j += 1
-            return i, j
+                continue
+            own = _indent_of(line)
+            # Deeper lines nest under the key; so does a block list at the key's own indent.
+            if len(own) > len(indent) or (own == indent and stripped.startswith("- ")):
+                last = j
+                j += 1
+                continue
+            break
+        return i, last + 1
     return None
 
 
+class _YamlLayout(Exception):
+    """The line editor can't place a change; re-dump instead."""
+
+
+def _yaml_set_child(lines: list[str], parent: str, child: str, value: Any) -> None:
+    span = _yaml_key_span(lines, parent)
+    if span is None:
+        if value is not _MISSING:
+            lines.extend([f"{parent}:"] + _yaml_lines(child, value, "  "))
+        return
+    first, last = span
+    inline = lines[first].split(":", 1)[1].strip()
+    if inline and not inline.startswith("#"):
+        raise _YamlLayout  # `parent: {a: b}` or a scalar; let the re-dump handle it
+    indent = next(
+        (_indent_of(lines[i]) for i in range(first + 1, last)
+         if lines[i].strip() and not lines[i].strip().startswith("#")),
+        "  ",
+    )
+    if not indent or "\t" in indent:
+        raise _YamlLayout
+    new = [] if value is _MISSING else _yaml_lines(child, value, indent)
+    sub = _yaml_key_span(lines, child, first + 1, last, indent)
+    if sub:
+        lines[sub[0] : sub[1]] = new
+        return
+    if not new:
+        return
+    # After the block's last content line, so trailing blank lines stay put.
+    lines[last:last] = new
+
+
+def _yaml_matches(parsed: dict[str, Any], changes: dict[str, Any]) -> bool:
+    return all((_get(parsed, k) is _MISSING) if v is _MISSING else _get(parsed, k) == v for k, v in changes.items())
+
+
 def _edit_yaml(raw: bytes, changes: dict[str, Any], path: Path) -> bytes:
-    """Set (or, for _MISSING, remove) top-level keys line by line.
+    """Set (or, for _MISSING, remove) keys one or two levels deep, line by line.
 
     Keeps every comment and every other line as it was. Falls back to a full
-    re-dump only if the line edit wouldn't parse back to the intended values.
+    re-dump only if the line edit can't place a change or wouldn't parse back
+    to the intended values.
     """
     text = raw.decode("utf-8") if raw else ""
     lines = text.splitlines()
-    for key, value in changes.items():
-        span = _yaml_key_span(lines, key)
-        new = [] if value is _MISSING else [f"{key}: {_yaml_scalar(value)}"]
-        if span:
-            lines[span[0] : span[1]] = new
-        else:
-            lines.extend(new)
-    out = "\n".join(lines) + ("\n" if lines else "")
-    parsed = _parse(out.encode(), "yaml", path)
-    if all((_get(parsed, k) is _MISSING) if v is _MISSING else parsed.get(k) == v for k, v in changes.items()):
-        return out.encode("utf-8")
-    data = _parse(raw or b"", "yaml", path)  # pragma: no cover - exotic layouts
+    try:
+        for key, value in changes.items():
+            parts = key.split(".")
+            if len(parts) == 2:
+                _yaml_set_child(lines, parts[0], parts[1], value)
+                parent = _yaml_key_span(lines, parts[0])
+                if parent and parent[1] - parent[0] == 1 and not lines[parent[0]].split(":", 1)[1].strip():
+                    del lines[parent[0]]  # we removed its last child
+                continue
+            if len(parts) > 2:
+                raise _YamlLayout
+            span = _yaml_key_span(lines, key)
+            new = [] if value is _MISSING else _yaml_lines(key, value, "")
+            if span:
+                lines[span[0] : span[1]] = new
+            else:
+                lines.extend(new)
+        out = "\n".join(lines) + ("\n" if lines else "")
+        if _yaml_matches(_parse(out.encode(), "yaml", path), changes):
+            return out.encode("utf-8")
+    except (_YamlLayout, AgentConfigError):
+        pass
+    data = _parse(raw or b"", "yaml", path)
     for key, value in changes.items():
         if value is _MISSING:
-            data.pop(key, None)
+            _delete(data, key)
         else:
-            data[key] = value
+            _set(data, key, value)
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True).encode("utf-8")
 
 
@@ -564,6 +760,28 @@ def _key_command(path: Path, *, windows: bool | None = None) -> str:
     return f"!cat {shlex.quote(str(path))}"
 
 
+def _goose_auth(path: Path, *, windows: bool | None = None) -> dict[str, Any]:
+    """A Goose `auth` block whose command prints the key file (run without a shell)."""
+    if windows if windows is not None else os.name == "nt":
+        return {"command": "cmd", "args": ["/d", "/c", "type", str(path)]}
+    return {"command": "cat", "args": [str(path)]}
+
+
+def _opencode_provider(base: str, key_file: Path) -> dict[str, Any]:
+    """An OpenCode-style provider (OpenCode and its fork Kilo) reading the key from a file."""
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "OrcaRouter Lite",
+        "options": {"baseURL": f"{base}/v1", "apiKey": f"{{file:{key_file}}}"},
+        "models": {"auto": {"name": "Orca auto-routing"}},
+    }
+
+
+# What we tell agents that ask for limits about the `auto` model.
+_CONTEXT_WINDOW = 200_000
+_MAX_OUTPUT = 32_000
+
+
 def _desired_values(
     agent_id: str,
     base_url: str,
@@ -602,12 +820,7 @@ def _desired_values(
         }
     if agent_id == "opencode":
         assert key_file is not None
-        provider = {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "OrcaRouter Lite",
-            "options": {"baseURL": f"{base}/v1", "apiKey": f"{{file:{key_file}}}"},
-            "models": {"auto": {"name": "Orca auto-routing"}},
-        }
+        provider = _opencode_provider(base, key_file)
         return {".config/opencode/opencode.json": {f"provider.{PROVIDER_ID}": provider, "model": f"{PROVIDER_ID}/auto"}}
     if agent_id == "command-code":
         assert key_file is not None
@@ -622,6 +835,82 @@ def _desired_values(
             "models": {"auto": {"name": "Orca auto-routing"}},
         }
         return {".commandcode/providers.json": {f"{section}.{PROVIDER_ID}": provider}}
+    if agent_id == "hermes":
+        provider = {"api": f"{base}/v1", "api_key": api_key, "transport": "chat_completions", "default_model": "auto"}
+        return {f"{_HERMES_DIR}/config.yaml": {
+            f"providers.{PROVIDER_ID}": provider,
+            "model.provider": f"custom:{PROVIDER_ID}",
+            "model.default": "auto",
+            # A base_url left by another provider would win over the entry's.
+            "model.base_url": f"{base}/v1",
+        }}
+    if agent_id in ("pi", "omp"):
+        provider = {
+            "baseUrl": f"{base}/v1",
+            "api": "openai-completions",
+            "apiKey": api_key,
+            "models": [{"id": "auto", "name": "Orca auto-routing", "input": ["text", "image"],
+                        "contextWindow": _CONTEXT_WINDOW, "maxTokens": _MAX_OUTPUT}],
+        }
+        if agent_id == "pi":
+            return {
+                ".pi/agent/models.json": {f"providers.{PROVIDER_ID}": provider},
+                ".pi/agent/settings.json": {"defaultProvider": PROVIDER_ID, "defaultModel": "auto"},
+            }
+        return {
+            ".omp/agent/models.yml": {f"providers.{PROVIDER_ID}": provider},
+            ".omp/agent/config.yml": {"modelRoles.default": f"{PROVIDER_ID}/auto"},
+        }
+    if agent_id == "kilo":
+        assert key_file is not None
+        return {".config/kilo/kilo.json": {f"provider.{PROVIDER_ID}": _opencode_provider(base, key_file),
+                                           "model": f"{PROVIDER_ID}/auto"}}
+    if agent_id == "openclaw":
+        provider = {
+            "baseUrl": f"{base}/v1",
+            "apiKey": api_key,
+            "api": "openai-completions",
+            "models": [{"id": "auto", "name": "Orca auto-routing", "input": ["text", "image"],
+                        "contextWindow": _CONTEXT_WINDOW, "maxTokens": _MAX_OUTPUT,
+                        # Lite picks the served model per request; that's expected, not a reroute.
+                        "responseModelEquivalent": True}],
+        }
+        model = _get(current.get(".openclaw/openclaw.json", {}), "agents.defaults.model")
+        primary = "agents.defaults.model" if isinstance(model, str) else "agents.defaults.model.primary"
+        return {".openclaw/openclaw.json": {f"models.providers.{PROVIDER_ID}": provider, primary: f"{PROVIDER_ID}/auto"}}
+    if agent_id == "kimi-code":
+        alias = f"{PROVIDER_ID}-auto"
+        return {".kimi-code/config.toml": {
+            "default_model": alias,
+            f"providers.{PROVIDER_ID}": {"type": "openai", "base_url": f"{base}/v1", "api_key": api_key},
+            f"models.{alias}": {
+                "provider": PROVIDER_ID,
+                "model": "auto",
+                "max_context_size": _CONTEXT_WINDOW,
+                "capabilities": ["tool_use", "image_in"],
+                "display_name": "Orca auto-routing",
+            },
+        }}
+    if agent_id == "goose":
+        assert key_file is not None
+        provider = {
+            "name": PROVIDER_ID,
+            "engine": "openai",
+            "display_name": "OrcaRouter Lite",
+            "description": "Routes each request through OrcaRouter Lite on this computer.",
+            "base_url": f"{base}/v1",
+            "models": [{"name": "auto", "context_limit": _CONTEXT_WINDOW}],
+            "supports_streaming": True,
+            "requires_auth": True,
+            # Goose reads keys only from the keychain or the environment; a
+            # command that prints our key file needs neither.
+            "auth": _goose_auth(key_file),
+            "dynamic_models": False,
+        }
+        return {
+            f"{_GOOSE_DIR}/custom_providers/{PROVIDER_ID}.json": provider,
+            f"{_GOOSE_DIR}/config.yaml": {"GOOSE_PROVIDER": PROVIDER_ID, "GOOSE_MODEL": "auto"},
+        }
     raise AgentNotSupported(agent_id)  # pragma: no cover - guarded by spec.setup
 
 
