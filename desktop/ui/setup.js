@@ -15,10 +15,12 @@ import {
   byokProviders,
   createClipboardOffers,
   keySavedText,
+  localOnlyChoice,
+  requestedSetup,
+  withoutStepRequest,
   localChoice,
   localRuntime,
   maskOrcaKey,
-  requestedStep,
   SETUP_STEP_KEY,
   savedKeyResult,
   setupLinkConfirmation,
@@ -45,6 +47,9 @@ const state = {
   initialRoute: "hosted",
   runtime: null,
   hostedSaved: false,
+  // "paid" when the panel's "Add OrcaRouter backup" opened setup: saving an
+  // OrcaRouter key then also turns on its paid models as a backup.
+  then: null,
   loaded: false,
 };
 const offers = createClipboardOffers();
@@ -147,25 +152,66 @@ function showRoutes() {
   }
   document.querySelector(`input[name="route"][value="${selected}"]`).checked = true;
   state.initialRoute = selected;
+  const localOnly = state.runtime && localOnlyChoice(state.runtime, state.providers);
+  if (localOnly) {
+    $("route-local-only").textContent = localOnly.title;
+    $("route-local-only-d").textContent = localOnly.body;
+  }
   // Opened from the panel at a step (OrcaRouter's key, or a team gateway).
-  // "Local first, OrcaRouter for the rest" already holds the key step.
   let stored = null;
   try {
     stored = localStorage.getItem(SETUP_STEP_KEY);
-    localStorage.removeItem(SETUP_STEP_KEY);
   } catch {
     /* storage unavailable: no step */
   }
-  const asked = requestedStep(stored, window.location.hash);
-  if (asked && routes.includes(asked) && !(asked === "hosted" && selected === "local_hosted")) {
-    document.querySelector(`input[name="route"][value="${asked}"]`).checked = true;
-    document.querySelector(`.choice[data-route="${asked}"]`)?.scrollIntoView({ block: "center" });
+  applyStep(stored, window.location.hash, routes, selected);
+  placeKeyBlock();
+}
+
+// Select the step the panel asked for, then forget the request so a later
+// "Setup…" from the menu starts as usual.
+function applyStep(stored, hash, routes, selected) {
+  const asked = requestedSetup(stored, hash);
+  try {
+    localStorage.removeItem(SETUP_STEP_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  const rest = withoutStepRequest(hash);
+  if (rest !== (hash || "")) history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
+  if (!asked) return;
+  state.then = asked.then;
+  // "Local first, OrcaRouter for the rest" already holds the key step.
+  if (routes.includes(asked.route) && !(asked.route === "hosted" && selected === "local_hosted")) {
+    document.querySelector(`input[name="route"][value="${asked.route}"]`).checked = true;
+    document.querySelector(`.choice[data-route="${asked.route}"]`)?.scrollIntoView({ block: "center" });
   }
   placeKeyBlock();
 }
 
+// Setup already open: the app only focuses the window, so the request
+// arrives as a change to the shared storage (same origin as the panel).
+window.addEventListener("storage", (e) => {
+  if (e.key !== SETUP_STEP_KEY || !e.newValue || !state.loaded || !$("done").hidden) return;
+  const routes = [...document.querySelectorAll(".choice[data-route]:not([hidden])")].map((l) => l.dataset.route);
+  applyStep(e.newValue, "", routes, route());
+});
+
+// OrcaRouter's paid models as a backup, when the panel asked for that.
+async function turnOnPaidIfAsked() {
+  if (state.then !== "paid") return false;
+  await engine.saveSettings({ hosted_models: "all" });
+  state.then = null;
+  state.paidOn = true;
+  return true;
+}
+
 // The OrcaRouter key step sits under whichever OrcaRouter choice is selected.
+// Choices that aren't selected keep their extra fields out of the tab order.
 function placeKeyBlock() {
+  for (const c of document.querySelectorAll(".choice .collapse")) {
+    c.inert = !c.closest(".choice").querySelector('input[name="route"]').checked;
+  }
   const slot = document.querySelector(`.choice[data-route="${route() === "local_hosted" ? "local_hosted" : "hosted"}"] [data-key-slot]`);
   if (slot && $("orca-key").parentElement !== slot) slot.append($("orca-key"));
 }
@@ -383,7 +429,9 @@ async function saveProviders() {
       return haveAny ? true : invalid("hosted-key", "Get your OrcaRouter key, or choose your own API keys.");
     }
     if (!key.startsWith("sk-orca-")) return invalid("hosted-key", "OrcaRouter keys start with sk-orca-.");
-    return checkAndSave("orcarouter", key, $("hosted-key"));
+    if (!(await checkAndSave("orcarouter", key, $("hosted-key")))) return false;
+    await turnOnPaidIfAsked();
+    return true;
   }
   const rows = keyRows();
   for (const row of rows) {
@@ -496,11 +544,17 @@ $("clip-use").addEventListener("click", async () => {
   $("get-key").parentElement.hidden = true;
   $("hosted-key").hidden = true;
   const checked = result?.status === "valid";
+  let paid = false;
+  try {
+    paid = await turnOnPaidIfAsked();
+  } catch (err) {
+    setStatus(err.message, true);
+  }
   $("key-saved").querySelector("b").textContent = checked ? "Key works." : "Key saved.";
-  $("key-saved-text").textContent = keySavedText({ checked, warn: outcome.warn, cleared });
+  $("key-saved-text").textContent = keySavedText({ checked, warn: outcome.warn, cleared, paid });
   $("key-saved").hidden = false;
   $("key-live").textContent = $("key-saved").textContent;
-  setStatus("");
+  if (!$("status").classList.contains("err")) setStatus("");
   updateButton();
   $("go").focus();
 });
@@ -605,7 +659,8 @@ $("setup-form").addEventListener("submit", async (e) => {
     }
     await native.finishSetup().catch(() => {});
     if (state.joinedGateway) results.push({ name: "Team gateway", ok: true, text: "Agents connected" });
-    showDone([...results, ...state.keyResults]);
+    const paid = state.paidOn ? [{ name: "OrcaRouter paid models", ok: true, text: "On as a backup" }] : [];
+    showDone([...results, ...state.keyResults, ...paid]);
   } catch (err) {
     setStatus(err.message, true);
   } finally {
