@@ -89,9 +89,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # create_all only makes missing tables, never alters existing ones. Bring
     # existing deployments (SQLite volume, Postgres) up to date with columns added
     # after their initial release so they don't 503 on the new ORM columns.
-    from packages.db.migrate import ensure_budget_columns
+    from packages.db.migrate import ensure_budget_columns, ensure_route_note_column
 
     await ensure_budget_columns(engine)
+    await ensure_route_note_column(engine)
 
     # Fail closed before any traffic can be served: refuse to boot when
     # provider credentials are (or would be) sealed with the publicly-known
@@ -232,15 +233,16 @@ def create_app() -> FastAPI:
             429: "rate_limit_error",
             503: "upstream_error",
         }
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "error": {
-                    "message": exc.detail,
-                    "type": type_map.get(exc.status_code, "server_error"),
-                }
-            },
-        )
+        # The engine's own error type (needs_paid_model, out_of_credit, ...)
+        # travels in x-orca-error-type; keep it on the response, and as the
+        # OpenAI-style `code`, so clients and the desktop app can tell a
+        # request that needs a paid model from a malformed one.
+        headers = dict(exc.headers or {})
+        error = {"message": exc.detail, "type": type_map.get(exc.status_code, "server_error")}
+        orca_type = headers.get("x-orca-error-type")
+        if orca_type:
+            error["code"] = orca_type
+        return JSONResponse(status_code=exc.status_code, content={"error": error}, headers=headers or None)
 
     @app.exception_handler(RequestValidationError)
     async def val_exc_handler(request, exc: RequestValidationError):

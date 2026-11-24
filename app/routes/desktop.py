@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -308,6 +308,15 @@ async def leave_gateway(
 # ── settings ────────────────────────────────────────────────────────────
 
 
+_AgentId = Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class AgentModelMap(BaseModel):
+    main: str | None = Field(default=None, max_length=200)
+    background: str | None = Field(default=None, max_length=200)
+    fallback_to_auto: bool = True
+
+
 class DesktopSettings(BaseModel):
     daily_budget_cents: int | None = Field(default=None, ge=0)
     # "alert": notify at 80% and 100%. "stop": also refuse coding agents'
@@ -316,6 +325,24 @@ class DesktopSettings(BaseModel):
     # Connected agents point at this engine, so after a restart it has to be
     # running before the user thinks to open the app.
     start_at_login: bool = True
+    # Routing preferences, read by the engine through packages/desktop/prefs.py.
+    # "free": OrcaRouter serves only its free models; "all": paid ones too.
+    hosted_models: Literal["free", "all"] = "free"
+    # Per agent id: which model serves its main and background requests.
+    agent_models: dict[_AgentId, AgentModelMap] = Field(default_factory=dict)
+    # Per agent id: daily cap in cents; the agent is paused once it's reached.
+    agent_budgets: dict[_AgentId, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
+    # Requested model ids whose substitution the user chose to keep.
+    kept_substitutions: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list)
+    # Offer id -> the day it was dismissed (an offer shows at most once a day).
+    dismissed_offers: dict[_AgentId, Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]] = Field(
+        default_factory=dict
+    )
+    # Local model ids auto may use; None means every discovered one with tools.
+    local_models: list[Annotated[str, Field(max_length=300)]] | None = None
+    # Router knobs that servers set in the environment (which still wins).
+    router_num_retries: int | None = Field(default=None, ge=0, le=5)
+    router_cooldown_seconds: int | None = Field(default=None, ge=0, le=3600)
 
 
 # The desktop app runs one engine per home and its panel and setup window both
@@ -368,6 +395,40 @@ async def put_settings_route(
 
     budget_gate.note_settings_changed()
     return updated.model_dump()
+
+
+# ── benchmark key (Artificial Analysis) ─────────────────────────────────
+
+
+class BenchmarkKey(BaseModel):
+    api_key: str | None = Field(default=None, max_length=512)
+
+
+@router.get("/benchmark-key")
+async def get_benchmark_key(
+    _kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whether a key is set and where it comes from; never the key."""
+    from app import benchmark_key
+
+    await benchmark_key.ensure_loaded(db)
+    return benchmark_key.status()
+
+
+@router.put("/benchmark-key")
+async def put_benchmark_key(
+    body: BenchmarkKey,
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Save (or with null, clear) the key, encrypted. The environment
+    variable, when set, still wins."""
+    from app import benchmark_key
+
+    async with _SETTINGS_WRITE_LOCK:  # same row as the settings; don't interleave
+        await benchmark_key.save(db, (body.api_key or "").strip() or None, workspace_id=kc.workspace_id)
+    return benchmark_key.status()
 
 
 # ── provider key check ──────────────────────────────────────────────────
