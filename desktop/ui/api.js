@@ -54,6 +54,7 @@ export function createEngine(win = window) {
     agents: () => call("GET", "/v1/app/agents"),
     connect: (id) => call("POST", `/v1/app/agents/${encodeURIComponent(id)}/connect`),
     disconnect: (id) => call("POST", `/v1/app/agents/${encodeURIComponent(id)}/disconnect`),
+    disconnectAll: () => call("POST", "/v1/app/agents/disconnect-all"),
     settings: () => call("GET", "/v1/app/settings"),
     saveSettings: (s) => call("PUT", "/v1/app/settings", s),
     hosted: () => call("GET", "/v1/hosted"),

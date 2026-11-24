@@ -3,6 +3,7 @@ import { createEngine, native, toast } from "./api.js";
 import {
   AGENT_COLORS,
   agentLogo,
+  disconnectAllLabel,
   agentRows,
   budgetView,
   classifyError,
@@ -31,6 +32,8 @@ let lastSummary = null;
 let lastAgents = null;
 let confirming = null; // { id, armedAt }
 let confirmTimer = null;
+let allArmed = false; // "Disconnect all" waiting for its second click
+let allTimer = null;
 let lastAnnounced = "";
 let canInstallUpdates = false; // set once at startup from the native shell
 
@@ -145,6 +148,9 @@ function renderAgents() {
   const missing = missingLine(all);
   $("agents-missing").textContent = missing;
   $("agents-missing").hidden = !missing;
+  const allLabel = disconnectAllLabel(all);
+  $("disconnect-all").hidden = !allLabel;
+  if (allLabel && !allArmed) $("disconnect-all").textContent = allLabel;
 
   // Rows are keyed by agent id and reused, so a refresh doesn't replay their
   // entrance, and keyboard focus stays on the same row's button.
@@ -383,6 +389,42 @@ $("gateway-leave").addEventListener("click", async () => {
     toast("err", "Couldn't leave the gateway", err.message, 6000);
   }
   await refresh();
+});
+
+// ── disconnect all ──
+// Two clicks, like a single agent's Disconnect: restores every agent's own
+// settings and revokes their keys (do this before uninstalling Orca).
+
+$("disconnect-all").addEventListener("click", async () => {
+  const btn = $("disconnect-all");
+  if (!allArmed) {
+    allArmed = true;
+    btn.classList.add("confirming");
+    btn.textContent = "Restore every agent? Click again";
+    announce("Press again to disconnect every agent");
+    clearTimeout(allTimer);
+    allTimer = setTimeout(() => {
+      allArmed = false;
+      btn.classList.remove("confirming");
+      renderAgents();
+    }, CONFIRM_MS);
+    return;
+  }
+  clearTimeout(allTimer);
+  allArmed = false;
+  btn.classList.remove("confirming");
+  btn.disabled = true;
+  try {
+    const res = await engine.disconnectAll();
+    const names = res.disconnected.join(", ") || "Nothing was connected";
+    if (res.failed.length) toast("err", "Some agents couldn't be restored", res.failed.map((f) => `${f.name}: ${f.error}`).join("; "), 8000);
+    else toast("ok", "Every agent disconnected", `Restored: ${names}.`);
+  } catch (err) {
+    toast("err", "Couldn't disconnect all agents", err.message, 6000);
+  } finally {
+    btn.disabled = false;
+    await refresh();
+  }
 });
 
 // ── manual setup sheet ──

@@ -295,3 +295,10 @@ export function keyCheckOutcome(result) {
 
 export const NO_AGENTS_TEXT =
   "No coding agents found yet. Install one (Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Goose and more), then reopen setup.";
+
+// The panel's "Disconnect all" button, or null when nothing is connected.
+export function disconnectAllLabel(rows) {
+  const n = (rows || []).filter((r) => r.state === "connected").length;
+  if (n === 0) return null;
+  return n === 1 ? "Disconnect all" : `Disconnect all ${n}`;
+}

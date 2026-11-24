@@ -627,3 +627,31 @@ async def test_summary_reports_an_available_update(desktop_app, seeded, monkeypa
         monkeypatch.setattr(updates.CHECKER, "latest", release)
         r = await c.get("/v1/app/summary", headers=_auth(root))
     assert r.json()["update"] == release
+
+
+async def test_disconnect_all_restores_every_agent_and_revokes_their_keys(desktop_app, seeded, desktop_dirs, db_session):
+    from packages.auth.key_validator import AuthError, validate_api_key
+
+    root, _ = seeded
+    home, _state = desktop_dirs
+    (home / ".claude").mkdir(exist_ok=True)
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+        manual = (await c.post("/v1/app/agents/cursor/connect", headers=_auth(root))).json()
+        claude_key = json.loads((home / ".claude" / "settings.json").read_text())["env"]["ANTHROPIC_AUTH_TOKEN"]
+        r = await c.post("/v1/app/agents/disconnect-all", headers=_auth(root))
+        assert r.status_code == 200, r.text
+        assert sorted(r.json()["disconnected"]) == ["Claude Code", "Cursor"]
+        agents = (await c.get("/v1/app/agents", headers=_auth(root))).json()["agents"]
+    assert not any(a["connected"] for a in agents)
+    assert not (home / ".claude" / "settings.json").exists()
+    for key in (claude_key, manual["api_key"]):
+        with pytest.raises(AuthError):
+            await validate_api_key(key, db_session)
+
+
+async def test_disconnect_all_with_nothing_connected_is_fine(desktop_app, seeded):
+    root, _ = seeded
+    async with _client(desktop_app) as c:
+        r = await c.post("/v1/app/agents/disconnect-all", headers=_auth(root))
+    assert r.status_code == 200 and r.json() == {"disconnected": [], "failed": []}

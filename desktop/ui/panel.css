@@ -67,3 +67,6 @@ body { background: var(--surface); }
 .offline p { color: var(--ink-2); max-width: 260px; }
 .offline-actions { display: flex; gap: 14px; align-items: center; }
 .gateway { font-size: 12px; color: var(--ink-2); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+
+.disconnect-all { margin: 2px 0 0; font-size: 12px; }
+.disconnect-all.confirming { color: var(--err-ink, #8a1c1c); }

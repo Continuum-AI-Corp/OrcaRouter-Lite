@@ -4,6 +4,7 @@
     orca agents                  list coding agents and whether they're connected
     orca connect <agent>         point an agent at the engine (backs up its config)
     orca disconnect <agent>      restore the agent's original config
+    orca disconnect --all        restore every agent (works without the engine, e.g. before uninstalling)
     orca status [--json]         spend today and this week, by agent
     orca statusline              one short line for Claude Code's status bar
     orca report [--format csv]   spend by agent, as Markdown or CSV
@@ -101,7 +102,8 @@ def _parser() -> argparse.ArgumentParser:
     c = sub.add_parser("connect", help="point an agent at the engine")
     c.add_argument("agent")
     d = sub.add_parser("disconnect", help="restore an agent's original config")
-    d.add_argument("agent")
+    d.add_argument("agent", nargs="?")
+    d.add_argument("--all", action="store_true", help="restore every connected agent")
     s = sub.add_parser("status", help="spend today and this week")
     s.add_argument("--json", action="store_true")
     sub.add_parser("statusline", help="one short line for Claude Code's status bar")
@@ -284,6 +286,38 @@ def _login(url: str, key: str, transport) -> int:
     return 0
 
 
+def _disconnect_all(transport) -> int:
+    """Through the engine when it's running (it also revokes the agents' keys);
+    otherwise restore the files directly, as an uninstaller has to."""
+    home = dh.default_home()
+    try:
+        dh.read_engine_info(home)
+        running = True
+    except (dh.EngineNotRunning, KeyError, TypeError):
+        running = False
+    if running:
+        body = _request("POST", "/v1/app/agents/disconnect-all", transport=transport)
+        if body is None:
+            return 1
+        restored, failed = body.get("disconnected", []), [f"{f['name']}: {f['error']}" for f in body.get("failed", [])]
+    else:
+        from packages.desktop import agents as ag
+
+        restored, failed = [], []
+        for status in ag.detect_agents(home=Path.home(), state_dir=home / "agents"):
+            if not status.connected:
+                continue
+            try:
+                ag.disconnect_agent(status.id, home=Path.home(), state_dir=home / "agents")
+                restored.append(status.name)
+            except (ag.AgentError, OSError) as exc:
+                failed.append(f"{status.name}: {exc}")
+    for line in failed:
+        _err(line)
+    print(f"Restored: {', '.join(restored) or 'nothing was connected'}.")
+    return 1 if failed else 0
+
+
 def _logout() -> int:
     from packages.desktop import agents as ag
     from packages.desktop import gateway as gw
@@ -366,6 +400,13 @@ def main(
         else:
             print(f"{body['name']} connected. Updated {body.get('config_path')} (backup kept).")
         return 0
+
+    if args.cmd == "disconnect" and args.all:
+        return _disconnect_all(transport)
+
+    if args.cmd == "disconnect" and not args.agent:
+        _err("Name an agent to disconnect, or use --all.")
+        return 2
 
     if args.cmd == "disconnect":
         body = _request("POST", f"/v1/app/agents/{args.agent}/disconnect", transport=transport)

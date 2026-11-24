@@ -386,3 +386,35 @@ def test_link_refuses_a_key_that_is_not_an_orcarouter_key(orca_home, capsys):
 def test_link_reports_when_the_engine_is_not_running(orca_home, capsys):
     assert orca_cli.main(["link", "--key", "sk-orca-x"]) == 1
     assert "orca up" in capsys.readouterr().err
+
+
+def test_disconnect_all_through_the_engine(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={"disconnected": ["Claude Code", "Codex"], "failed": []}))
+    assert orca_cli.main(["disconnect", "--all"], transport=transport) == 0
+    assert seen[0].url.path == "/v1/app/agents/disconnect-all"
+    assert "Claude Code, Codex" in capsys.readouterr().out
+
+
+def test_disconnect_all_works_without_the_engine(orca_home, tmp_path, monkeypatch, capsys):
+    # Uninstalling runs this with no engine running: restore the files directly.
+    from packages.desktop import agents as ag
+
+    home = tmp_path / "userhome"
+    (home / ".claude").mkdir(parents=True)
+    original = b'{"theme": "dark"}\n'
+    (home / ".claude" / "settings.json").write_bytes(original)
+    monkeypatch.setattr(orca_cli.Path, "home", classmethod(lambda cls: home))
+    ag.connect_agent("claude-code", home=home, state_dir=orca_home / "agents", base_url="http://127.0.0.1:8765",
+                     api_key="sk-orca-x")
+    ag.connect_agent("cursor", home=home, state_dir=orca_home / "agents", base_url="http://127.0.0.1:8765",
+                     api_key="sk-orca-y")
+    assert orca_cli.main(["disconnect", "--all"]) == 0
+    assert (home / ".claude" / "settings.json").read_bytes() == original
+    assert not any(s.connected for s in ag.detect_agents(home=home, state_dir=orca_home / "agents"))
+    out = capsys.readouterr().out
+    assert "Claude Code" in out and "Cursor" in out
+
+
+def test_disconnect_needs_an_agent_or_all(orca_home, capsys):
+    assert orca_cli.main(["disconnect"]) == 2

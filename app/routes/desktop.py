@@ -218,6 +218,32 @@ async def disconnect_agent(
     return _agent_out(ctx, agent_id)
 
 
+@router.post("/agents/disconnect-all")
+async def disconnect_all_agents(
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Restore every connected agent and revoke its key (before uninstalling, say)."""
+    disconnected: list[str] = []
+    failed: list[dict] = []
+    for status in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which):
+        if not status.connected:
+            continue
+        async with _agent_locks[status.id]:
+            await _revoke_agent_keys(db, kc.workspace_id, status.id)
+            await db.flush()
+            try:
+                ag.disconnect_agent(status.id, home=ctx.home, state_dir=ctx.state_dir)
+            except (ag.AgentConfigError, OSError) as exc:
+                await db.rollback()
+                failed.append({"name": status.name, "error": str(exc)})
+                continue
+            await db.commit()
+        disconnected.append(status.name)
+    return {"disconnected": disconnected, "failed": failed}
+
+
 # ── team gateway ────────────────────────────────────────────────────────
 
 

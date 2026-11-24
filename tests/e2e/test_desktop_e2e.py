@@ -383,9 +383,11 @@ def test_8_the_budget_stop_pauses_agents(stack):
 def test_9_disconnect_restores_every_file_and_revokes_the_keys(stack):
     home = stack["home"]
     old_keys = [_claude(home)[1], _codex(home)[1], _opencode(home)[1]]
+    r = _orca(stack, "disconnect", "--all")
+    assert r.returncode == 0, r.stderr
     for agent in [*AUTO_AGENTS, *MANUAL_AGENTS]:
-        r = _orca(stack, "disconnect", agent)
-        assert r.returncode == 0, f"{agent}: {r.stderr}"
+        name = next(a["name"] for a in _app(stack, "GET", "/v1/app/agents").json()["agents"] if a["id"] == agent)
+        assert name in r.stdout, f"{name} not restored: {r.stdout}"
     for rel, text in EXISTING.items():
         assert (home / rel).read_text() == text, f"{rel} wasn't restored exactly"
     for created in (".gemini/.env", ".config/opencode/opencode.json", ".commandcode/providers.json",
@@ -452,6 +454,28 @@ def test_10c_setup_checks_keys_with_the_provider(stack):
     keys = _app(stack, "GET", "/v1/providers").json()
     listed = keys.get("providers", keys) if isinstance(keys, dict) else keys
     assert any((p.get("provider") if isinstance(p, dict) else p) == "openai" for p in listed)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10d_disconnect_all_from_the_panel(stack):
+    for agent in ("claude-code", "opencode"):
+        assert _orca(stack, "connect", agent).returncode == 0
+    key = _opencode(stack["home"])[1]
+    script = ROOT / "tests" / "e2e" / "disconnect_all.cjs"
+    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"]], cwd=ROOT / "desktop",
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
+        pytest.skip("browser unavailable")
+    assert r.returncode == 0, r.stderr[-1500:]
+    report = json.loads(r.stdout.strip().splitlines()[-1])
+    assert report["errors"] == []
+    assert report["label"] == "Disconnect all 2" and "again" in report["armed"]
+    assert "Claude Code" in report["toast"] and "OpenCode" in report["toast"]
+    agents = _app(stack, "GET", "/v1/app/agents").json()["agents"]
+    assert not any(a["connected"] for a in agents)
+    assert (stack["home"] / ".claude/settings.json").read_text() == EXISTING[".claude/settings.json"]
+    r = httpx.get(f"{stack['base']}/v1/models", headers={"Authorization": f"Bearer {key}"}, timeout=10)
+    assert r.status_code == 401
 
 
 def test_11_nothing_leaked_into_the_engine_log(stack):
