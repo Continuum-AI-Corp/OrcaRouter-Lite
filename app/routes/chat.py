@@ -167,6 +167,17 @@ def _orca_response_headers(
     return headers
 
 
+def _rescued(served_by: str | None, asked: str | None, status_code: int) -> bool:
+    """A request another provider answered after the one asked first failed
+    (an overloaded Anthropic key rescued through OrcaRouter, say): what the
+    panel counts as a failure avoided."""
+    return (
+        status_code < 400
+        and bool(asked)
+        and served_by not in (None, "unknown", "cache", asked)
+    )
+
+
 def _provider_of(ctx, model: str | None) -> str | None:
     """The provider that serves `model` first: an own key or local model
     before OrcaRouter, as the router reaches them."""
@@ -277,7 +288,7 @@ async def _build_log_row(
         model_resolved=resolved,
         provider=provider,
         routing_strategy=strategy,
-        fallback_level=1 if meta.get("fallback") else 0,
+        fallback_level=1 if meta.get("fallback") or _rescued(provider, default_provider, status_code) else 0,
         input_tokens=input_t,
         output_tokens=output_t,
         cost_microcents=cost,
@@ -457,6 +468,13 @@ async def execute_chat(
             logger.warning("request_log_commit_failed", error=str(commit_err))
         raise HTTPException(status_code=status, detail=detail, headers={ERROR_TYPE_HEADER: error_type})
 
+    # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
+    # claude-sonnet-4-6) is the model that was asked for, not a substitute.
+    if not was_auto and body.model not in ctx.deployable:
+        same = desktop_routing.twin(body.model, ctx.deployable)
+        if same is not None:
+            body = body.model_copy(update={"model": same})
+
     # H0: in "free" mode a paid hosted model isn't deployed. Asking for one
     # by name (outside an agent, which falls back below) says how to allow
     # paid models rather than failing as an unknown model.
@@ -489,6 +507,7 @@ async def execute_chat(
         logger.info("agent_model_fallback", requested=body.model, prefer=fallback[:5])
         body = body.model_copy(update={"model": "auto"})
         was_auto = True
+        route_intent = route_notes.SUBSTITUTED
         if fallback:
             preferred_models = fallback
 
@@ -634,6 +653,12 @@ async def execute_chat(
     fallbacks_arg: list | None = None
     if was_auto and len(candidates) > 1:
         fallbacks_arg = [{candidates[0]: candidates[1:]}]
+    elif not was_auto:
+        # H2: a pinned model OrcaRouter also serves under its own spelling
+        # gets that as its backup, so an overloaded own key is rescued.
+        backup = desktop_routing.twin(body.model, ctx.deployable)
+        if backup is not None:
+            fallbacks_arg = [{body.model: [backup]}]
 
     # On the auto path, set num_retries=0 so a dead primary cascades to the
     # next fallback immediately. Default num_retries (configured on Router)
