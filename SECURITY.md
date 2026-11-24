@@ -137,6 +137,28 @@ person on one computer:
   gateway" accept an https address, or plain http only to a loopback or
   private-network address, and check the key against the gateway before any
   agent setting changes. The team key is never shown back in the app.
+- **Clipboard: read only for an OrcaRouter key, and only offered.** The app
+  reads the clipboard only when the setup window regains focus, and only setup
+  can ask. Unless the whole text is shaped like an OrcaRouter key
+  (`sk-orca-…`), nothing is passed on to the page. A key found there is offered
+  ("Use it?"), never used without your click; after it's saved, the clipboard
+  is cleared only if it still holds that key. Otherwise the app only writes to
+  the clipboard when you ask (diagnostics, the savings card).
+- **`orca://` links never act on their own.** A link can only open the panel
+  or setup and show what it would do (connect one agent, join a gateway, or
+  pre-fill setup with agent names and a daily budget); nothing changes until
+  you confirm. The app ignores any other link, any extra parameter and
+  anything shaped like a key, so links never carry keys; joining a gateway
+  still asks for the team key, and its address must be https (or http only to
+  a loopback or private-network address).
+- **Installing the command-line tool.** "Install command-line tool…" in the
+  tray menu adds one `orca` command pointing at the engine bundled in the app.
+  macOS: a link at `/usr/local/bin/orca` (after the standard password prompt
+  if that folder isn't writable), or `~/.local/bin/orca` if you decline.
+  Linux: a link at `~/.local/bin/orca`. Windows: a one-line
+  `~/.orcarouter-lite/bin/orca.cmd` and that folder added to your user PATH
+  (`HKCU\Environment`), both removed by the uninstaller. It never replaces an
+  `orca` that isn't Orca's.
 - **The engine stops with the app.** The app holds a pipe to the engine; when
   the app exits for any reason, the engine exits too.
 - **No telemetry.** Prompts and request logs stay in
