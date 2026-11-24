@@ -140,8 +140,12 @@ export const native = {
       const link = await this.takePendingLink();
       if (link) callback(link);
     };
-    const handler = () => {
-      deliver();
+    const handler = (event) => {
+      // Natively the event only says "a link is waiting" (taking it clears
+      // it, so it's delivered once). In a plain browser (development, the
+      // e2e suite) there is no native side: the event carries the link.
+      if (!this.available() && event?.detail) callback(event.detail);
+      else deliver();
     };
     window.addEventListener("orca-link", handler);
     deliver();
@@ -167,7 +171,7 @@ export function toast(kind, title, detail, ms = 3600) {
   }[kind];
   el.innerHTML = `<span class="ico" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span><div><b></b><span></span></div>`;
   el.querySelector("b").textContent = title;
-  el.querySelector("div > span").textContent = detail || "";
+  el.querySelector(":scope > div > span").textContent = detail || ""; // not the icon, also a span
   document.body.appendChild(el);
   const dismiss = () => {
     el.classList.add("leaving");
@@ -193,3 +197,76 @@ export function setupCalls(engine) {
     setStrategy: (strategy) => engine.request("PUT", "/v1/routing", { strategy }),
   };
 }
+
+// ── panel: roadmap calls ──
+// The panel's engine calls for the roadmap features (offers, agent sheet,
+// model picker, local models, settings, team report, sharing). Same rules as
+// createEngine's: same origin, the app key, errors as EngineError.
+
+async function panelCall(engine, method, path, body, timeoutMs = TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let resp;
+  try {
+    resp = await fetch(`${engine.baseUrl}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${engine.key}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new EngineError("Can't reach the Orca engine.", 0);
+  } finally {
+    clearTimeout(timer);
+  }
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    data = null;
+  }
+  if (!resp.ok) {
+    const msg = data?.error?.message || data?.detail || `Request failed (${resp.status})`;
+    throw new EngineError(typeof msg === "string" ? msg : JSON.stringify(msg), resp.status);
+  }
+  return data;
+}
+
+export function panelEngine(engine) {
+  const tz = () => tzOffsetMinutes();
+  const q = encodeURIComponent;
+  return {
+    models: (query = "", limit = 1000) =>
+      panelCall(engine, "GET", `/v1/app/models?limit=${limit}${query ? `&q=${q(query)}` : ""}`),
+    local: () => panelCall(engine, "GET", "/v1/app/local"),
+    refreshLocal: () => panelCall(engine, "POST", "/v1/app/local/refresh", undefined, 15_000),
+    agentRequests: (id, limit = 20) => panelCall(engine, "GET", `/v1/app/agents/${q(id)}/requests?limit=${limit}`),
+    // One tiny request through the agent's own config: up to 20 s upstream.
+    testAgent: (id) => panelCall(engine, "POST", `/v1/app/agents/${q(id)}/test`, undefined, 30_000),
+    benchmarkKey: () => panelCall(engine, "GET", "/v1/app/benchmark-key"),
+    saveBenchmarkKey: (apiKey) => panelCall(engine, "PUT", "/v1/app/benchmark-key", { api_key: apiKey }),
+    report: (format = "markdown", week = "this") =>
+      panelCall(engine, "GET", `/v1/app/report?format=${q(format)}&week=${q(week)}&tz_offset_minutes=${tz()}`),
+    saveReport: (week = "this") =>
+      panelCall(engine, "POST", "/v1/app/report/save", { format: "csv", week, tz_offset_minutes: tz() }),
+    shareCard: () => panelCall(engine, "GET", `/v1/app/share/card?tz_offset_minutes=${tz()}`),
+    shareSetup: () => panelCall(engine, "GET", "/v1/app/share/setup"),
+  };
+}
+
+// Open setup at one step ("orcarouter" or "gateway"). The native command
+// takes no arguments, so the step also waits in localStorage (same origin as
+// setup) under "orca-setup-step" as {step, at}; setup reads it once. In a
+// plain browser the step rides in setup's URL fragment.
+native.openSetupAt = async function openSetupAt(engine, step, hash) {
+  try {
+    localStorage.setItem("orca-setup-step", JSON.stringify({ step, at: Date.now() }));
+  } catch {
+    /* storage can be unavailable; setup then opens at its first step */
+  }
+  if (this.available()) return this.invoke("open_setup");
+  window.location.href = `${engine.baseUrl}/desktop/setup.html${hash}`;
+};

@@ -10,6 +10,7 @@ import {
   isOrcaKey,
   localChoice,
   localRuntime,
+  requestedStep,
   maskOrcaKey,
   savedKeyResult,
   setupLinkConfirmation,
@@ -199,4 +200,22 @@ test("only setup links reach setup's confirmation", () => {
   assert.equal(setupLinkConfirmation({ action: "connect", agent: "codex" }, AGENTS), null);
   assert.equal(setupLinkConfirmation(null, AGENTS), null);
   assert.equal(setupLinkConfirmation({ action: "setup", agents: ["nope"], budget_cents: null }, AGENTS), null, "nothing to do");
+});
+
+
+// The panel opens setup at a step ("Add OrcaRouter backup", "Join"): it
+// leaves {step, at} in localStorage (natively) or #step= in the URL.
+test("requestedStep reads a fresh stored step or the URL fragment", () => {
+  const now = 1_000_000;
+  assert.equal(requestedStep(JSON.stringify({ step: "orcarouter", at: now - 5_000 }), "", now), "hosted");
+  assert.equal(requestedStep(null, "#step=gateway", now), "company");
+  assert.equal(requestedStep(null, "#x=1&step=orcarouter", now), "hosted");
+});
+
+test("requestedStep ignores stale, unknown or broken requests", () => {
+  const now = 1_000_000;
+  assert.equal(requestedStep(JSON.stringify({ step: "orcarouter", at: now - 120_000 }), "", now), null);
+  assert.equal(requestedStep(JSON.stringify({ step: "evil", at: now }), "", now), null);
+  assert.equal(requestedStep("{not json", "#step=nope", now), null);
+  assert.equal(requestedStep(null, "", now), null);
 });

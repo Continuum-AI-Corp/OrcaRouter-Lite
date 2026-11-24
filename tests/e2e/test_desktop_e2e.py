@@ -90,16 +90,19 @@ def stack(tmp_path_factory):
 
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GEMINI_", "ORCAROUTER_", "DATABASE_",
-                                "CREDENTIAL_", "API_KEY_", "ORCA_", "OLLAMA_", "LMSTUDIO_", "LLAMACPP_"))}
+                                "CREDENTIAL_", "API_KEY_", "ORCA_", "OLLAMA_", "LMSTUDIO_", "LLAMACPP_",
+                                "ARTIFICIAL_"))}
     up_port, engine_port, ollama_port, closed_port = _free_port(), _free_port(), _free_port(), _free_port()
     env.update({
         "HOME": str(home), "USERPROFILE": str(home), "ORCA_HOME": str(orca_home),
         "ORCA_KEYCHAIN": "0", "ORCA_NO_UPDATE_CHECK": "1", "PYTHONPATH": str(ROOT),
         "OPENAI_API_KEY": "sk-e2e-upstream", "OPENAI_BASE_URL": f"http://127.0.0.1:{up_port}/v1",
-        # Setup checks an OrcaRouter key here (the fake plays OrcaRouter under /orca).
+        # OrcaRouter and Anthropic on the fake provider (the fake plays
+        # OrcaRouter under /orca; no keys for them until a test adds one), and
+        # a fake Ollama that a test starts on this port. Never probe runtimes
+        # really running on this machine.
         "ORCAROUTER_BASE_URL": f"http://127.0.0.1:{up_port}/orca/v1",
-        # Local runtimes: a fake Ollama is started only for the setup test that
-        # needs one; never probe runtimes really running on this machine.
+        "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{up_port}/anthropic",
         "OLLAMA_HOST": f"127.0.0.1:{ollama_port}",
         "LMSTUDIO_BASE_URL": f"http://127.0.0.1:{closed_port}",
         "LLAMACPP_BASE_URL": f"http://127.0.0.1:{closed_port}",
@@ -665,6 +668,15 @@ def test_10f_setup_offers_local_models_only_when_one_is_running(stack):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10f2_setup_opens_at_the_step_the_panel_asked_for(stack):
+    report = _browser("setup_step.cjs", stack["base"], stack["app_key"])
+    assert report["errors"] == []
+    assert report["fromHash"] == "company" and report["fromStorage"] == "company"
+    assert report["storageLeft"] is None  # used once
+    assert report["nextOpen"] != "company" and report["stale"] != "company"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
 def test_10g_a_setup_link_fills_in_setup_only_after_the_user_continues(stack):
     report = _browser("setup_link.cjs", stack["base"], stack["app_key"])
     assert report["errors"] == []
@@ -703,8 +715,175 @@ def test_10h_the_dashboard_in_the_app(stack):
         assert href.startswith("https://www.orcarouter.ai/") and href.endswith("ref=lite-dashboard"), href
 
 
+# ── the panel's roadmap features (tests/e2e/panel_features.cjs) ─────────
+
+
+def _panel(stack, scenario: str) -> dict:
+    report = _browser("panel_features.cjs", stack["base"], stack["app_key"], scenario)
+    assert report["errors"] == [], report["errors"]
+    return report
+
+
+def _claude_request(stack, model="claude-sonnet-4-6"):
+    base, token = _claude(stack["home"])
+    return httpx.post(f"{base}/v1/messages", headers={"Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01"},
+                      json={"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "ping"}]},
+                      timeout=60)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10p_the_agent_sheet(stack):
+    # The panel tests start without the OrcaRouter key the setup tests saved
+    # (the backup offer only shows then).
+    _app(stack, "DELETE", "/v1/providers/orcarouter")
+    # D2, D3, D4, D5, H3 in the panel.
+    for agent in ("claude-code", "codex"):
+        assert _orca(stack, "connect", agent).returncode == 0
+    assert _claude_request(stack).status_code == 200  # only an OpenAI key: another model answers (H3)
+    codex_cfg = stack["home"] / ".codex/config.toml"
+    codex_cfg.write_text('model = "gpt-5.1-codex"\n')  # as Codex's own setup would (D5)
+    try:
+        report = _panel(stack, "agent")
+        assert "Works." in report["reconnectToast"], report
+        assert "orca" in codex_cfg.read_text().lower()
+        assert "Works." in report["connectToast"], report  # tested right after Connect (D4)
+        assert report["hint"].startswith("Claude Code asked for claude-sonnet-4-6"), report
+        assert "You have no Anthropic key" in report["hint"]
+        assert report["requests"] >= 1 and report["firstRequest"]
+        assert report["test"].startswith("Works. Answered in"), report
+        assert "~/.claude/settings.json" in report["test"]
+        assert "Saved." in report["budgetStatus"] and "$5.00" in report["budgetStatus"]
+        assert report["pickerGroups"][0] == "Your keys", report
+        assert report["pickerClosedByEscape"] is True
+        assert report["mainShown"] == "gpt-4o-mini"
+        assert "needs an OrcaRouter key" in report["needsKey"], report
+        assert report["backOnHome"] is True
+        settings = _app(stack, "GET", "/v1/app/settings").json()
+        assert settings["agent_budgets"] == {"claude-code": 500}
+        assert settings["agent_models"]["claude-code"] == {"main": "gpt-4o-mini", "background": None,
+                                                         "fallback_to_auto": False}
+    finally:
+        _app(stack, "PUT", "/v1/app/settings", json={"agent_budgets": {}, "agent_models": {}})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10q_the_backup_offer_after_real_failures_and_not_now(stack):
+    # H2: Anthropic overloaded, and no other key of the user's serves Claude.
+    assert _app(stack, "PUT", "/v1/providers/anthropic", json={"api_key": "sk-ant-e2e"}).status_code == 200
+    offers = _app(stack, "GET", "/v1/app/summary").json()["offers"]
+    assert all(o["provider"] != "anthropic" for o in offers)  # nothing like it failed yet
+    httpx.post(f"{stack['upstream']}/_state", json={"anthropic": "overloaded"}, timeout=10)
+    try:
+        for _ in range(3):
+            assert _claude_request(stack).status_code >= 500
+    finally:
+        httpx.post(f"{stack['upstream']}/_state", json={"anthropic": "ok"}, timeout=10)
+    try:
+        report = _panel(stack, "offer")
+        assert report["lead"] == "3 requests failed today.", report
+        assert report["rest"] == "Anthropic was overloaded and none of your other keys has Claude."
+        assert report["body"].startswith("Add OrcaRouter's gateway as a backup")
+        assert report["hiddenAfterReload"] is True
+        dismissed = _app(stack, "GET", "/v1/app/settings").json()["dismissed_offers"]
+        assert list(dismissed) == ["backup"]
+        assert _app(stack, "GET", "/v1/app/summary").json()["offers"] == []
+    finally:
+        _app(stack, "DELETE", "/v1/providers/anthropic")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10r_orcarouter_spend_and_the_out_of_credit_banner(stack):
+    # H4: a paid OrcaRouter request (with its reported cost), then a 402.
+    assert _app(stack, "PUT", "/v1/providers/orcarouter", json={"api_key": "sk-orca-e2e-key"}).status_code == 200
+    _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "all"})
+    pin = {"model": "minimax-m2.7", "messages": [{"role": "user", "content": "ping"}]}
+    try:
+        assert _app(stack, "POST", "/v1/chat/completions", json=pin).status_code == 200
+        httpx.post(f"{stack['upstream']}/_state", json={"orca": "no_credit"}, timeout=10)
+        assert _app(stack, "POST", "/v1/chat/completions", json=pin).status_code == 402
+        report = _panel(stack, "credit")
+        assert report["banner"].startswith("OrcaRouter is out of credit. Orca is using your own keys only."), report
+        assert report["firstProvider"] == "orcarouter"
+        assert "OrcaRouter" in report["providerRow"] and "$0.01 this month" in report["providerRow"]
+        assert "Out of credit" in report["providerRow"]
+        assert len(report["opened"]) == 1 and "/console/topup" in report["opened"][0]
+        assert "ref=lite-panel" in report["opened"][0]
+    finally:
+        httpx.post(f"{stack['upstream']}/_state", json={"orca": "ok"}, timeout=10)
+        _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "free"})
+        _app(stack, "DELETE", "/v1/providers/orcarouter")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10s_models_on_this_computer(stack):
+    # P2 · D1: Ollama starts after the engine; Refresh finds it.
+    ollama = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "tests.e2e.fake_ollama:app", "--port", str(stack["ollama_port"]),
+         "--log-level", "warning"], cwd=ROOT, env=stack["env"], stdout=open(stack["logs"] / "ollama.log", "w"),
+        stderr=subprocess.STDOUT)
+    try:
+        _wait(f"http://127.0.0.1:{stack['ollama_port']}/_calls", ollama, "fake ollama")
+        report = _panel(stack, "local")
+        assert report["runtime"].startswith("OLOllama"), report  # its tile, then its name
+        assert "found 1 model" in report["runtime"] and "Running" in report["runtime"]
+        assert report["checked"] is True
+        assert report["afterOff"] == []
+        assert report["afterOn"] == ["ollama/qwen3-coder:30b"]
+    finally:
+        ollama.terminate()
+        _stop(ollama, graceful_seconds=10)
+        _app(stack, "PUT", "/v1/app/settings", json={"local_models": None})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10t_savings_card_weekly_report_and_share_my_setup(stack):
+    # V2, H8, H7, V3.
+    report = _panel(stack, "share")
+    assert report["alt"].startswith("This week, across ") and "Orca saved me $" in report["alt"], report
+    assert report["painted"]["w"] == 1200 and report["painted"]["h"] == 630 and report["painted"]["alpha"] == 255
+    assert "image/png" in report["clipboardTypes"]
+    x, linkedin = report["opened"]
+    assert x.startswith("https://x.com/intent/post?") and "ref%3Dlite-card" in x
+    assert linkedin.startswith("https://www.linkedin.com/sharing/share-offsite/?") and "ref%3Dlite-card" in linkedin
+    assert "Claude Code" in report["markdown"] and "|" in report["markdown"]
+    saved = report["csvToast"].split("Saved to ", 1)[1].rstrip(".")
+    assert saved.startswith("~/") and (stack["home"] / saved[2:]).is_file(), report["csvToast"]
+    assert report["setupLink"].startswith("orca://setup?agents=")
+    assert "sk-" not in report["setupLink"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10u_orca_links_only_open_a_confirmation(stack):
+    try:
+        report = _panel(stack, "links")
+        assert report["connectTitle"] == "Connect Gemini CLI"
+        assert report["focusOnCancel"] == "link-cancel"
+        assert report["connectedAfterCancel"] is False
+        assert "Works." in report["connectToast"] and report["connectedAfterConfirm"] is True
+        assert report["joinTitle"] == "Join a team gateway" and report["joinHost"] == "192.168.1.20:8000"
+        assert report["notEncrypted"] is True and report["keyField"] == ""
+        assert "first" in report["keyHelp"]
+        assert report["ignoredBadLinks"] is True and report["gatewayAfter"] is None
+    finally:
+        _orca(stack, "disconnect", "gemini-cli")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10v_settings_in_the_panel(stack):
+    try:
+        report = _panel(stack, "settings")
+        assert report["keyShown"].startswith("aa-") and "3f2" in report["keyShown"] and "Saved" in report["keyShown"]
+        assert report["keyStatus"] == {"configured": True, "source": "app", "hint": "aa-…3f2"}
+        assert "0 to 5" in report["badRetries"]
+        assert report["routerStatus"].startswith("Saved.") and report["saved"] == {"retries": 2, "cooldown": 60}
+        assert report["keyAfterRemove"]["configured"] is False
+    finally:
+        _app(stack, "PUT", "/v1/app/settings", json={"router_num_retries": None, "router_cooldown_seconds": None})
+        _orca(stack, "disconnect", "--all")
+
 def test_11_nothing_leaked_into_the_engine_log(stack):
     log = stack["engine_log"].read_text()
-    for secret in ("sk-e2e-upstream", stack["app_key"], CLIPBOARD_KEY):
+    for secret in ("sk-e2e-upstream", stack["app_key"], CLIPBOARD_KEY, "sk-orca-e2e-key", "sk-ant-e2e",
+                   "aa-e2e-test-key-0003f2"):
         assert secret not in log
     assert shlex.quote  # keep the import used for readers of _command_code

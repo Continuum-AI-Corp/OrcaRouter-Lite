@@ -152,3 +152,26 @@ export function setupLinkConfirmation(link, agents) {
   if (!parts.length) return null;
   return { text: `A link wants to set up Orca: ${parts.join("; ")}`, agents: tick, budgetCents, skipped };
 }
+
+// ── setup: a step the panel asked for ──
+
+// The panel opens setup at a step ("Add OrcaRouter backup", "Join my
+// company's gateway"). Natively it leaves {step, at} in localStorage under
+// "orca-setup-step"; in a browser it adds #step= to the URL. Returns the
+// route to select, or null. A stored request older than a minute is ignored
+// so setup opened later from the menu starts as usual.
+const STEP_ROUTES = { orcarouter: "hosted", gateway: "company" };
+export const SETUP_STEP_KEY = "orca-setup-step";
+
+export function requestedStep(stored, hash, now = Date.now()) {
+  if (stored) {
+    try {
+      const { step, at } = JSON.parse(stored);
+      if (typeof at === "number" && now - at >= 0 && now - at < 60_000 && STEP_ROUTES[step]) return STEP_ROUTES[step];
+    } catch {
+      /* a broken entry is ignored */
+    }
+  }
+  const fromHash = new URLSearchParams(String(hash || "").replace(/^#/, "")).get("step");
+  return STEP_ROUTES[fromHash] || null;
+}

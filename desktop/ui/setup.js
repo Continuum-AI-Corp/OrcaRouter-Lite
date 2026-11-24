@@ -17,6 +17,8 @@ import {
   localChoice,
   localRuntime,
   maskOrcaKey,
+  requestedStep,
+  SETUP_STEP_KEY,
   savedKeyResult,
   setupLinkConfirmation,
   setupRoutes,
@@ -144,6 +146,20 @@ function showRoutes() {
   }
   document.querySelector(`input[name="route"][value="${selected}"]`).checked = true;
   state.initialRoute = selected;
+  // Opened from the panel at a step (OrcaRouter's key, or a team gateway).
+  // "Local first, OrcaRouter for the rest" already holds the key step.
+  let stored = null;
+  try {
+    stored = localStorage.getItem(SETUP_STEP_KEY);
+    localStorage.removeItem(SETUP_STEP_KEY);
+  } catch {
+    /* storage unavailable: no step */
+  }
+  const asked = requestedStep(stored, window.location.hash);
+  if (asked && routes.includes(asked) && !(asked === "hosted" && selected === "local_hosted")) {
+    document.querySelector(`input[name="route"][value="${asked}"]`).checked = true;
+    document.querySelector(`.choice[data-route="${asked}"]`)?.scrollIntoView({ block: "center" });
+  }
   placeKeyBlock();
 }
 
