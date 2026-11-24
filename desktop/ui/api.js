@@ -169,7 +169,7 @@ export function toast(kind, title, detail, ms = 3600) {
   }[kind];
   el.innerHTML = `<span class="ico" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></span><div><b></b><span></span></div>`;
   el.querySelector("b").textContent = title;
-  el.querySelector("div > span").textContent = detail || "";
+  el.querySelector(":scope > div > span").textContent = detail || ""; // not the icon, also a span
   document.body.appendChild(el);
   const dismiss = () => {
     el.classList.add("leaving");
