@@ -418,3 +418,34 @@ def test_disconnect_all_works_without_the_engine(orca_home, tmp_path, monkeypatc
 
 def test_disconnect_needs_an_agent_or_all(orca_home, capsys):
     assert orca_cli.main(["disconnect"]) == 2
+
+
+# ── diagnostics (D8) ────────────────────────────────────────────────────
+
+
+def test_diagnostics_prints_the_engines_report(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={"text": "OrcaRouter Lite 9.9.9\nAgents: none\n"}))
+    assert orca_cli.main(["diagnostics"], transport=transport) == 0
+    assert seen[0].url.path == "/v1/app/diagnostics"
+    assert capsys.readouterr().out == "OrcaRouter Lite 9.9.9\nAgents: none\n"
+
+
+def test_diagnostics_without_the_engine_builds_what_it_can(orca_home, tmp_path, monkeypatch, capsys):
+    from packages.desktop import agents as ag
+
+    home = tmp_path / "userhome"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(orca_cli.Path, "home", classmethod(lambda cls: home))
+    ag.connect_agent("claude-code", home=home, state_dir=orca_home / "agents", base_url="http://127.0.0.1:8765",
+                     api_key="sk-orca-0123456789abcdefghij")
+    (orca_home / "engine.log").write_text(f"boom with sk-orca-0123456789abcdefghij in {home}/x\n")
+    assert orca_cli.main(["diagnostics"]) == 0
+    captured = capsys.readouterr()
+    out = captured.out
+    assert out.startswith("OrcaRouter Lite ")
+    assert "Engine: not running" in out
+    assert "claude-code" in out and "connected" in out
+    assert "sk-orca-0123456789" not in out and str(home) not in out
+    assert "boom with sk-…hij in ~/x" in out
+    assert captured.err == ""

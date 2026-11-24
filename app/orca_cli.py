@@ -8,6 +8,7 @@
     orca status [--json]         spend today and this week, by agent
     orca statusline              one short line for Claude Code's status bar
     orca report [--format csv]   spend by agent, as Markdown or CSV
+    orca diagnostics             a report to paste into a GitHub issue (no keys, no prompts)
     orca link --key sk-orca-…    use your OrcaRouter account as the hosted fallback
     orca login <url> --key …     point your agents at your team's gateway
     orca logout                  undo `orca login`
@@ -109,6 +110,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("statusline", help="one short line for Claude Code's status bar")
     r = sub.add_parser("report", help="spend by agent, as Markdown or CSV")
     r.add_argument("--format", choices=["md", "csv"], default="md")
+    sub.add_parser("diagnostics", help="a report for a GitHub issue: versions, agents, log (no keys or prompts)")
     lk = sub.add_parser("link", help="use your OrcaRouter account as the hosted fallback")
     lk.add_argument("--key", required=True, help="your sk-orca-… key from orcarouter.ai")
     lg = sub.add_parser("login", help="point your agents at your team's gateway")
@@ -318,6 +320,33 @@ def _disconnect_all(transport) -> int:
     return 1 if failed else 0
 
 
+def _diagnostics(transport) -> int:
+    """The engine's report, or (engine not running) what can be built here:
+    versions, agents from their config files, and the engine log's tail."""
+    body = _request("GET", "/v1/app/diagnostics", transport=transport, quiet=True)
+    if body and isinstance(body.get("text"), str):
+        sys.stdout.write(body["text"])
+        return 0
+    from packages.desktop import agents as ag
+    from packages.desktop import diagnostics as dg
+
+    home = dh.default_home()
+    app_version, engine_version = dg.versions()
+    statuses = ag.detect_agents(home=Path.home(), state_dir=home / "agents")
+    sys.stdout.write(dg.build(
+        version=app_version,
+        engine_version=engine_version,
+        engine="not running",
+        agents=dg.agent_rows(statuses, {}),
+        providers=None,
+        routing=None,
+        local=None,
+        log_lines=dg.log_tail(home / "engine.log"),
+        home=Path.home(),
+    ))
+    return 0
+
+
 def _logout() -> int:
     from packages.desktop import agents as ag
     from packages.desktop import gateway as gw
@@ -447,6 +476,9 @@ def main(
 
     if args.cmd == "logout":
         return _logout()
+
+    if args.cmd == "diagnostics":
+        return _diagnostics(transport)
 
     if args.cmd == "status":
         body = _request("GET", "/v1/app/summary", transport=transport,

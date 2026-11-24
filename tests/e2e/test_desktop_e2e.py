@@ -102,6 +102,9 @@ def stack(tmp_path_factory):
     })
     logs = tmp / "logs"
     logs.mkdir()
+    # Where the app sends the engine's output; diagnostics read it there.
+    orca_home.mkdir(mode=0o700)
+    engine_log = orca_home / "engine.log"
     upstream = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "tests.e2e.fake_upstream:app", "--port", str(up_port), "--log-level", "warning"],
         cwd=ROOT, env=env, stdout=open(logs / "upstream.log", "w"), stderr=subprocess.STDOUT,
@@ -113,12 +116,12 @@ def stack(tmp_path_factory):
     # closing stdin stops both, where terminate() would leave the child
     # holding the exe open (on Windows that blocks signing it afterwards).
     engine = subprocess.Popen([*orca, "up", "--port", str(engine_port), "--exit-with-stdin"], cwd=ROOT, env=env,
-                              stdin=subprocess.PIPE, stdout=open(logs / "engine.log", "w"), stderr=subprocess.STDOUT)
+                              stdin=subprocess.PIPE, stdout=open(engine_log, "w"), stderr=subprocess.STDOUT)
     try:
         _wait(f"http://127.0.0.1:{up_port}/_calls", upstream, "fake provider")
         _wait(f"http://127.0.0.1:{engine_port}/health", engine, "engine")
         yield {
-            "home": home, "orca_home": orca_home, "env": env, "orca": orca, "logs": logs,
+            "home": home, "orca_home": orca_home, "env": env, "orca": orca, "logs": logs, "engine_log": engine_log,
             "base": f"http://127.0.0.1:{engine_port}", "upstream": f"http://127.0.0.1:{up_port}",
             "app_key": (orca_home / "app.key").read_text().strip(),
         }
@@ -450,6 +453,25 @@ def test_6d_the_test_button_explains_a_stopped_provider(stack):
     assert result["error"].startswith("OpenAI isn't answering right now"), result
 
 
+def test_6e_diagnostics_leave_out_keys_prompts_and_home(stack):
+    # D8: after the real requests above (and their keys), from the engine
+    # and from the CLI.
+    home = stack["home"]
+    secrets = ["sk-e2e-upstream", stack["app_key"], _claude(home)[1], _codex(home)[1], _opencode(home)[1]]
+    r = _app(stack, "GET", "/v1/app/diagnostics")
+    assert r.status_code == 200, r.text
+    cli = _orca(stack, "diagnostics")
+    assert cli.returncode == 0, cli.stderr
+    for text in (r.json()["text"], cli.stdout):
+        assert text.startswith("OrcaRouter Lite ")
+        for agent in AUTO_AGENTS:
+            assert agent in text
+        for secret in secrets:
+            assert secret not in text
+        assert "What's in the README" not in text and "Reply with one word" not in text
+        assert str(home) not in text
+
+
 def test_7_agent_keys_cannot_reach_the_app_api(stack):
     _base, token = _claude(stack["home"])
     r = httpx.get(f"{stack['base']}/v1/app/summary", headers={"Authorization": f"Bearer {token}"}, timeout=10)
@@ -554,7 +576,7 @@ def test_10d_disconnect_all_from_the_panel(stack):
 
 
 def test_11_nothing_leaked_into_the_engine_log(stack):
-    log = (stack["logs"] / "engine.log").read_text()
+    log = stack["engine_log"].read_text()
     for secret in ("sk-e2e-upstream", stack["app_key"]):
         assert secret not in log
     assert shlex.quote  # keep the import used for readers of _command_code

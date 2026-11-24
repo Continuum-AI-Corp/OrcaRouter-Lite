@@ -1021,3 +1021,52 @@ async def test_agent(
         config_path=agent_test.display_path(ep.config_path, ctx.home),
         error=agent_test.explain(result, agent_name=spec.name, base_url=shown_base, failed=failed),
     )
+
+
+# ── diagnostics (D8) ────────────────────────────────────────────────────
+
+
+async def _routing_line(db: AsyncSession, workspace_id: str, settings: DesktopSettings, hosted: bool) -> str:
+    from packages.db.models.routing_config import RoutingConfig
+
+    row = (
+        await db.execute(
+            select(RoutingConfig.strategy).where(RoutingConfig.workspace_id == workspace_id,
+                                                 RoutingConfig.is_deleted == 0)
+        )
+    ).first()
+    strategy = row.strategy if row else "balanced"
+    if not hosted:
+        orca = "not set up"
+    else:
+        orca = "free models only" if settings.hosted_models == "free" else "free and paid models"
+    return f"{strategy} · OrcaRouter: {orca} · budget: {settings.budget_mode}"
+
+
+@router.get("/diagnostics")
+async def diagnostics_report(
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Versions, agents, providers, routing, local runtimes and the engine
+    log's tail, with keys masked, paths under ~ and no prompt text."""
+    from packages.desktop import agent_test, local_models
+    from packages.desktop import diagnostics as dg
+
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    recent = await _log_rows(db, kc.workspace_id, datetime.now(timezone.utc) - HEALTH_WINDOW)
+    statuses = ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)
+    app_version, engine_version = dg.versions()
+    text = dg.build(
+        version=app_version,
+        engine_version=engine_version,
+        engine=f"running at {ctx.base_url}",
+        agents=dg.agent_rows(statuses, agent_test.LAST),
+        providers=await _providers(db, kc.workspace_id, recent),
+        routing=await _routing_line(db, kc.workspace_id, settings, await _hosted_configured(db)),
+        local=dg.local_lines(local_models.last()),
+        log_lines=await asyncio.to_thread(dg.log_tail, ctx.state_dir.parent / "engine.log"),
+        home=ctx.home,
+    )
+    return {"text": text}
