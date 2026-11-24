@@ -17,7 +17,9 @@ CARD = "lite-card"      # the shareable savings card (V2)
 BADGE = "lite-badge"    # the README badge (V6)
 PANEL = "lite-panel"    # the menu-bar panel
 SHARE = "lite-share"    # "Share my setup" (V3)
-SOURCES = (SETUP, CARD, BADGE, PANEL, SHARE)
+DASHBOARD = "lite-dashboard"  # the dashboard's OrcaRouter card (tagged in the browser)
+SITE = "lite-site"      # the landing page's OrcaRouter section
+SOURCES = (SETUP, CARD, BADGE, PANEL, SHARE, DASHBOARD, SITE)
 
 
 def with_ref(url: str | None, source: str) -> str | None:

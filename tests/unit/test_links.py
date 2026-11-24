@@ -26,7 +26,7 @@ def test_landing_page_link():
 
 
 def test_only_known_sources():
-    assert {"lite-setup", "lite-card", "lite-badge", "lite-panel", "lite-share"} == set(SOURCES)
+    assert {"lite-setup", "lite-card", "lite-badge", "lite-panel", "lite-share", "lite-dashboard", "lite-site"} == set(SOURCES)
     with pytest.raises(ValueError):
         with_ref("https://x.test/", "user-42")
 
