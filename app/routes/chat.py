@@ -39,6 +39,7 @@ from packages.desktop import hosted_state, prefs
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_fallback import (
     hidden_params_of,
+    hosted_cost_usd,
     hosted_bypass_of_local,
     match_served_deployment,
 )
@@ -166,26 +167,30 @@ def _orca_response_headers(
     return headers
 
 
-HOSTED_COST_HEADER = "llm_provider-x-orcarouter-beta-usd"
-
-
-def _hosted_cost_usd(hidden: dict) -> float | None:
-    """The exact cost OrcaRouter reported for a request (its
-    X-OrcaRouter-beta-usd response header, which LiteLLM keeps with the
-    response's other headers), or None when it didn't report one."""
-    raw = ((hidden or {}).get("additional_headers") or {}).get(HOSTED_COST_HEADER)
-    try:
-        return float(raw) if raw is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _provider_of(ctx, model: str | None) -> str | None:
     """The provider that serves `model` first: an own key or local model
     before OrcaRouter, as the router reaches them."""
     providers = [d.provider for d in ctx.deployments if d.model_name == model]
     own = [p for p in providers if p != desktop_routing.HOSTED_PROVIDER]
     return (own or providers or [None])[0]
+
+
+def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPException:
+    """The HTTP error for a request no provider could serve.
+
+    OrcaRouter running out of credit is recorded here (H4): for the next ten
+    minutes auto and agent fallback keep to own keys. In the desktop app the
+    message then says what to do about it in plain words.
+    """
+    detail = f"Upstream provider error: {exc}"
+    if exc.error_type == route_notes.OUT_OF_CREDIT:
+        hosted_state.mark_out_of_credit()
+        if desktop:
+            detail = desktop_routing.out_of_credit_detail(get_settings().orcarouter_billing_url)
+    # The type travels in a header: the generic HTTP status alone loses it
+    # (model_not_found is 422 here but 404 on the Anthropic/Gemini surfaces),
+    # and the native routes map it to their own status/error taxonomy.
+    return HTTPException(status_code=exc.http_status, detail=detail, headers={ERROR_TYPE_HEADER: exc.error_type})
 
 
 def _note_hosted_success(provider: str | None) -> None:
@@ -772,14 +777,7 @@ async def execute_chat(
         except UpstreamProviderError as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
             await _log_pre_stream_failure(exc.http_status, exc.error_type)
-            raise HTTPException(
-                status_code=exc.http_status,
-                detail=f"Upstream provider error: {exc}",
-                # The generic HTTP status alone loses the translated type
-                # (e.g. model_not_found is 422 here but 404 on the
-                # Anthropic/Gemini surfaces).
-                headers={ERROR_TYPE_HEADER: exc.error_type},
-            ) from exc
+            raise _upstream_failure(exc, desktop=desktop) from exc
         except Exception as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
             await _log_pre_stream_failure(503, type(exc).__name__)
@@ -850,7 +848,7 @@ async def execute_chat(
                 }
                 if served_group:
                     synthetic["_orca_meta"]["model_group"] = served_group
-                hosted_cost = _hosted_cost_usd(hidden_params_of(stream_obj))
+                hosted_cost = hosted_cost_usd(hidden_params_of(stream_obj))
                 if hosted_cost is not None:
                     synthetic["_orca_meta"]["cost_usd"] = hosted_cost
                 if agg_fallback:
@@ -1222,13 +1220,7 @@ async def execute_chat(
         status_code = exc.http_status
         error_type = exc.error_type
         logger.warning("chat_completion_upstream_error", error=str(exc), error_type=exc.error_type)
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail=f"Upstream provider error: {exc}",
-            # See the streaming-path twin: lets the native routes map the
-            # translated type to their surface's status/error taxonomy.
-            headers={ERROR_TYPE_HEADER: exc.error_type},
-        ) from exc
+        raise _upstream_failure(exc, desktop=desktop) from exc
     except Exception as exc:
         status_code = 503
         error_type = type(exc).__name__

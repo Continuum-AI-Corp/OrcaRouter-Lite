@@ -21,6 +21,20 @@ def hidden_params_of(resp: object) -> dict:
     return hidden if isinstance(hidden, dict) else {}
 
 
+# LiteLLM keeps upstream response headers in `_hidden_params`, prefixed.
+HOSTED_COST_HEADER = "llm_provider-x-orcarouter-beta-usd"
+
+
+def hosted_cost_usd(hidden: dict | None) -> float | None:
+    """The exact cost OrcaRouter reported for a request (its
+    X-OrcaRouter-beta-usd response header), or None when it reported none."""
+    raw = ((hidden or {}).get("additional_headers") or {}).get(HOSTED_COST_HEADER)
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _norm_base(url: str | None) -> str:
     return (url or "").rstrip("/")
 

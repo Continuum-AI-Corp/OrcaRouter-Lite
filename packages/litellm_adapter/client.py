@@ -13,7 +13,10 @@ import time
 import structlog
 
 from packages.litellm_adapter.hosted_fallback import (
+    HOSTED_DEPLOYMENT_PREFIX,
     hidden_params_of,
+    hosted_cost_usd,
+    match_served_deployment,
     resolve_provider_and_fallback,
 )
 from packages.litellm_adapter.types import ProviderDeployment, UpstreamProviderError
@@ -78,6 +81,14 @@ def _translate_error(exc: Exception) -> UpstreamProviderError:
         return UpstreamProviderError(msg, http_status=503, error_type="upstream_auth_error")
     if isinstance(exc, litellm.Timeout):
         return UpstreamProviderError(msg, http_status=503, error_type="upstream_timeout")
+    if getattr(exc, "status_code", None) == 402:
+        # Payment required. From OrcaRouter that means its credit ran out
+        # (the desktop app says so and keeps to own keys for a while); from
+        # an own key (DeepSeek's empty balance) it's that account's problem.
+        # LiteLLM names the deployment that failed; hosted ids are pinned.
+        failed = str(getattr(exc, "failed_deployment_id", "") or "")
+        kind = "out_of_credit" if failed.startswith(HOSTED_DEPLOYMENT_PREFIX) else "payment_required"
+        return UpstreamProviderError(msg, http_status=402, error_type=kind)
     return UpstreamProviderError(msg, http_status=503, error_type="upstream_error")
 
 
@@ -252,11 +263,20 @@ class OrcaLiteLLMClient:
             litellm_provider=litellm_provider,
         )
 
+        # OrcaRouter reports each request's exact cost in a response header
+        # (asked for with X-OrcaRouter-beta-usd); it beats LiteLLM's own
+        # estimate, which doesn't know hosted prices.
+        hosted_cost = hosted_cost_usd(hidden)
         out["_orca_meta"] = {
             "provider": provider,
             "latency_ms": latency_ms,
-            "cost_usd": litellm_cost_usd,
+            "cost_usd": hosted_cost if hosted_cost is not None else litellm_cost_usd,
         }
+        served = match_served_deployment(self._deployments, hidden=hidden, served_model=out.get("model"))
+        if served is not None:
+            # The deployment's own name (e.g. a free model's id), whatever
+            # spelling the upstream put in the response.
+            out["_orca_meta"]["model_group"] = served.model_name
         if hosted_fallback:
             out["_orca_meta"]["fallback"] = True
             logger.info(
