@@ -289,6 +289,11 @@ class DesktopSettings(BaseModel):
     budget_mode: Literal["alert", "stop"] = "alert"
 
 
+# The desktop app runs one engine per home and its panel and setup window both
+# save through it, so serializing writes inside this process covers them.
+_SETTINGS_WRITE_LOCK = asyncio.Lock()
+
+
 async def _workspace(db: AsyncSession, workspace_id: str) -> Workspace:
     ws = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
     if ws is None:
@@ -315,15 +320,21 @@ async def put_settings_route(
     kc: KeyContext = Depends(require_app_caller),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    ws = await _workspace(db, kc.workspace_id)
     # Partial update: fields the caller didn't send keep their saved values.
-    current = _desktop_settings(ws).model_dump()
-    current.update(body.model_dump(exclude_unset=True))
-    updated = DesktopSettings(**current)
-    merged = dict(ws.settings_json or {})
-    merged["desktop"] = updated.model_dump()
-    ws.settings_json = merged  # reassign so SQLAlchemy sees the JSON change
-    await db.commit()
+    # The panel and the setup window can save at the same time, each with its
+    # own session, so read-merge-write one at a time and re-read the row
+    # inside the lock; otherwise a later save would write back the stale
+    # copy it read and drop the other's change.
+    async with _SETTINGS_WRITE_LOCK:
+        ws = await _workspace(db, kc.workspace_id)
+        await db.refresh(ws, ["settings_json"])
+        current = _desktop_settings(ws).model_dump()
+        current.update(body.model_dump(exclude_unset=True))
+        updated = DesktopSettings(**current)
+        merged = dict(ws.settings_json or {})
+        merged["desktop"] = updated.model_dump()
+        ws.settings_json = merged  # reassign so SQLAlchemy sees the JSON change
+        await db.commit()
     from packages.desktop import budget as budget_gate
 
     budget_gate.note_settings_changed()
