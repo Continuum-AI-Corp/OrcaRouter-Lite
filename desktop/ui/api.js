@@ -50,6 +50,7 @@ export function createEngine(win = window) {
     baseUrl,
     key,
     hasKey: Boolean(key),
+    request: call, // page-specific calls (see setupCalls below)
     summary: () => call("GET", `/v1/app/summary?tz_offset_minutes=${tzOffsetMinutes()}`),
     agents: () => call("GET", "/v1/app/agents"),
     connect: (id) => call("POST", `/v1/app/agents/${encodeURIComponent(id)}/connect`),
@@ -177,4 +178,18 @@ export function toast(kind, title, detail, ms = 3600) {
   el.addEventListener("mouseenter", () => clearTimeout(toastTimer));
   el.addEventListener("mouseleave", arm);
   arm();
+}
+
+// ── setup: engine calls (P1, H6, P2) ──
+
+// The calls only the setup window makes, on top of createEngine's.
+export function setupCalls(engine) {
+  return {
+    // The one provider list, in display order (P1).
+    supportedProviders: () => engine.request("GET", "/v1/providers/supported"),
+    // Ollama, LM Studio and llama.cpp found on this computer (P2).
+    localRuntimes: () => engine.request("GET", "/v1/app/local"),
+    routing: () => engine.request("GET", "/v1/routing"),
+    setStrategy: (strategy) => engine.request("PUT", "/v1/routing", { strategy }),
+  };
 }
