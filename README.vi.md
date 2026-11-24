@@ -33,6 +33,8 @@ lập trình viên, và một router tự lưu trữ cho cả đội. Giấy ph�
 
 OrcaRouter Lite là phiên bản mã nguồn mở của [OrcaRouter](https://www.orcarouter.ai). Nó chạy trên máy tính hoặc server của bạn, hỗ trợ API của OpenAI, Anthropic và Gemini, và có thể dùng `api.orcarouter.ai` được host làm lưới an toàn khi có sự cố và cho các mô hình mà bạn không có khoá.
 
+**OrcaRouter** là gateway được host đứng sau lưới an toàn của Lite: một khoá cho mọi mô hình, chuyển đổi dự phòng giữa các provider, mô hình miễn phí để bắt đầu, và trả theo từng request cho mô hình trả phí. Ứng dụng desktop gợi ý nó trước tiên và cho agent bắt đầu với mô hình miễn phí; khoá provider của riêng bạn vẫn là một lựa chọn đầy đủ, dù có dùng OrcaRouter hay không.
+
 ## Ứng dụng desktop
 
 Ứng dụng Orca nằm trên thanh menu. Nó chạy router tại `127.0.0.1`, kết nối các coding agent
@@ -146,7 +148,7 @@ Không clone, không docker. Đăng ký, lấy khoá, trỏ bất kỳ OpenAI SD
 # 2. Dùng https://api.orcarouter.ai/v1 làm URL gốc
 ```
 
-**Cần tài khoản.** Hosted lo định tuyến, tính phí và phần đuôi dài các provider — tính theo token trên tài khoản OrcaRouter của bạn. Xem [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Cần tài khoản.** Bắt đầu với mô hình miễn phí; mô hình trả phí được tính theo từng request trên tài khoản OrcaRouter của bạn. Hosted lo định tuyến, chuyển đổi dự phòng giữa các provider và phần đuôi dài các mô hình. Xem [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Sau đó gọi từ bất kỳ OpenAI SDK nào
 
@@ -229,7 +231,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Trường hợp dùng:
-- **Dùng-thử-trước-khi-mua** — không cần khoá provider local
+- **Bắt đầu miễn phí** — mô hình miễn phí không cần khoá provider; mô hình trả phí chỉ khi bạn chọn
 - **Logging local** — hosted lo định tuyến, Lite lưu các dòng RequestLog cho dashboard
 - **Failover** — provider local hỏng, hosted là lưới an toàn
 
@@ -298,7 +300,7 @@ Hơn 100 mô hình chat được nạp khi khởi động từ [cơ sở dữ li
 - `GET/PUT/DELETE /v1/providers/{provider}` — đặt / liệt kê / thu hồi khoá provider được mã hoá
 - `GET/PUT /v1/routing` — đổi chiến lược (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — analytics local, không có telemetry rời khỏi hộp
-- `GET  /v1/hosted` — trạng thái hosted-fallback (chạy thẻ "Get $5 free credit" trên dashboard)
+- `GET  /v1/hosted` — trạng thái gateway được host (chạy thẻ OrcaRouter trên dashboard)
 - `GET/POST/DELETE /v1/keys/...` — liệt kê / xoay vòng / thu hồi khoá API
 - `/v1/app/*` — agent, tổng hợp chi tiêu và ngân sách cho ứng dụng desktop (chỉ khi khởi động bằng `orca up`; xem [SECURITY.md](./SECURITY.md))
 - Dashboard single-page tại `/`

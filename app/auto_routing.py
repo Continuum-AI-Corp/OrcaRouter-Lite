@@ -20,11 +20,13 @@ Adapted from `apps/api/routes/chat.py:_required_capabilities` /
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from packages.litellm_adapter.catalog import CatalogModel
+from packages.litellm_adapter.hosted_catalog import FREE_HOSTED_MODELS, is_free_hosted
 
 # Suffix shapes that mark a model id as a more-specific *version* of a base
 # model rather than a different model. Matched against the substring AFTER
@@ -119,7 +121,13 @@ STRATEGY_TO_LITELLM: dict[str, str | None] = {
     "cheapest": "cost-based-routing",
     "fastest": None,
     "quality": None,
+    # Ranked here like cheapest, behind the local models that fit.
+    "local_first": None,
 }
+
+LOCAL_FIRST = "local_first"
+# Provider id of models running on this computer (packages/desktop/local_models.py).
+LOCAL_PROVIDER = "local"
 
 
 @dataclass(frozen=True)
@@ -252,6 +260,11 @@ def choose_auto_model(
     tps_scores: dict[str, float] | None = None,
     ttft_scores: dict[str, float] | None = None,
     top_n: int = 5,
+    free_first: bool = False,
+    allow_free_hosted: bool = False,
+    hosted_last: set[str] | frozenset[str] | None = None,
+    context_limits: dict[str, int] | None = None,
+    prompt_tokens: int = 0,
 ) -> tuple[list[str], dict[str, ScoringDetail]]:
     """Return up to `top_n` deployable models matching all `needs`, best first,
     plus a per-model scoring breakdown for the survivors.
@@ -299,16 +312,34 @@ def choose_auto_model(
 
     Excludes models with zero blended cost — those are unpriced entries in
     litellm's catalogue, not actually free, and routing to them would skew
-    the savings calculation.
+    the savings calculation — except OrcaRouter's free models
+    (FREE_HOSTED_MODELS), which really are free.
+
+    `hosted_last` (the desktop app's paid OrcaRouter models) ranks those
+    after every other model, keeping one as the last fallback.
+
+    `free_first` (the desktop app, with OrcaRouter configured) puts the free models
+    first, ahead of the strategy's ranking of everything else; those don't
+    count toward `top_n`. The "local_first" strategy puts models on this
+    computer (provider "local") ahead even of those, and ranks the rest like
+    `cheapest`; other strategies only use a local model the user prefers by
+    name. `context_limits` + `prompt_tokens` rule out a
+    model whose usable context (in tokens) the prompt would exceed.
     """
+    limits = context_limits or {}
+    preferred_set = set(preferred_models or [])
+    local_first = strategy == LOCAL_FIRST
     eligible = [
         m for m in candidates
         if m.id in deployable
         and _model_meets(m, needs)
-        and _blended_cost(m) > 0
+        and _may_auto_pick(
+            m, local_first=local_first, preferred=preferred_set,
+            allow_free_hosted=allow_free_hosted or free_first,
+        )
+        and not (prompt_tokens and m.id in limits and prompt_tokens > limits[m.id])
     ]
     if preferred_models:
-        preferred_set = set(preferred_models)
         narrowed = [m for m in eligible if m.id in preferred_set]
         if narrowed:
             eligible = narrowed
@@ -323,6 +354,24 @@ def choose_auto_model(
         eligible = [m for m in eligible if m.id in allow_set]
     if not eligible:
         return [], {}
+
+    # Free first (the desktop app's "free" mode): OrcaRouter's free models
+    # lead in their fixed order, whatever the strategy (they have no
+    # benchmark scores, so balanced/fastest would otherwise drop them), and
+    # the strategy ranks everything else behind them as fallbacks.
+    # Local first (P2 · D1): models on this computer that fit the request go
+    # before everything, then the free models, then the cheapest cloud.
+    lead: list[CatalogModel] = []
+    if local_first:
+        lead = sorted((m for m in eligible if m.provider == LOCAL_PROVIDER), key=lambda m: m.id)
+        eligible = [m for m in eligible if m.provider != LOCAL_PROVIDER]
+    if free_first or local_first:
+        lead += sorted(
+            (m for m in eligible if is_free_hosted(m.id)), key=lambda m: _free_rank(m.id)
+        )
+        eligible = [m for m in eligible if not is_free_hosted(m.id)]
+    if lead and not eligible:
+        return [m.id for m in lead], {m.id: _cheapest_breakdown(m) for m in lead}
 
     # Per-strategy: sort `eligible` (which may shrink under strict-coverage)
     # AND build a per-model `scoring_per_model` dict keyed by id. Dedupe +
@@ -469,8 +518,67 @@ def choose_auto_model(
         seen_bases.add(base)
         deduped.append(m)
 
+    # The desktop app's paid OrcaRouter models are the backup: every own-key
+    # model is tried before them, whatever they cost, and one stays in reach
+    # (the last fallback) even when own-key models fill the list.
+    if hosted_last:
+        own = [m for m in deduped if m.id not in hosted_last]
+        backup = [m for m in deduped if m.id in hosted_last]
+        if own and backup:
+            deduped = own[: max(top_n - 1, 0)] + backup
+        else:
+            deduped = own or backup
     final = deduped[:top_n]
     final_ids = [m.id for m in final]
     # Filter scoring to survivors only — sibling-deduped models drop out.
     scoring = {mid: scoring_per_model[mid] for mid in final_ids if mid in scoring_per_model}
+    if lead:
+        scoring.update({m.id: _cheapest_breakdown(m) for m in lead})
+        final_ids = [m.id for m in lead] + final_ids
     return final_ids, scoring
+
+
+def _may_auto_pick(
+    m: CatalogModel, *, local_first: bool, preferred: set[str], allow_free_hosted: bool,
+) -> bool:
+    """Zero-priced models are litellm's unpriced rows (not free), except
+    OrcaRouter's free models in the desktop app (`allow_free_hosted`; a
+    server keeps its old behaviour) and models on this computer — those
+    only under local_first or when the user prefers them by name."""
+    if m.provider == LOCAL_PROVIDER:
+        return local_first or m.id in preferred
+    return _blended_cost(m) > 0 or (allow_free_hosted and is_free_hosted(m.id))
+
+
+def _free_rank(model_id: str) -> int:
+    bare = model_id.split("/", 1)[-1]
+    for i, free in enumerate(FREE_HOSTED_MODELS):
+        if model_id == free or bare == free.split("/", 1)[-1]:
+            return i
+    return len(FREE_HOSTED_MODELS)
+
+
+def estimate_prompt_tokens(body: dict) -> int:
+    """A rough prompt size (about 4 characters a token) for deciding whether
+    a request fits a model's context window before sending it anywhere.
+
+    Counts message text (string content and text parts), tool definitions
+    and tool-call arguments; images count nothing here (they are a
+    capability question, not a size one).
+    """
+    chars = 0
+    for m in body.get("messages") or []:
+        content = m.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chars += len(part["text"])
+        for call in m.get("tool_calls") or []:
+            args = ((call or {}).get("function") or {}).get("arguments")
+            if isinstance(args, str):
+                chars += len(args)
+    if body.get("tools"):
+        chars += len(json.dumps(body["tools"], separators=(",", ":")))
+    return chars // 4

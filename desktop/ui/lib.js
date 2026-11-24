@@ -250,23 +250,7 @@ export function agentNote(agent) {
 
 // ── setup: provider keys ──
 
-// Providers setup can add a key for; the engine checks each key with the
-// provider before saving it. Every other provider is in the dashboard.
-export const SETUP_PROVIDERS = [
-  { id: "anthropic", name: "Anthropic", placeholder: "Anthropic key (sk-ant-…)" },
-  { id: "openai", name: "OpenAI", placeholder: "OpenAI key (sk-…)" },
-  { id: "google", name: "Google Gemini", placeholder: "Gemini API key (AIza…)" },
-  { id: "deepseek", name: "DeepSeek", placeholder: "DeepSeek key (sk-…)" },
-  { id: "xai", name: "xAI Grok", placeholder: "xAI key (xai-…)" },
-  { id: "mistral", name: "Mistral", placeholder: "Mistral key" },
-  { id: "groq", name: "Groq", placeholder: "Groq key (gsk_…)" },
-  { id: "together", name: "Together", placeholder: "Together key" },
-  { id: "fireworks", name: "Fireworks", placeholder: "Fireworks key (fw_…)" },
-];
-
-const PROVIDER_LABEL = Object.fromEntries(SETUP_PROVIDERS.map((p) => [p.id, p.name]));
-
-// rows: [{provider, key}] as typed. Returns the keys to save, or the first problem.
+// rows: [{provider, name, key}] as typed (name from the engine's provider list). Returns the keys to save, or the first problem.
 export function collectProviderKeys(rows) {
   const keys = [];
   const seen = new Set();
@@ -274,7 +258,7 @@ export function collectProviderKeys(rows) {
     const key = (row.key || "").trim();
     if (!key) continue;
     if (seen.has(row.provider)) {
-      const name = PROVIDER_LABEL[row.provider] || row.provider;
+      const name = row.name || row.provider;
       return { keys, error: { index, message: `You added two ${name} keys. Keep one.` } };
     }
     seen.add(row.provider);
@@ -301,4 +285,38 @@ export function disconnectAllLabel(rows) {
   const n = (rows || []).filter((r) => r.state === "connected").length;
   if (n === 0) return null;
   return n === 1 ? "Disconnect all" : `Disconnect all ${n} agents`;
+}
+
+// ── panel: H8 links ──
+// Every outgoing link the app builds says where it came from (`ref=<source>`),
+// so the landing page can count visits by source without cookies. Only these
+// fixed names: a link never carries anything about the user. Same rules as
+// packages/desktop/links.py.
+export const LINK_SOURCES = ["lite-setup", "lite-card", "lite-badge", "lite-panel", "lite-share"];
+
+export function withRef(url, source) {
+  if (!LINK_SOURCES.includes(source)) throw new Error(`unknown link source: ${source}`);
+  if (!url) return null;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  u.searchParams.delete("ref");
+  u.searchParams.append("ref", source);
+  return u.toString();
+}
+
+// ── panel: engine error messages ──
+// The words to show for a failed engine call: FastAPI's validation errors
+// arrive as a list of {loc, msg}; show the first message, not the JSON.
+export function errorMessage(data, status) {
+  const fallback = `Request failed (${status})`;
+  const msg = data?.error?.message ?? data?.detail;
+  if (msg === undefined || msg === null || msg === "") return fallback;
+  if (typeof msg === "string") return msg;
+  if (Array.isArray(msg)) return typeof msg[0]?.msg === "string" ? msg[0].msg : fallback;
+  return JSON.stringify(msg);
 }

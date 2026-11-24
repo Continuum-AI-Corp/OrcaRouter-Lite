@@ -70,6 +70,9 @@ async def fetch_aa_index(
     Pass `db` to opt in to DB-backed snapshot persistence (recommended
     for any real request flow); omit for unit tests of pure parsing.
     """
+    from app import benchmark_key
+
+    await benchmark_key.ensure_loaded(db)
     return await get_quality_index(
         catalog_ids=set(CATALOG_BY_ID.keys()),
         db=db,
@@ -141,9 +144,10 @@ async def resolve_model_metrics(
     override PUT/DELETE and quality refresh routes so operator
     mutations are visible without waiting for TTL.
     """
-    from app.config import get_settings
+    from app import benchmark_key
 
-    aa_key_hash = _hash_aa_key(get_settings().artificial_analysis_api_key or "")
+    await benchmark_key.ensure_loaded(db)
+    aa_key_hash = _hash_aa_key(benchmark_key.effective_key())
     cache_key = (workspace_id, aa_key_hash)
     if not force_refresh:
         cached = _metrics_cache.get(cache_key)

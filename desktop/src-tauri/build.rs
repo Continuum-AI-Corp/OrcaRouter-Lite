@@ -15,6 +15,10 @@ fn main() {
             "resize_panel",
             "can_install_updates",
             "install_update",
+            "clipboard_orca_key",
+            "clear_clipboard",
+            "copy_png",
+            "take_pending_link",
         ]),
     ))
     .expect("failed to run tauri-build");

@@ -873,11 +873,19 @@ _ENGINE_ERROR_STATUS = {
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
     "no_capable_provider": 403,
+    # The desktop app's refusals: only a paid model could serve the request
+    # (the user has to allow paid models), or OrcaRouter is out of credit.
+    # Neither succeeds on retry.
+    "needs_paid_model": 403,
+    "out_of_credit": 402,
+    # A provider's own 402 (no balance left on the user's key).
+    "payment_required": 402,
 }
 
 _STATUS_TO_ERROR_TYPE = {
     400: "invalid_request_error",
     401: "authentication_error",
+    402: "insufficient_quota",
     403: "permission_error",
     404: "invalid_request_error",
     422: "invalid_request_error",

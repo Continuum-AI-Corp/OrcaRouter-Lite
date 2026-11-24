@@ -33,6 +33,8 @@ Claude Code, Codex, Gemini CLI, OpenCode, 그리고 직접 만든 앱이 모든 
 
 OrcaRouter Lite는 [OrcaRouter](https://www.orcarouter.ai)의 오픈 소스 버전입니다. 내 컴퓨터나 서버에서 실행되고, OpenAI·Anthropic·Gemini API를 지원하며, 장애 상황이나 키가 없는 모델을 위한 안전망으로 호스팅된 `api.orcarouter.ai`를 사용할 수 있습니다.
 
+**OrcaRouter**는 Lite 안전망 뒤에 있는 호스팅 게이트웨이입니다. 키 하나로 모든 모델을 쓰고, 공급자 간 장애 조치를 하며, 무료 모델로 시작하고, 유료 모델은 요청당 결제합니다. 데스크톱 앱은 이를 먼저 제안하고 에이전트를 무료 모델로 시작합니다. 내 공급자 키도 OrcaRouter와 함께든 없이든 완전한 대안으로 계속 쓸 수 있습니다.
+
 ## 데스크톱 앱
 
 Orca 앱은 메뉴 바에 상주합니다. `127.0.0.1`에서 라우터를 실행하고, 코딩 에이전트를 라우터에
@@ -146,7 +148,7 @@ docker compose up
 # 2. Use https://api.orcarouter.ai/v1 as the base URL
 ```
 
-**계정이 필요합니다.** Hosted는 라우팅, 청구 및 공급자의 롱테일을 처리하며 OrcaRouter 계정에서 토큰별로 청구됩니다. [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)을 참조하세요.
+**계정이 필요합니다.** 무료 모델로 시작하세요. 유료 모델은 OrcaRouter 계정에서 요청당 청구됩니다. Hosted는 라우팅, 공급자 간 장애 조치, 모델의 롱테일을 처리합니다. [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)을 참조하세요.
 
 ### 그런 다음 OpenAI SDK에서 호출하세요.
 
@@ -229,7 +231,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 사용 사례:
-- **구매 전 체험** — 로컬 공급자 키가 필요하지 않습니다.
+- **무료로 시작** — 무료 모델은 공급자 키가 필요 없습니다. 유료 모델은 직접 선택할 때만 사용됩니다.
 - **로컬 로깅** — 호스팅된 라우팅 처리, Lite는 대시보드에 대한 RequestLog 행 저장
 - **장애 조치** — 로컬 공급자가 실패하면 호스팅이 안전망입니다.
 
@@ -298,7 +300,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 - `GET/PUT/DELETE /v1/providers/{provider}` — 암호화된 공급자 키 설정/목록/해지
 - `GET/PUT /v1/routing` — 전략 변경(`균형` / `가장 저렴함` / `가장 빠름` / `품질`)
 - `GET /v1/analytics/{recent,spend,latency,savings,unreachable}` — 로컬 분석, 원격 분석 없음
-- `GET /v1/hosted` — 호스팅 대체 상태(대시보드의 "5달러 무료 크레딧 받기" 카드 구동)
+- `GET /v1/hosted` — 호스팅 게이트웨이 상태(대시보드의 OrcaRouter 카드 구동)
 - `GET/POST/DELETE /v1/keys/...` — API 키 나열 / 회전 / 취소
 - `/v1/app/*` — 데스크톱 앱용 에이전트, 지출 요약, 예산(`orca up`으로 시작한 경우에만 제공. [SECURITY.md](./SECURITY.md) 참조)
 - `/`의 단일 페이지 대시보드

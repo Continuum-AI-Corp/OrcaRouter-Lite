@@ -9,36 +9,37 @@ const LOCALE_KEY = "orca-lite-locale";
 const SUPPORTED_LOCALES = ["en", "zh", "hi", "es", "pt", "ru", "ja", "de", "fr", "it", "ar", "ko"];
 const LOCALE_LABELS = { en: "English", zh: "中文", hi: "हिन्दी", es: "Español", pt: "Português", ru: "Русский", ja: "日本語", de: "Deutsch", fr: "Français", it: "Italiano", ar: "العربية", ko: "한국어" };
 const I18N = {
-  en: { "auth.tagline":"Open Source. Single Tenant.","auth.welcome":"Welcome back","auth.subtitle":"Paste the sk-orca-* key printed in your server logs on first run. Stored only in this browser via localStorage.","auth.api_key":"API key","auth.continue":"Continue","nav.search":"Search","nav.overview":"Overview","nav.providers":"Providers","nav.routing":"Routing","nav.analytics":"Analytics","nav.api_keys":"API keys","nav.help_docs":"Help & docs","nav.sign_out":"Sign out","status.connected":"Connected","status.disconnected":"Disconnected","auth.checking":"Checking…","auth.welcome_aboard":"Welcome aboard.","auth.key_invalid":"That key didn't work. Double-check the prefix sk-orca-…","tab.overview.title":"Overview","tab.overview.sub":"Your single-tenant LLM router at a glance.","tab.providers.title":"Provider keys","tab.providers.sub":"BYOK — encrypted at rest, used to call upstream LLMs.","tab.routing.title":"Routing","tab.routing.sub":"How model='auto' picks the right model for each request.","tab.analytics.title":"Analytics","tab.analytics.sub":"Local-only spend, latency and request history.","tab.keys.title":"API keys","tab.keys.sub":"Tokens that authenticate clients against this Lite workspace.","nav.quality":"Quality","tab.quality.title":"Quality scores","tab.quality.sub":"Real benchmark scores for the quality routing strategy. Pulls from Artificial Analysis." },
-  zh: { "auth.tagline":"开源。单租户。","auth.welcome":"欢迎回来","auth.subtitle":"粘贴首次运行时服务器日志中的 sk-orca-* 密钥。仅保存在此浏览器 localStorage。","auth.api_key":"API 密钥","auth.continue":"继续","nav.search":"搜索","nav.overview":"概览","nav.providers":"供应商","nav.routing":"路由","nav.analytics":"分析","nav.api_keys":"API 密钥","nav.help_docs":"帮助与文档","nav.sign_out":"退出登录","status.connected":"已连接","status.disconnected":"已断开","auth.checking":"正在检查…","auth.welcome_aboard":"欢迎使用。","auth.key_invalid":"该密钥无效，请检查前缀 sk-orca-…","tab.overview.title":"概览","tab.overview.sub":"一览你的单租户 LLM 路由器。","tab.providers.title":"供应商密钥","tab.providers.sub":"BYOK — 静态加密存储，用于调用上游 LLM。","tab.routing.title":"路由","tab.routing.sub":"model='auto' 如何为每个请求选择合适模型。","tab.analytics.title":"分析","tab.analytics.sub":"仅本地的花费、延迟和请求历史。","tab.keys.title":"API 密钥","tab.keys.sub":"用于在此 Lite 工作区中验证客户端的令牌。","nav.quality":"质量","tab.quality.title":"质量分数","tab.quality.sub":"真实 benchmark 分数驱动 quality 路由策略,数据来自 Artificial Analysis。" },
-  hi: { "auth.tagline":"ओपन सोर्स। सिंगल टेनेंट।","auth.welcome":"वापसी पर स्वागत है","auth.subtitle":"पहले रन पर सर्वर लॉग में छपी sk-orca-* कुंजी पेस्ट करें। यह केवल इस ब्राउज़र के localStorage में रहेगी।","auth.api_key":"API कुंजी","auth.continue":"जारी रखें","nav.search":"खोज","nav.overview":"अवलोकन","nav.providers":"प्रदाता","nav.routing":"रूटिंग","nav.analytics":"एनालिटिक्स","nav.api_keys":"API कुंजियाँ","nav.help_docs":"सहायता और दस्तावेज़","nav.sign_out":"साइन आउट","status.connected":"कनेक्टेड","status.disconnected":"डिस्कनेक्टेड","auth.checking":"जाँच हो रही है…","auth.welcome_aboard":"स्वागत है।","auth.key_invalid":"यह कुंजी काम नहीं कर रही। sk-orca- प्रीफिक्स जाँचें…","tab.overview.title":"ओवरव्यू","tab.overview.sub":"आपका सिंगल-टेनेंट LLM राउटर एक नज़र में।","tab.providers.title":"प्रोवाइडर कुंजियाँ","tab.providers.sub":"BYOK — स्टोरेज में एन्क्रिप्टेड, अपस्ट्रीम LLM कॉल के लिए उपयोग।","tab.routing.title":"रूटिंग","tab.routing.sub":"model='auto' हर अनुरोध के लिए सही मॉडल कैसे चुनता है।","tab.analytics.title":"एनालिटिक्स","tab.analytics.sub":"केवल स्थानीय खर्च, लेटेंसी और अनुरोध इतिहास।","tab.keys.title":"API कुंजियाँ","tab.keys.sub":"इस Lite वर्कस्पेस पर क्लाइंट प्रमाणित करने वाले टोकन।" },
-  es: { "auth.tagline":"Código abierto. Inquilino único.","auth.welcome":"Bienvenido de nuevo","auth.subtitle":"Pega la clave sk-orca-* mostrada en los logs del servidor en el primer inicio. Solo se guarda en este navegador mediante localStorage.","auth.api_key":"Clave API","auth.continue":"Continuar","nav.search":"Buscar","nav.overview":"Resumen","nav.providers":"Proveedores","nav.routing":"Enrutamiento","nav.analytics":"Analíticas","nav.api_keys":"Claves API","nav.help_docs":"Ayuda y documentación","nav.sign_out":"Cerrar sesión","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Bienvenido.","auth.key_invalid":"Esa clave no funcionó. Verifica el prefijo sk-orca-…","tab.overview.title":"Resumen","tab.overview.sub":"Tu enrutador LLM de inquilino único de un vistazo.","tab.providers.title":"Claves de proveedor","tab.providers.sub":"BYOK — cifradas en reposo, usadas para llamar a LLMs upstream.","tab.routing.title":"Enrutamiento","tab.routing.sub":"Cómo model='auto' elige el modelo adecuado para cada solicitud.","tab.analytics.title":"Analíticas","tab.analytics.sub":"Gasto, latencia e historial de solicitudes solo local.","tab.keys.title":"Claves API","tab.keys.sub":"Tokens que autentican clientes en este espacio Lite." },
-  pt: { "auth.tagline":"Código aberto. Locatário único.","auth.welcome":"Bem-vindo de volta","auth.subtitle":"Cole a chave sk-orca-* exibida nos logs do servidor na primeira execução. Armazenada apenas neste navegador via localStorage.","auth.api_key":"Chave API","auth.continue":"Continuar","nav.search":"Pesquisar","nav.overview":"Visão geral","nav.providers":"Provedores","nav.routing":"Roteação","nav.analytics":"Análises","nav.api_keys":"Chaves API","nav.help_docs":"Ajuda e docs","nav.sign_out":"Sair","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Boas-vindas.","auth.key_invalid":"Essa chave não funcionou. Verifique o prefixo sk-orca-…","tab.overview.title":"Visão geral","tab.overview.sub":"Seu roteador LLM single-tenant em um relance.","tab.providers.title":"Chaves de provedor","tab.providers.sub":"BYOK — criptografadas em repouso, usadas para chamar LLMs upstream.","tab.routing.title":"Roteamento","tab.routing.sub":"Como model='auto' escolhe o modelo certo para cada solicitação.","tab.analytics.title":"Análises","tab.analytics.sub":"Gasto, latência e histórico de solicitações apenas locais.","tab.keys.title":"Chaves API","tab.keys.sub":"Tokens que autenticam clientes neste workspace Lite." },
-  ru: { "auth.tagline":"Открытый исходный код. Один арендатор.","auth.welcome":"С возвращением","auth.subtitle":"Вставьте ключ sk-orca-*, показанный в логах сервера при первом запуске. Он хранится только в localStorage этого браузера.","auth.api_key":"API-ключ","auth.continue":"Продолжить","nav.search":"Поиск","nav.overview":"Обзор","nav.providers":"Провайдеры","nav.routing":"Маршрутизация ИИ","nav.analytics":"Аналитика","nav.api_keys":"API-ключи","nav.help_docs":"Помощь и документация","nav.sign_out":"Выйти","status.connected":"Подключено","status.disconnected":"Отключено","auth.checking":"Проверка…","auth.welcome_aboard":"Добро пожаловать.","auth.key_invalid":"Ключ не подошел. Проверьте префикс sk-orca-…","tab.overview.title":"Обзор","tab.overview.sub":"Ваш single-tenant маршрутизатор LLM в одном экране.","tab.providers.title":"Ключи провайдеров","tab.providers.sub":"BYOK — шифруются при хранении, используются для вызова внешних LLM.","tab.routing.title":"Маршрутизация","tab.routing.sub":"Как model='auto' выбирает подходящую модель для каждого запроса.","tab.analytics.title":"Аналитика","tab.analytics.sub":"Локальные расходы, задержка и история запросов.","tab.keys.title":"API-ключи","tab.keys.sub":"Токены для аутентификации клиентов в этом Lite workspace." },
-  ja: { "auth.tagline":"オープンソース。シングルテナント。","auth.welcome":"おかえりなさい","auth.subtitle":"初回起動時にサーバーログへ表示された sk-orca-* キーを貼り付けてください。localStorage にのみ保存されます。","auth.api_key":"APIキー","auth.continue":"続行","nav.search":"検索","nav.overview":"概要","nav.providers":"プロバイダー","nav.routing":"経路制御","nav.analytics":"分析","nav.api_keys":"APIキー","nav.help_docs":"ヘルプとドキュメント","nav.sign_out":"サインアウト","status.connected":"接続済み","status.disconnected":"未接続","auth.checking":"確認中…","auth.welcome_aboard":"ようこそ。","auth.key_invalid":"キーが無効です。接頭辞 sk-orca- を確認してください…","tab.overview.title":"概要","tab.overview.sub":"シングルテナント LLM ルーターの概要。","tab.providers.title":"プロバイダーキー","tab.providers.sub":"BYOK — 保存時に暗号化され、上流 LLM 呼び出しに使用。","tab.routing.title":"ルーティング","tab.routing.sub":"model='auto' が各リクエストに最適なモデルを選択する方法。","tab.analytics.title":"分析","tab.analytics.sub":"ローカル限定のコスト・遅延・リクエスト履歴。","tab.keys.title":"APIキー","tab.keys.sub":"この Lite ワークスペースでクライアント認証に使うトークン。" },
-  de: { "auth.tagline":"Open Source. Einzelmandant.","auth.welcome":"Willkommen zurück","auth.subtitle":"Fügen Sie den beim ersten Start in den Server-Logs ausgegebenen sk-orca-* Schlüssel ein. Er wird nur in diesem Browser per localStorage gespeichert.","auth.api_key":"API-Schlüssel","auth.continue":"Weiter","nav.search":"Suchen","nav.overview":"Übersicht","nav.providers":"Anbieter","nav.routing":"Weiterleitung","nav.analytics":"Analysen","nav.api_keys":"API-Schlüssel","nav.help_docs":"Hilfe & Doku","nav.sign_out":"Abmelden","status.connected":"Verbunden","status.disconnected":"Getrennt","auth.checking":"Prüfe…","auth.welcome_aboard":"Willkommen an Bord.","auth.key_invalid":"Dieser Schlüssel funktioniert nicht. Prüfen Sie das Präfix sk-orca-…","tab.overview.title":"Übersicht","tab.overview.sub":"Ihr Single-Tenant-LLM-Router auf einen Blick.","tab.providers.title":"Anbieterschlüssel","tab.providers.sub":"BYOK — im Ruhezustand verschlüsselt, für Upstream-LLM-Aufrufe genutzt.","tab.routing.title":"Routing","tab.routing.sub":"Wie model='auto' für jede Anfrage das richtige Modell auswählt.","tab.analytics.title":"Analysen","tab.analytics.sub":"Nur lokale Ausgaben, Latenz und Anfrageverlauf.","tab.keys.title":"API-Schlüssel","tab.keys.sub":"Token zur Authentifizierung von Clients in diesem Lite-Workspace." },
-  fr: { "auth.tagline":"Open source. Locataire unique.","auth.welcome":"Bon retour","auth.subtitle":"Collez la clé sk-orca-* affichée dans les logs serveur au premier démarrage. Elle est stockée uniquement dans ce navigateur via localStorage.","auth.api_key":"Clé API","auth.continue":"Continuer","nav.search":"Rechercher","nav.overview":"Vue d'ensemble","nav.providers":"Fournisseurs","nav.routing":"Routage IA","nav.analytics":"Analytique","nav.api_keys":"Clés API","nav.help_docs":"Aide et docs","nav.sign_out":"Se déconnecter","status.connected":"Connecté","status.disconnected":"Déconnecté","auth.checking":"Vérification…","auth.welcome_aboard":"Bienvenue.","auth.key_invalid":"Cette clé n'a pas fonctionné. Vérifiez le préfixe sk-orca-…","tab.overview.title":"Vue d'ensemble","tab.overview.sub":"Votre routeur LLM mono-locataire en un coup d'œil.","tab.providers.title":"Clés fournisseur","tab.providers.sub":"BYOK — chiffrées au repos, utilisées pour appeler les LLM amont.","tab.routing.title":"Routage","tab.routing.sub":"Comment model='auto' choisit le bon modèle pour chaque requête.","tab.analytics.title":"Analytique","tab.analytics.sub":"Dépenses, latence et historique des requêtes en local uniquement.","tab.keys.title":"Clés API","tab.keys.sub":"Jetons qui authentifient les clients sur cet espace Lite." },
-  it: { "auth.tagline":"Open source. Tenant singolo.","auth.welcome":"Bentornato","auth.subtitle":"Incolla la chiave sk-orca-* mostrata nei log del server al primo avvio. Viene salvata solo in questo browser tramite localStorage.","auth.api_key":"Chiave API","auth.continue":"Continua","nav.search":"Cerca","nav.overview":"Panoramica","nav.providers":"Provider","nav.routing":"Smistamento","nav.analytics":"Analitica","nav.api_keys":"Chiavi API","nav.help_docs":"Aiuto e documentazione","nav.sign_out":"Disconnetti","status.connected":"Connesso","status.disconnected":"Disconnesso","auth.checking":"Verifica…","auth.welcome_aboard":"Benvenuto.","auth.key_invalid":"La chiave non ha funzionato. Controlla il prefisso sk-orca-…","tab.overview.title":"Panoramica","tab.overview.sub":"Il tuo router LLM single-tenant a colpo d'occhio.","tab.providers.title":"Chiavi provider","tab.providers.sub":"BYOK — crittografate a riposo, usate per chiamare LLM upstream.","tab.routing.title":"Instradamento","tab.routing.sub":"Come model='auto' sceglie il modello giusto per ogni richiesta.","tab.analytics.title":"Analitica","tab.analytics.sub":"Spesa locale, latenza e cronologia richieste.","tab.keys.title":"Chiavi API","tab.keys.sub":"Token che autenticano i client in questo workspace Lite." },
-  ar: { "auth.tagline":"مفتوح المصدر. مستأجر واحد.","auth.welcome":"مرحبًا بعودتك","auth.subtitle":"ألصق مفتاح sk-orca-* المطبوع في سجلات الخادم عند التشغيل الأول. يُخزَّن فقط في هذا المتصفح عبر localStorage.","auth.api_key":"مفتاح API","auth.continue":"متابعة","nav.search":"بحث","nav.overview":"نظرة عامة","nav.providers":"المزوّدون","nav.routing":"توجيه الطلبات","nav.analytics":"التحليلات","nav.api_keys":"مفاتيح API","nav.help_docs":"المساعدة والوثائق","nav.sign_out":"تسجيل الخروج","status.connected":"متصل","status.disconnected":"غير متصل","auth.checking":"جارٍ التحقق…","auth.welcome_aboard":"مرحبًا بك.","auth.key_invalid":"هذا المفتاح لم يعمل. تحقّق من البادئة sk-orca-…","tab.overview.title":"نظرة عامة","tab.overview.sub":"موجّه LLM أحادي المستأجر بنظرة سريعة.","tab.providers.title":"مفاتيح المزوّدين","tab.providers.sub":"BYOK — مشفّرة أثناء التخزين وتُستخدم لاستدعاء نماذج LLM الخارجية.","tab.routing.title":"التوجيه","tab.routing.sub":"كيف يختار model='auto' النموذج المناسب لكل طلب.","tab.analytics.title":"التحليلات","tab.analytics.sub":"الإنفاق والزمن والسجل المحلي للطلبات فقط.","tab.keys.title":"مفاتيح API","tab.keys.sub":"رموز مصادقة العملاء في مساحة Lite هذه." },
-  ko: { "auth.tagline":"오픈 소스. 단일 테넌트.","auth.welcome":"다시 오신 것을 환영합니다","auth.subtitle":"첫 실행 시 서버 로그에 출력된 sk-orca-* 키를 붙여넣으세요. 이 브라우저의 localStorage에만 저장됩니다.","auth.api_key":"API 키","auth.continue":"계속","nav.search":"검색","nav.overview":"개요","nav.providers":"공급자","nav.routing":"경로 지정","nav.analytics":"분석","nav.api_keys":"API 키","nav.help_docs":"도움말 및 문서","nav.sign_out":"로그아웃","status.connected":"연결됨","status.disconnected":"연결 끊김","auth.checking":"확인 중…","auth.welcome_aboard":"환영합니다.","auth.key_invalid":"키가 올바르지 않습니다. sk-orca- 접두사를 확인하세요…","tab.overview.title":"개요","tab.overview.sub":"싱글 테넌트 LLM 라우터를 한눈에 확인하세요.","tab.providers.title":"공급자 키","tab.providers.sub":"BYOK — 저장 시 암호화되며 상위 LLM 호출에 사용됩니다.","tab.routing.title":"라우팅","tab.routing.sub":"model='auto'가 요청별로 적절한 모델을 고르는 방식입니다.","tab.analytics.title":"분석","tab.analytics.sub":"로컬 전용 비용, 지연 시간, 요청 기록.","tab.keys.title":"API 키","tab.keys.sub":"Lite 워크스페이스에서 클라이언트를 인증하는 토큰." },
+  en: { "auth.tagline":"Open Source. Single Tenant.","auth.welcome":"Welcome back","auth.subtitle":"Paste the sk-orca-* key printed in your server logs on first run. Stored only in this browser via localStorage.","auth.api_key":"API key","auth.continue":"Continue","nav.search":"Search","nav.overview":"Overview","nav.providers":"Providers","nav.routing":"Routing","nav.analytics":"Analytics","nav.api_keys":"API keys","nav.help_docs":"Help & docs","nav.sign_out":"Sign out","status.connected":"Connected","status.disconnected":"Disconnected","auth.checking":"Checking…","auth.welcome_aboard":"Welcome aboard.","auth.key_invalid":"That key didn't work. Double-check the prefix sk-orca-…","tab.overview.title":"Overview","tab.overview.sub":"Your single-tenant LLM router at a glance.","tab.providers.title":"Provider keys","tab.providers.sub":"BYOK — encrypted at rest, used to call upstream LLMs.","tab.routing.title":"Routing","tab.routing.sub":"How model='auto' picks the right model for each request.","tab.analytics.title":"Analytics","tab.analytics.sub":"Local-only spend, latency and request history.","tab.keys.title":"API keys","tab.keys.sub":"Tokens that authenticate clients against this Lite workspace.","nav.quality":"Quality","tab.quality.title":"Quality scores","tab.quality.sub":"Real benchmark scores for the quality routing strategy. Pulls from Artificial Analysis.","hosted.title":"OrcaRouter gateway","hosted.sub":"One key for every model, with failover between providers. Free models to start; paid models are billed per request.","hosted.register":"No account yet? Sign up and start on free models","hosted.providers_sub":"Every model without per-provider sign-ups. Free models to start; paid models are billed per request.","hosted.ready_desktop":"OrcaRouter's free models are ready; paid models only when you turn them on in Orca." },
+  zh: { "auth.tagline":"开源。单租户。","auth.welcome":"欢迎回来","auth.subtitle":"粘贴首次运行时服务器日志中的 sk-orca-* 密钥。仅保存在此浏览器 localStorage。","auth.api_key":"API 密钥","auth.continue":"继续","nav.search":"搜索","nav.overview":"概览","nav.providers":"供应商","nav.routing":"路由","nav.analytics":"分析","nav.api_keys":"API 密钥","nav.help_docs":"帮助与文档","nav.sign_out":"退出登录","status.connected":"已连接","status.disconnected":"已断开","auth.checking":"正在检查…","auth.welcome_aboard":"欢迎使用。","auth.key_invalid":"该密钥无效，请检查前缀 sk-orca-…","tab.overview.title":"概览","tab.overview.sub":"一览你的单租户 LLM 路由器。","tab.providers.title":"供应商密钥","tab.providers.sub":"BYOK — 静态加密存储，用于调用上游 LLM。","tab.routing.title":"路由","tab.routing.sub":"model='auto' 如何为每个请求选择合适模型。","tab.analytics.title":"分析","tab.analytics.sub":"仅本地的花费、延迟和请求历史。","tab.keys.title":"API 密钥","tab.keys.sub":"用于在此 Lite 工作区中验证客户端的令牌。","nav.quality":"质量","tab.quality.title":"质量分数","tab.quality.sub":"真实 benchmark 分数驱动 quality 路由策略,数据来自 Artificial Analysis。","hosted.title":"OrcaRouter 网关","hosted.sub":"一个密钥用于所有模型，并在供应商之间故障转移。先用免费模型起步；付费模型按请求计费。","hosted.register":"还没有账号？注册后即可从免费模型开始","hosted.providers_sub":"无需逐个注册供应商即可使用所有模型。先用免费模型起步；付费模型按请求计费。","hosted.ready_desktop":"OrcaRouter 的免费模型已就绪；付费模型仅在你于 Orca 中开启后使用。" },
+  hi: { "auth.tagline":"ओपन सोर्स। सिंगल टेनेंट।","auth.welcome":"वापसी पर स्वागत है","auth.subtitle":"पहले रन पर सर्वर लॉग में छपी sk-orca-* कुंजी पेस्ट करें। यह केवल इस ब्राउज़र के localStorage में रहेगी।","auth.api_key":"API कुंजी","auth.continue":"जारी रखें","nav.search":"खोज","nav.overview":"अवलोकन","nav.providers":"प्रदाता","nav.routing":"रूटिंग","nav.analytics":"एनालिटिक्स","nav.api_keys":"API कुंजियाँ","nav.help_docs":"सहायता और दस्तावेज़","nav.sign_out":"साइन आउट","status.connected":"कनेक्टेड","status.disconnected":"डिस्कनेक्टेड","auth.checking":"जाँच हो रही है…","auth.welcome_aboard":"स्वागत है।","auth.key_invalid":"यह कुंजी काम नहीं कर रही। sk-orca- प्रीफिक्स जाँचें…","tab.overview.title":"ओवरव्यू","tab.overview.sub":"आपका सिंगल-टेनेंट LLM राउटर एक नज़र में।","tab.providers.title":"प्रोवाइडर कुंजियाँ","tab.providers.sub":"BYOK — स्टोरेज में एन्क्रिप्टेड, अपस्ट्रीम LLM कॉल के लिए उपयोग।","tab.routing.title":"रूटिंग","tab.routing.sub":"model='auto' हर अनुरोध के लिए सही मॉडल कैसे चुनता है।","tab.analytics.title":"एनालिटिक्स","tab.analytics.sub":"केवल स्थानीय खर्च, लेटेंसी और अनुरोध इतिहास।","tab.keys.title":"API कुंजियाँ","tab.keys.sub":"इस Lite वर्कस्पेस पर क्लाइंट प्रमाणित करने वाले टोकन।","hosted.title":"OrcaRouter गेटवे","hosted.sub":"हर मॉडल के लिए एक कुंजी, प्रदाताओं के बीच फ़ेलओवर के साथ। शुरुआत मुफ़्त मॉडलों से; सशुल्क मॉडलों का बिल प्रति अनुरोध बनता है।","hosted.register":"अभी खाता नहीं है? साइन अप करें और मुफ़्त मॉडलों से शुरू करें","hosted.providers_sub":"हर प्रदाता पर अलग साइन-अप के बिना हर मॉडल। शुरुआत मुफ़्त मॉडलों से; सशुल्क मॉडलों का बिल प्रति अनुरोध बनता है।","hosted.ready_desktop":"OrcaRouter के मुफ़्त मॉडल तैयार हैं; पेड मॉडल केवल तब, जब आप उन्हें Orca में चालू करें।" },
+  es: { "auth.tagline":"Código abierto. Inquilino único.","auth.welcome":"Bienvenido de nuevo","auth.subtitle":"Pega la clave sk-orca-* mostrada en los logs del servidor en el primer inicio. Solo se guarda en este navegador mediante localStorage.","auth.api_key":"Clave API","auth.continue":"Continuar","nav.search":"Buscar","nav.overview":"Resumen","nav.providers":"Proveedores","nav.routing":"Enrutamiento","nav.analytics":"Analíticas","nav.api_keys":"Claves API","nav.help_docs":"Ayuda y documentación","nav.sign_out":"Cerrar sesión","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Bienvenido.","auth.key_invalid":"Esa clave no funcionó. Verifica el prefijo sk-orca-…","tab.overview.title":"Resumen","tab.overview.sub":"Tu enrutador LLM de inquilino único de un vistazo.","tab.providers.title":"Claves de proveedor","tab.providers.sub":"BYOK — cifradas en reposo, usadas para llamar a LLMs upstream.","tab.routing.title":"Enrutamiento","tab.routing.sub":"Cómo model='auto' elige el modelo adecuado para cada solicitud.","tab.analytics.title":"Analíticas","tab.analytics.sub":"Gasto, latencia e historial de solicitudes solo local.","tab.keys.title":"Claves API","tab.keys.sub":"Tokens que autentican clientes en este espacio Lite.","hosted.title":"Gateway de OrcaRouter","hosted.sub":"Una sola clave para todos los modelos, con failover entre proveedores. Modelos gratuitos para empezar; los modelos de pago se cobran por petición.","hosted.register":"¿Aún sin cuenta? Regístrate y empieza con modelos gratuitos","hosted.providers_sub":"Todos los modelos sin registrarte en cada proveedor. Modelos gratuitos para empezar; los de pago se cobran por petición.","hosted.ready_desktop":"Los modelos gratuitos de OrcaRouter están listos; los de pago, solo cuando los actives en Orca." },
+  pt: { "auth.tagline":"Código aberto. Locatário único.","auth.welcome":"Bem-vindo de volta","auth.subtitle":"Cole a chave sk-orca-* exibida nos logs do servidor na primeira execução. Armazenada apenas neste navegador via localStorage.","auth.api_key":"Chave API","auth.continue":"Continuar","nav.search":"Pesquisar","nav.overview":"Visão geral","nav.providers":"Provedores","nav.routing":"Roteação","nav.analytics":"Análises","nav.api_keys":"Chaves API","nav.help_docs":"Ajuda e docs","nav.sign_out":"Sair","status.connected":"Conectado","status.disconnected":"Desconectado","auth.checking":"Verificando…","auth.welcome_aboard":"Boas-vindas.","auth.key_invalid":"Essa chave não funcionou. Verifique o prefixo sk-orca-…","tab.overview.title":"Visão geral","tab.overview.sub":"Seu roteador LLM single-tenant em um relance.","tab.providers.title":"Chaves de provedor","tab.providers.sub":"BYOK — criptografadas em repouso, usadas para chamar LLMs upstream.","tab.routing.title":"Roteamento","tab.routing.sub":"Como model='auto' escolhe o modelo certo para cada solicitação.","tab.analytics.title":"Análises","tab.analytics.sub":"Gasto, latência e histórico de solicitações apenas locais.","tab.keys.title":"Chaves API","tab.keys.sub":"Tokens que autenticam clientes neste workspace Lite.","hosted.title":"Gateway OrcaRouter","hosted.sub":"Uma chave para todos os modelos, com failover entre provedores. Modelos gratuitos para começar; modelos pagos são cobrados por requisição.","hosted.register":"Ainda sem conta? Cadastre-se e comece com modelos gratuitos","hosted.providers_sub":"Todos os modelos sem cadastro em cada provedor. Modelos gratuitos para começar; os pagos são cobrados por requisição.","hosted.ready_desktop":"Os modelos gratuitos da OrcaRouter estão prontos; os pagos, só quando você os ativar no Orca." },
+  ru: { "auth.tagline":"Открытый исходный код. Один арендатор.","auth.welcome":"С возвращением","auth.subtitle":"Вставьте ключ sk-orca-*, показанный в логах сервера при первом запуске. Он хранится только в localStorage этого браузера.","auth.api_key":"API-ключ","auth.continue":"Продолжить","nav.search":"Поиск","nav.overview":"Обзор","nav.providers":"Провайдеры","nav.routing":"Маршрутизация ИИ","nav.analytics":"Аналитика","nav.api_keys":"API-ключи","nav.help_docs":"Помощь и документация","nav.sign_out":"Выйти","status.connected":"Подключено","status.disconnected":"Отключено","auth.checking":"Проверка…","auth.welcome_aboard":"Добро пожаловать.","auth.key_invalid":"Ключ не подошел. Проверьте префикс sk-orca-…","tab.overview.title":"Обзор","tab.overview.sub":"Ваш single-tenant маршрутизатор LLM в одном экране.","tab.providers.title":"Ключи провайдеров","tab.providers.sub":"BYOK — шифруются при хранении, используются для вызова внешних LLM.","tab.routing.title":"Маршрутизация","tab.routing.sub":"Как model='auto' выбирает подходящую модель для каждого запроса.","tab.analytics.title":"Аналитика","tab.analytics.sub":"Локальные расходы, задержка и история запросов.","tab.keys.title":"API-ключи","tab.keys.sub":"Токены для аутентификации клиентов в этом Lite workspace.","hosted.title":"Шлюз OrcaRouter","hosted.sub":"Один ключ для всех моделей с переключением между провайдерами при сбоях. Для старта — бесплатные модели; платные оплачиваются за запрос.","hosted.register":"Ещё нет аккаунта? Зарегистрируйтесь и начните с бесплатных моделей","hosted.providers_sub":"Все модели без регистрации у каждого провайдера. Для старта — бесплатные модели; платные оплачиваются за запрос.","hosted.ready_desktop":"Бесплатные модели OrcaRouter готовы; платные — только когда вы включите их в Orca." },
+  ja: { "auth.tagline":"オープンソース。シングルテナント。","auth.welcome":"おかえりなさい","auth.subtitle":"初回起動時にサーバーログへ表示された sk-orca-* キーを貼り付けてください。localStorage にのみ保存されます。","auth.api_key":"APIキー","auth.continue":"続行","nav.search":"検索","nav.overview":"概要","nav.providers":"プロバイダー","nav.routing":"経路制御","nav.analytics":"分析","nav.api_keys":"APIキー","nav.help_docs":"ヘルプとドキュメント","nav.sign_out":"サインアウト","status.connected":"接続済み","status.disconnected":"未接続","auth.checking":"確認中…","auth.welcome_aboard":"ようこそ。","auth.key_invalid":"キーが無効です。接頭辞 sk-orca- を確認してください…","tab.overview.title":"概要","tab.overview.sub":"シングルテナント LLM ルーターの概要。","tab.providers.title":"プロバイダーキー","tab.providers.sub":"BYOK — 保存時に暗号化され、上流 LLM 呼び出しに使用。","tab.routing.title":"ルーティング","tab.routing.sub":"model='auto' が各リクエストに最適なモデルを選択する方法。","tab.analytics.title":"分析","tab.analytics.sub":"ローカル限定のコスト・遅延・リクエスト履歴。","tab.keys.title":"APIキー","tab.keys.sub":"この Lite ワークスペースでクライアント認証に使うトークン。","hosted.title":"OrcaRouter ゲートウェイ","hosted.sub":"1 つのキーですべてのモデルを利用でき、プロバイダー間でフェイルオーバーします。まずは無料モデルから。有料モデルはリクエストごとの課金です。","hosted.register":"アカウントをお持ちでない方は、登録して無料モデルから始めましょう","hosted.providers_sub":"プロバイダーごとに登録しなくてもすべてのモデルを利用できます。まずは無料モデルから。有料モデルはリクエストごとの課金です。","hosted.ready_desktop":"OrcaRouter の無料モデルを利用できます。有料モデルは Orca でオンにしたときだけ使われます。" },
+  de: { "auth.tagline":"Open Source. Einzelmandant.","auth.welcome":"Willkommen zurück","auth.subtitle":"Fügen Sie den beim ersten Start in den Server-Logs ausgegebenen sk-orca-* Schlüssel ein. Er wird nur in diesem Browser per localStorage gespeichert.","auth.api_key":"API-Schlüssel","auth.continue":"Weiter","nav.search":"Suchen","nav.overview":"Übersicht","nav.providers":"Anbieter","nav.routing":"Weiterleitung","nav.analytics":"Analysen","nav.api_keys":"API-Schlüssel","nav.help_docs":"Hilfe & Doku","nav.sign_out":"Abmelden","status.connected":"Verbunden","status.disconnected":"Getrennt","auth.checking":"Prüfe…","auth.welcome_aboard":"Willkommen an Bord.","auth.key_invalid":"Dieser Schlüssel funktioniert nicht. Prüfen Sie das Präfix sk-orca-…","tab.overview.title":"Übersicht","tab.overview.sub":"Ihr Single-Tenant-LLM-Router auf einen Blick.","tab.providers.title":"Anbieterschlüssel","tab.providers.sub":"BYOK — im Ruhezustand verschlüsselt, für Upstream-LLM-Aufrufe genutzt.","tab.routing.title":"Routing","tab.routing.sub":"Wie model='auto' für jede Anfrage das richtige Modell auswählt.","tab.analytics.title":"Analysen","tab.analytics.sub":"Nur lokale Ausgaben, Latenz und Anfrageverlauf.","tab.keys.title":"API-Schlüssel","tab.keys.sub":"Token zur Authentifizierung von Clients in diesem Lite-Workspace.","hosted.title":"OrcaRouter-Gateway","hosted.sub":"Ein Schlüssel für jedes Modell, mit Failover zwischen Anbietern. Kostenlose Modelle für den Einstieg; kostenpflichtige Modelle werden pro Anfrage abgerechnet.","hosted.register":"Noch kein Konto? Registrieren und mit kostenlosen Modellen starten","hosted.providers_sub":"Jedes Modell ohne Anmeldung bei jedem Anbieter. Kostenlose Modelle für den Einstieg; kostenpflichtige werden pro Anfrage abgerechnet.","hosted.ready_desktop":"Die kostenlosen Modelle von OrcaRouter sind bereit; kostenpflichtige nur, wenn Sie sie in Orca einschalten." },
+  fr: { "auth.tagline":"Open source. Locataire unique.","auth.welcome":"Bon retour","auth.subtitle":"Collez la clé sk-orca-* affichée dans les logs serveur au premier démarrage. Elle est stockée uniquement dans ce navigateur via localStorage.","auth.api_key":"Clé API","auth.continue":"Continuer","nav.search":"Rechercher","nav.overview":"Vue d'ensemble","nav.providers":"Fournisseurs","nav.routing":"Routage IA","nav.analytics":"Analytique","nav.api_keys":"Clés API","nav.help_docs":"Aide et docs","nav.sign_out":"Se déconnecter","status.connected":"Connecté","status.disconnected":"Déconnecté","auth.checking":"Vérification…","auth.welcome_aboard":"Bienvenue.","auth.key_invalid":"Cette clé n'a pas fonctionné. Vérifiez le préfixe sk-orca-…","tab.overview.title":"Vue d'ensemble","tab.overview.sub":"Votre routeur LLM mono-locataire en un coup d'œil.","tab.providers.title":"Clés fournisseur","tab.providers.sub":"BYOK — chiffrées au repos, utilisées pour appeler les LLM amont.","tab.routing.title":"Routage","tab.routing.sub":"Comment model='auto' choisit le bon modèle pour chaque requête.","tab.analytics.title":"Analytique","tab.analytics.sub":"Dépenses, latence et historique des requêtes en local uniquement.","tab.keys.title":"Clés API","tab.keys.sub":"Jetons qui authentifient les clients sur cet espace Lite.","hosted.title":"Passerelle OrcaRouter","hosted.sub":"Une seule clé pour tous les modèles, avec basculement entre fournisseurs. Des modèles gratuits pour démarrer ; les modèles payants sont facturés à la requête.","hosted.register":"Pas encore de compte ? Inscrivez-vous et démarrez avec les modèles gratuits","hosted.providers_sub":"Tous les modèles sans inscription chez chaque fournisseur. Des modèles gratuits pour démarrer ; les payants sont facturés à la requête.","hosted.ready_desktop":"Les modèles gratuits d'OrcaRouter sont prêts ; les modèles payants seulement quand vous les activez dans Orca." },
+  it: { "auth.tagline":"Open source. Tenant singolo.","auth.welcome":"Bentornato","auth.subtitle":"Incolla la chiave sk-orca-* mostrata nei log del server al primo avvio. Viene salvata solo in questo browser tramite localStorage.","auth.api_key":"Chiave API","auth.continue":"Continua","nav.search":"Cerca","nav.overview":"Panoramica","nav.providers":"Provider","nav.routing":"Smistamento","nav.analytics":"Analitica","nav.api_keys":"Chiavi API","nav.help_docs":"Aiuto e documentazione","nav.sign_out":"Disconnetti","status.connected":"Connesso","status.disconnected":"Disconnesso","auth.checking":"Verifica…","auth.welcome_aboard":"Benvenuto.","auth.key_invalid":"La chiave non ha funzionato. Controlla il prefisso sk-orca-…","tab.overview.title":"Panoramica","tab.overview.sub":"Il tuo router LLM single-tenant a colpo d'occhio.","tab.providers.title":"Chiavi provider","tab.providers.sub":"BYOK — crittografate a riposo, usate per chiamare LLM upstream.","tab.routing.title":"Instradamento","tab.routing.sub":"Come model='auto' sceglie il modello giusto per ogni richiesta.","tab.analytics.title":"Analitica","tab.analytics.sub":"Spesa locale, latenza e cronologia richieste.","tab.keys.title":"Chiavi API","tab.keys.sub":"Token che autenticano i client in questo workspace Lite.","hosted.title":"Gateway OrcaRouter","hosted.sub":"Una sola chiave per ogni modello, con failover tra provider. Modelli gratuiti per iniziare; i modelli a pagamento si pagano a richiesta.","hosted.register":"Non hai ancora un account? Registrati e inizia con i modelli gratuiti","hosted.providers_sub":"Ogni modello senza registrarti presso ogni provider. Modelli gratuiti per iniziare; quelli a pagamento si pagano a richiesta.","hosted.ready_desktop":"I modelli gratuiti di OrcaRouter sono pronti; quelli a pagamento solo quando li attivi in Orca." },
+  ar: { "auth.tagline":"مفتوح المصدر. مستأجر واحد.","auth.welcome":"مرحبًا بعودتك","auth.subtitle":"ألصق مفتاح sk-orca-* المطبوع في سجلات الخادم عند التشغيل الأول. يُخزَّن فقط في هذا المتصفح عبر localStorage.","auth.api_key":"مفتاح API","auth.continue":"متابعة","nav.search":"بحث","nav.overview":"نظرة عامة","nav.providers":"المزوّدون","nav.routing":"توجيه الطلبات","nav.analytics":"التحليلات","nav.api_keys":"مفاتيح API","nav.help_docs":"المساعدة والوثائق","nav.sign_out":"تسجيل الخروج","status.connected":"متصل","status.disconnected":"غير متصل","auth.checking":"جارٍ التحقق…","auth.welcome_aboard":"مرحبًا بك.","auth.key_invalid":"هذا المفتاح لم يعمل. تحقّق من البادئة sk-orca-…","tab.overview.title":"نظرة عامة","tab.overview.sub":"موجّه LLM أحادي المستأجر بنظرة سريعة.","tab.providers.title":"مفاتيح المزوّدين","tab.providers.sub":"BYOK — مشفّرة أثناء التخزين وتُستخدم لاستدعاء نماذج LLM الخارجية.","tab.routing.title":"التوجيه","tab.routing.sub":"كيف يختار model='auto' النموذج المناسب لكل طلب.","tab.analytics.title":"التحليلات","tab.analytics.sub":"الإنفاق والزمن والسجل المحلي للطلبات فقط.","tab.keys.title":"مفاتيح API","tab.keys.sub":"رموز مصادقة العملاء في مساحة Lite هذه.","hosted.title":"بوابة OrcaRouter","hosted.sub":"مفتاح واحد لكل النماذج، مع تحويل تلقائي بين المزوّدين. نماذج مجانية للبدء؛ والنماذج المدفوعة تُحتسب لكل طلب.","hosted.register":"ليس لديك حساب بعد؟ سجّل وابدأ بالنماذج المجانية","hosted.providers_sub":"كل النماذج دون التسجيل لدى كل مزوّد. نماذج مجانية للبدء؛ والنماذج المدفوعة تُحتسب لكل طلب.","hosted.ready_desktop":"نماذج OrcaRouter المجانية جاهزة؛ والنماذج المدفوعة فقط عندما تفعّلها في Orca." },
+  ko: { "auth.tagline":"오픈 소스. 단일 테넌트.","auth.welcome":"다시 오신 것을 환영합니다","auth.subtitle":"첫 실행 시 서버 로그에 출력된 sk-orca-* 키를 붙여넣으세요. 이 브라우저의 localStorage에만 저장됩니다.","auth.api_key":"API 키","auth.continue":"계속","nav.search":"검색","nav.overview":"개요","nav.providers":"공급자","nav.routing":"경로 지정","nav.analytics":"분석","nav.api_keys":"API 키","nav.help_docs":"도움말 및 문서","nav.sign_out":"로그아웃","status.connected":"연결됨","status.disconnected":"연결 끊김","auth.checking":"확인 중…","auth.welcome_aboard":"환영합니다.","auth.key_invalid":"키가 올바르지 않습니다. sk-orca- 접두사를 확인하세요…","tab.overview.title":"개요","tab.overview.sub":"싱글 테넌트 LLM 라우터를 한눈에 확인하세요.","tab.providers.title":"공급자 키","tab.providers.sub":"BYOK — 저장 시 암호화되며 상위 LLM 호출에 사용됩니다.","tab.routing.title":"라우팅","tab.routing.sub":"model='auto'가 요청별로 적절한 모델을 고르는 방식입니다.","tab.analytics.title":"분석","tab.analytics.sub":"로컬 전용 비용, 지연 시간, 요청 기록.","tab.keys.title":"API 키","tab.keys.sub":"Lite 워크스페이스에서 클라이언트를 인증하는 토큰.","hosted.title":"OrcaRouter 게이트웨이","hosted.sub":"키 하나로 모든 모델을 쓰고, 공급자 간 장애 조치를 지원합니다. 무료 모델로 시작하고, 유료 모델은 요청당 청구됩니다.","hosted.register":"아직 계정이 없나요? 가입하고 무료 모델로 시작하세요","hosted.providers_sub":"공급자마다 가입하지 않아도 모든 모델을 쓸 수 있습니다. 무료 모델로 시작하고, 유료 모델은 요청당 청구됩니다.","hosted.ready_desktop":"OrcaRouter의 무료 모델을 바로 쓸 수 있습니다. 유료 모델은 Orca에서 켤 때만 사용됩니다." },
 };
-// Provider ids must match catalog provider ids (packages/litellm_adapter/catalog.py
-// `_PROVIDER_BY_LITELLM_KEY`) and Settings env-key fields (app/config.py
-// `_PROVIDERS_FROM_ENV`). Labels follow the provider's own brand spelling so
-// operators recognize them without ambiguity — "xAI" with the lowercase x is
-// deliberate (Grok's parent company), distinct from "Groq" the inference
-// hardware company.
-const PROVIDERS_KNOWN = [
-  { id: "openai",      label: "OpenAI"      },
-  { id: "anthropic",   label: "Anthropic"   },
-  { id: "google",      label: "Google"      },
-  { id: "xai",         label: "xAI (Grok)"  },
-  { id: "deepseek",    label: "DeepSeek"    },
-  { id: "groq",        label: "Groq"        },
-  { id: "together",    label: "Together"    },
-  { id: "fireworks",   label: "Fireworks"   },
-  { id: "orcarouter",  label: "OrcaRouter (hosted)" },
-];
+// Providers come from the engine's one list (GET /v1/providers/supported),
+// shared with the desktop app's setup so the two can't drift.
+
+// ── dashboard: outgoing links (H8) ──
+// Links to orcarouter.ai from the dashboard say where they came from, and
+// nothing else: a fixed source name, never anything about the user.
+function dashboardRef(url) {
+  if (!url) return url;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return url;
+    u.searchParams.delete("ref");
+    u.searchParams.append("ref", "lite-dashboard");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 const TAB_META = {
   overview:  { title: "tab.overview.title",  sub: "tab.overview.sub" },
   providers: { title: "tab.providers.title", sub: "tab.providers.sub" },
@@ -59,6 +60,11 @@ const state = {
   savings: { saved_microcents: 0, savings_percent: 0, hosted_auto: null },
   models: [],
   hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", token_url: "https://www.orcarouter.ai/console/token", provider_name: "orcarouter" },
+  // The engine's provider list, in display order (see loadSupportedProviders).
+  supported: [],
+  // Running inside the Orca desktop app (its engine serves /v1/app), where
+  // settings live in the app, not in a .env. null until known.
+  desktop: null,
   unreachable: { hosted_configured: false, unreachable: [] },
   // Quality scoring (Artificial Analysis Intelligence Index + manual overrides)
   quality: { aa_index: { configured: false, source: "missing-key", matched_count: 0 }, models: [], override_count: 0 },
@@ -226,6 +232,7 @@ function showShell() {
     loadModels(),
     loadHosted(),
     loadUnreachable(),
+    detectDesktop(),
   ]).then(() => {
     renderProviders();
     renderRouting();
@@ -275,7 +282,7 @@ function setTab(tab) {
     });
   }
   if (tab === "quality") {
-    Promise.all([loadQuality(), loadQualityPreview()]).then(() => {
+    Promise.all([loadQuality(), loadQualityPreview(), detectDesktop()]).then(() => {
       renderQuality();
       renderQualityPreview();
     });
@@ -304,11 +311,39 @@ function bindTabs() {
    ========================================================================== */
 async function loadProviders() {
   try {
-    const data = await api("/v1/providers");
+    const [data] = await Promise.all([api("/v1/providers"), state.supported.length ? null : loadSupportedProviders()]);
     state.providers = data.providers || [];
   } catch (e) {
     toast(`Couldn't load providers: ${e.message}`, "err");
   }
+}
+
+async function loadSupportedProviders() {
+  try {
+    state.supported = (await api("/v1/providers/supported")).providers || [];
+  } catch (e) {
+    state.supported = [];
+    toast(`Couldn't load the provider list: ${e.message}`, "err");
+  }
+  renderProviderSelect();
+}
+
+// The Provider select, from the engine's list. Placeholders show each key's shape.
+function renderProviderSelect() {
+  const sel = $("#provider-name");
+  if (!sel || !state.supported.length) return;
+  const current = sel.value;
+  sel.innerHTML = state.supported
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${p.new ? " (new)" : ""}</option>`)
+    .join("");
+  if (state.supported.some((p) => p.id === current)) sel.value = current;
+  syncProviderPlaceholder();
+}
+
+function syncProviderPlaceholder() {
+  const p = state.supported.find((x) => x.id === $("#provider-name").value);
+  const input = $("#provider-key");
+  if (p && input) input.placeholder = p.key_hint || "API key";
 }
 
 function renderProviders() {
@@ -409,11 +444,11 @@ function renderQuickAdd() {
     state.providers.filter((p) => p.source === "env").map((p) => p.provider)
   );
   wrap.innerHTML = `<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Quick-add:</span>` +
-    PROVIDERS_KNOWN.map((p) => {
+    state.supported.map((x) => ({ id: x.id, label: x.name, isNew: Boolean(x.new) })).map((p) => {
       const isDb = dbConfigured.has(p.id);
       const isBroken = brokenDb.has(p.id);
       const isEnv = envConfigured.has(p.id);
-      const cls = isDb ? "configured" : (isBroken ? "needs-resave" : (isEnv ? "env-override" : ""));
+      const cls = (isDb ? "configured" : (isBroken ? "needs-resave" : (isEnv ? "env-override" : ""))) + (p.isNew ? " new" : "");
       const disabled = isDb ? "disabled" : "";
       const title = isBroken
         ? `${p.label} is stored but cannot be decrypted. Click to re-enter the key.`
@@ -423,20 +458,23 @@ function renderQuickAdd() {
       const suffix = isBroken
         ? " <span class=\"small muted\">(re-enter)</span>"
         : (isEnv ? " <span class=\"small muted\">(env, override)</span>" : "");
-      return `<button class="chip ${cls}" data-prov-pick="${p.id}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
-        ${escapeHtml(p.label)}${suffix}
+      const newTag = p.isNew ? ' <span class="chip-new">New</span>' : "";
+      return `<button class="chip ${cls}" data-prov-pick="${escapeHtml(p.id)}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
+        ${escapeHtml(p.label)}${newTag}${suffix}
       </button>`;
     }).join("");
   $$("[data-prov-pick]").forEach((b) =>
     b.addEventListener("click", () => {
       const sel = $("#provider-name");
       sel.value = b.dataset.provPick;
+      syncProviderPlaceholder();
       $("#provider-key").focus();
     })
   );
 }
 
 function bindProviderForm() {
+  $("#provider-name").addEventListener("change", syncProviderPlaceholder);
   $("#provider-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const provider = $("#provider-name").value;
@@ -580,8 +618,8 @@ function renderHostedCard() {
   // Primary CTA goes to the token console — that's the page with the
   // copyable sk-orca-* key. The secondary link is for users who don't
   // have an account yet.
-  const tokenUrl = state.hosted.token_url || "https://www.orcarouter.ai/console/token";
-  const signupUrl = state.hosted.signup_url || "https://www.orcarouter.ai/register";
+  const tokenUrl = dashboardRef(state.hosted.token_url || "https://www.orcarouter.ai/console/token");
+  const signupUrl = dashboardRef(state.hosted.signup_url || "https://www.orcarouter.ai/register");
   if (signupBtn) signupBtn.href = tokenUrl;
   if (providersSignup) providersSignup.href = tokenUrl;
   const registerLink = $("#hosted-register-link");
@@ -629,6 +667,10 @@ function renderHostedCard() {
     $("#hosted-active-meta").innerHTML = isEnv
       ? `Active via environment variable (<code>ORCAROUTER_API_KEY</code>). Every catalog model is reachable. To disable, unset the env var and restart.`
       : `Active via dashboard. Every catalog model is reachable.`;
+    // In the desktop app OrcaRouter serves free models until paid ones are
+    // turned on in Orca, so don't promise every model there.
+    $("#hosted-active-meta").hidden = Boolean(state.desktop);
+    $("#hosted-ready-desktop").hidden = !state.desktop;
     $("#hosted-savings").innerHTML = haText;
     // The Remove button DELETEs the DB row; with no DB row (env-only) it
     // would 404. Hide it and let the meta line explain how to disable.
@@ -723,7 +765,7 @@ function bindHostedForm() {
           body: JSON.stringify({ api_key: v }),
         });
         $("#hosted-key-input").value = "";
-        toast("Hosted fallback activated — every model is now reachable", "ok");
+        toast(state.desktop ? t("hosted.ready_desktop") : "OrcaRouter gateway activated — every model is now reachable", "ok");
         await Promise.all([loadHosted(), loadUnreachable(), loadProviders()]);
         renderHostedCard();
         renderUnreachable();
@@ -737,10 +779,10 @@ function bindHostedForm() {
   const remove = $("#hosted-remove-btn");
   if (remove) {
     remove.addEventListener("click", async () => {
-      if (!confirm("Disable hosted fallback? Requests for models without a local key will start failing.")) return;
+      if (!confirm("Remove the OrcaRouter key? Requests for models without a local key will start failing.")) return;
       try {
         await api(`/v1/providers/orcarouter`, { method: "DELETE" });
-        toast("Hosted fallback disabled", "info");
+        toast("OrcaRouter gateway removed", "info");
         await Promise.all([loadHosted(), loadUnreachable(), loadProviders()]);
         renderHostedCard();
         renderUnreachable();
@@ -927,6 +969,19 @@ async function loadQuality() {
   }
 }
 
+// In the Orca desktop app the engine serves /v1/app (a server doesn't), and
+// settings such as the Artificial Analysis key live in the app's Settings.
+async function detectDesktop() {
+  if (state.desktop !== null) return state.desktop;
+  try {
+    const r = await fetch("/v1/app/benchmark-key", { headers: state.apiKey ? { Authorization: `Bearer ${state.apiKey}` } : {} });
+    state.desktop = r.status !== 404;
+  } catch {
+    state.desktop = false;
+  }
+  return state.desktop;
+}
+
 async function loadQualityPreview() {
   try {
     state.qualityPreview = await api("/v1/quality/auto-preview");
@@ -946,6 +1001,10 @@ function renderQuality() {
   // (which surfaces AA freshness) is only meaningful when AA is wired up.
   const isConfigured = aa.source !== "missing-key";
   setupCard.hidden = isConfigured;
+  // The app has no .env: its setup steps point to Orca's Settings instead.
+  $$("#quality-setup-card [data-mode]").forEach((el) => {
+    el.hidden = el.dataset.mode !== (state.desktop ? "desktop" : "server");
+  });
   statusCard.hidden = !isConfigured;
   tableCard.hidden = false;
 
@@ -1368,8 +1427,8 @@ function paletteCommands() {
     { id: "copy-snip",    title: "Copy quickstart snippet", meta: "Action", hint: "", do: () => copyToClipboard($("#quickstart-code").textContent) },
     { id: "open-help",    title: "Open help & docs",     meta: "Help", hint: "?",  do: () => openHelp() },
     { id: "open-docs",    title: "Open docs.orcarouter.ai", meta: "Link", hint: "↗", do: () => window.open("https://docs.orcarouter.ai/introduction", "_blank") },
-    { id: "open-site",    title: "Open orcarouter.ai",   meta: "Link", hint: "↗",  do: () => window.open("https://www.orcarouter.ai", "_blank") },
-    { id: "get-hosted-key", title: "Get hosted API key (orcarouter.ai/console/token)", meta: "Link", hint: "↗", do: () => window.open(state.hosted.token_url || "https://www.orcarouter.ai/console/token", "_blank") },
+    { id: "open-site",    title: "Open orcarouter.ai",   meta: "Link", hint: "↗",  do: () => window.open(dashboardRef("https://www.orcarouter.ai/"), "_blank") },
+    { id: "get-hosted-key", title: "Get hosted API key (orcarouter.ai/console/token)", meta: "Link", hint: "↗", do: () => window.open(dashboardRef(state.hosted.token_url || "https://www.orcarouter.ai/console/token"), "_blank") },
     { id: "logout",       title: "Sign out (forget API key)", meta: "Action", hint: "", do: () => logout() },
   ];
 }

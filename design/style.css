@@ -769,7 +769,7 @@ select {
 }
 /* Color is repeated on :hover so the rule beats the base `a:hover`
    selector (specificity 0,1,1) when the button is rendered as an
-   `<a>` (e.g. the "Get free credit" CTA links to orcarouter.ai/register).
+   `<a>` (e.g. the "Get your key" CTA links to orcarouter.ai).
    Without this, hover flips text to var(--brand-deep) on a blue
    background and becomes unreadable. */
 .btn-primary:hover { background: var(--brand-deep); color: white; box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 6px 18px var(--brand-glow); }
@@ -905,6 +905,19 @@ tbody tr.row-in { animation: row-in 320ms var(--ease) both; }
 .chip.configured::before {
   content: "✓";
   font-weight: 700;
+}
+/* Providers added with own keys in P1, highlighted like setup does. */
+.chip.new:not(.configured) {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-deep);
+}
+.chip-new {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--brand-deep);
 }
 
 /* ==========================================================================

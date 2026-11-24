@@ -11,6 +11,9 @@ the one-time setup each one needs and the steps to cut a release.
 | Python package | [pypi.org/p/orcarouter-lite](https://pypi.org/p/orcarouter-lite) | `release.yml` — `pypi` job |
 | Desktop installers (`.dmg`, `.deb`, `.AppImage`, `.msi`, `.exe`) | GitHub release | `desktop.yml` — `bundle` job |
 | Homebrew cask | GitHub release asset `orcarouter-lite.rb`, copied to the tap | `desktop.yml` — `homebrew-cask` job, then manual copy |
+| Homebrew formula (CLI only) | GitHub release asset `orcarouter-lite-formula.rb`, copied to the tap | `release.yml` — `pypi` job, then manual copy |
+| winget manifests | GitHub release assets `OrcaRouter.Lite*.yaml`, submitted to `microsoft/winget-pkgs` | `desktop.yml` — `winget-manifest` job, then a manual pull request |
+| Landing page | <https://continuum-ai-corp.github.io/OrcaRouter-Lite/> | `pages.yml` on pushes to `site/` |
 | Railway template | [railway.com](https://railway.com) marketplace | manual, see below |
 
 Pull requests that touch `desktop/` build every installer unsigned, as
@@ -111,8 +114,21 @@ the bundled Python engine needs.
 ### 5. Homebrew tap
 
 Create `Continuum-AI-Corp/homebrew-tap` once. After each release, copy the
-`orcarouter-lite.rb` asset into `Casks/` there. Users then install with
-`brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+`orcarouter-lite.rb` asset into `Casks/` there and the
+`orcarouter-lite-formula.rb` asset to `Formula/orcarouter-lite.rb`. Users then
+install the app with `brew install --cask continuum-ai-corp/tap/orcarouter-lite`
+and the CLI alone with `brew install continuum-ai-corp/tap/orcarouter-lite`.
+The formula installs the sdist from PyPI, so publish to PyPI first.
+
+### 5b. winget
+
+After each release, submit the three `OrcaRouter.Lite*.yaml` assets to
+`microsoft/winget-pkgs`; see [packaging/winget/README.md](packaging/winget/README.md).
+
+### 5c. Landing page
+
+Settings → Pages → Build and deployment → Source: **GitHub Actions**, once.
+`pages.yml` then publishes `site/` on every push to `main` that touches it.
 
 ### 6. Benchmark secrets
 

@@ -8,6 +8,8 @@
     orca status [--json]         spend today and this week, by agent
     orca statusline              one short line for Claude Code's status bar
     orca report [--format csv]   spend by agent, as Markdown or CSV
+    orca report --week last      last Monday-to-Sunday week by agent and model
+    orca diagnostics             a report to paste into a GitHub issue (no keys, no prompts)
     orca link --key sk-orca-…    use your OrcaRouter account as the hosted fallback
     orca login <url> --key …     point your agents at your team's gateway
     orca logout                  undo `orca login`
@@ -28,13 +30,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import TextIO
 
 import httpx
 
 from packages.desktop import home as dh
+from packages.desktop.report import MODEL_NAMES, money
+from packages.desktop.report import from_summary as _report
 
 LOOPBACK = {"127.0.0.1", "localhost"}
 NOT_RUNNING = "The Orca engine isn't running. Start it with `orca up`, or open the Orca app."
@@ -45,9 +48,6 @@ NOT_OURS = (
 SLOW = "The Orca engine didn't answer in time. It may be busy; try again in a moment."
 
 
-def money(microcents: int) -> str:
-    dollars = (Decimal(max(0, int(microcents))) / Decimal(1_000_000)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return f"${dollars:,.2f}"
 
 
 def _tz_offset_minutes() -> int:
@@ -109,6 +109,9 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("statusline", help="one short line for Claude Code's status bar")
     r = sub.add_parser("report", help="spend by agent, as Markdown or CSV")
     r.add_argument("--format", choices=["md", "csv"], default="md")
+    r.add_argument("--week", choices=["last", "this"], default=None,
+                   help="one Monday-to-Sunday week by agent and model, instead of today and the last 7 days")
+    sub.add_parser("diagnostics", help="a report for a GitHub issue: versions, agents, log (no keys or prompts)")
     lk = sub.add_parser("link", help="use your OrcaRouter account as the hosted fallback")
     lk.add_argument("--key", required=True, help="your sk-orca-… key from orcarouter.ai")
     lg = sub.add_parser("login", help="point your agents at your team's gateway")
@@ -187,7 +190,6 @@ def _request(method: str, path: str, *, transport, params=None, json_body=None, 
         return None
 
 
-MODEL_NAMES = {"gpt-4o": "GPT-4o"}
 
 
 def _print_status(s: dict) -> None:
@@ -214,35 +216,6 @@ def _print_status(s: dict) -> None:
         print(f"{'Agent'.ljust(width)}  {'Today':>10}  {'7 days':>10}")
         for a in agents:
             print(f"{a['name'].ljust(width)}  {money(a['today_microcents']):>10}  {money(a['week_microcents']):>10}")
-
-
-def _report(s: dict, fmt: str) -> str:
-    agents = s.get("agents") or []
-    if fmt == "csv":
-        rows = ["agent,today_usd,last_7_days_usd,requests_last_7_days"]
-        for a in agents:
-            name = a["name"].replace(",", " ")
-            rows.append(f"{name},{money(a['today_microcents'])[1:].replace(',', '')},"
-                        f"{money(a['week_microcents'])[1:].replace(',', '')},{a.get('requests_week', 0)}")
-        return "\n".join(rows) + "\n"
-    week = s["week"]
-    lines = [
-        "# Coding-agent spend",
-        "",
-        f"Today: {money(s['today']['spend_microcents'])} · Last 7 days: {money(week['spend_microcents'])}",
-    ]
-    if week.get("saved_microcents", 0) > 0:
-        vs = MODEL_NAMES.get(week["baseline_model"], week["baseline_model"])
-        lines.append(f"Saved {money(week['saved_microcents'])} vs {vs} by routing simple calls to cheaper models.")
-    n = week.get("failures_avoided") or 0
-    if n:
-        lines.append(f"{n} failed {'request was' if n == 1 else 'requests were'} retried on another provider.")
-    lines += ["", "| Agent | Today | Last 7 days | Requests (7 days) |", "|---|---:|---:|---:|"]
-    for a in agents:
-        lines.append(f"| {a['name']} | {money(a['today_microcents'])} | {money(a['week_microcents'])} | "
-                     f"{a.get('requests_week', 0)} |")
-    lines += ["", "_From OrcaRouter Lite (`orca report`)._"]
-    return "\n".join(lines) + "\n"
 
 
 def _statusline(s: dict) -> str:
@@ -316,6 +289,33 @@ def _disconnect_all(transport) -> int:
         _err(line)
     print(f"Restored: {', '.join(restored) or 'nothing was connected'}.")
     return 1 if failed else 0
+
+
+def _diagnostics(transport) -> int:
+    """The engine's report, or (engine not running) what can be built here:
+    versions, agents from their config files, and the engine log's tail."""
+    body = _request("GET", "/v1/app/diagnostics", transport=transport, quiet=True)
+    if body and isinstance(body.get("text"), str):
+        sys.stdout.write(body["text"])
+        return 0
+    from packages.desktop import agents as ag
+    from packages.desktop import diagnostics as dg
+
+    home = dh.default_home()
+    app_version, engine_version = dg.versions()
+    statuses = ag.detect_agents(home=Path.home(), state_dir=home / "agents")
+    sys.stdout.write(dg.build(
+        version=app_version,
+        engine_version=engine_version,
+        engine="not running",
+        agents=dg.agent_rows(statuses, {}),
+        providers=None,
+        routing=None,
+        local=None,
+        log_lines=dg.log_tail(home / "engine.log"),
+        home=Path.home(),
+    ))
+    return 0
 
 
 def _logout() -> int:
@@ -422,6 +422,15 @@ def main(
         print(_statusline(body) if body else "orca —")
         return 0
 
+    if args.cmd == "report" and args.week:
+        body = _request("GET", "/v1/app/report", transport=transport,
+                        params={"format": "csv" if args.format == "csv" else "markdown", "week": args.week,
+                                "tz_offset_minutes": _tz_offset_minutes()})
+        if body is None:
+            return 1
+        sys.stdout.write(body["content"])
+        return 0
+
     if args.cmd == "report":
         body = _request("GET", "/v1/app/summary", transport=transport,
                         params={"tz_offset_minutes": _tz_offset_minutes()})
@@ -447,6 +456,9 @@ def main(
 
     if args.cmd == "logout":
         return _logout()
+
+    if args.cmd == "diagnostics":
+        return _diagnostics(transport)
 
     if args.cmd == "status":
         body = _request("GET", "/v1/app/summary", transport=transport,

@@ -488,6 +488,13 @@ _ENGINE_ERROR_STATUS = {
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
     "no_capable_provider": 403,
+    # The desktop app's refusals: only a paid model could serve the request
+    # (the user has to allow paid models), or OrcaRouter is out of credit.
+    # Neither succeeds on retry.
+    "needs_paid_model": 403,
+    "out_of_credit": 402,  # billing_error
+    # A provider's own 402 (no balance left on the user's key).
+    "payment_required": 402,
     # A provider timeout is transient by definition. The Anthropic taxonomy
     # has no 503, and the generic 5xx collapse below would render it as a
     # 500 api_error indistinguishable from a fault in THIS server — so it
@@ -734,6 +741,7 @@ def stream_error_event(message: str) -> str:
 _STATUS_TO_ERROR_TYPE = {
     400: "invalid_request_error",
     401: "authentication_error",
+    402: "billing_error",
     403: "permission_error",
     404: "not_found_error",
     413: "request_too_large",

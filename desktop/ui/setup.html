@@ -26,37 +26,70 @@
         <h2 id="s2"><span class="n" aria-hidden="true">2</span>Where should requests go?</h2>
         <p class="hint" id="providers-ready" hidden></p>
         <div class="choices" role="radiogroup" aria-labelledby="s2">
-          <label class="choice" data-route="hosted">
-            <input type="radio" name="route" value="hosted" checked>
+          <label class="choice" data-route="local_hosted" hidden>
+            <input type="radio" name="route" value="local_hosted" aria-labelledby="route-local-hosted" aria-describedby="route-local-hosted-d">
             <span class="radio" aria-hidden="true"></span>
             <span class="body">
-              <b>Use an OrcaRouter key <span class="pill free">$5 free</span></b>
-              <small>Every model, no provider keys to manage. Add your own keys later.</small>
-              <span class="collapse"><span class="inner"><span class="reveal">
-                <button class="btn btn-ghost btn-sm" type="button" id="get-key">Get a free OrcaRouter key</button>
-                <input class="text" id="hosted-key" type="password" placeholder="Paste sk-orca-…" autocomplete="off" spellcheck="false" aria-label="OrcaRouter key">
+              <b id="route-local-hosted">Ollama first, OrcaRouter for the rest</b>
+              <small id="route-local-hosted-d">Quick requests stay on this computer. Harder ones go to OrcaRouter's free models first, paid ones only when needed.</small>
+              <span class="collapse"><span class="inner"><span class="reveal" data-key-slot></span></span></span>
+            </span>
+          </label>
+          <label class="choice" data-route="local_only" hidden>
+            <input type="radio" name="route" value="local_only" aria-labelledby="route-local-only" aria-describedby="route-local-only-d">
+            <span class="radio" aria-hidden="true"></span>
+            <span class="body">
+              <b id="route-local-only">Only this computer</b>
+              <small id="route-local-only-d">Free and offline. Hard requests may fail.</small>
+            </span>
+          </label>
+          <label class="choice" data-route="hosted">
+            <input type="radio" name="route" value="hosted" checked aria-labelledby="route-hosted" aria-describedby="route-hosted-d">
+            <span class="radio" aria-hidden="true"></span>
+            <span class="body">
+              <b><span id="route-hosted">OrcaRouter gateway</span> <span class="pill free">Free models</span></b>
+              <small id="route-hosted-d">One key for every model, with failover between providers. Agents start on free models; paid models only when you choose them.</small>
+              <span class="collapse"><span class="inner"><span class="reveal" data-key-slot>
+                <span class="orca-key" id="orca-key">
+                  <span class="get-key">
+                    <button class="btn btn-primary btn-sm" type="button" id="get-key">Get my OrcaRouter key</button>
+                    <small class="fine" id="get-key-hint">Opens orcarouter.ai's key page. Copy the key there; Orca notices it when you come back.</small>
+                  </span>
+                  <span class="offer" id="clip-offer" hidden>
+                    <span class="offer-text" id="clip-offer-text"><b>OrcaRouter key found on your clipboard</b> (<span id="clip-offer-key"></span>). Use it?</span>
+                    <span class="offer-err" id="clip-offer-err" hidden></span>
+                    <span class="offer-actions">
+                      <button class="btn btn-ghost btn-sm" type="button" id="clip-no">No</button>
+                      <button class="btn btn-primary btn-sm" type="button" id="clip-use">Use this key</button>
+                    </span>
+                  </span>
+                  <span class="key-saved" id="key-saved" hidden><b>Key works.</b> <span id="key-saved-text">Checked with OrcaRouter and saved in your keychain. The clipboard was cleared.</span></span>
+                  <span class="key-live sr-only" id="key-live" aria-live="polite"></span>
+                  <input class="text" id="hosted-key" type="password" placeholder="Or paste it here (sk-orca-…)" autocomplete="off" spellcheck="false" aria-label="OrcaRouter key">
+                </span>
               </span></span></span>
             </span>
           </label>
           <label class="choice" data-route="byok">
-            <input type="radio" name="route" value="byok">
+            <input type="radio" name="route" value="byok" aria-labelledby="route-byok" aria-describedby="route-byok-d">
             <span class="radio" aria-hidden="true"></span>
             <span class="body">
-              <b>Use my own API keys</b>
-              <small>Stored encrypted on this computer. Requests go straight to the provider.</small>
+              <b id="route-byok">My own API keys</b>
+              <small id="route-byok-d">Requests go straight to each provider.</small>
               <span class="collapse"><span class="inner"><span class="reveal">
+                <span class="fine-label" id="pick-label">Choose a provider</span>
+                <span class="chips" id="provider-chips" role="group" aria-labelledby="pick-label"></span>
                 <span class="key-rows" id="key-rows"></span>
-                <button class="btn btn-ghost btn-sm" type="button" id="add-key">Add another key</button>
-                <small class="fine">Each key is checked with its provider before it's saved. More providers, and how <code>auto</code> picks a model, are in the dashboard (menu → Open dashboard).</small>
+                <small class="fine" id="byok-fine">Keys are stored encrypted on this computer. Each one is checked with its provider before it's saved, when the provider offers a check.</small>
               </span></span></span>
             </span>
           </label>
           <label class="choice" data-route="company">
-            <input type="radio" name="route" value="company">
+            <input type="radio" name="route" value="company" aria-labelledby="route-company" aria-describedby="route-company-d">
             <span class="radio" aria-hidden="true"></span>
             <span class="body">
-              <b>Join my company's gateway</b>
-              <small>Use the gateway your platform team runs, with the key they gave you. Its spend is tracked by your team.</small>
+              <b id="route-company">My company's gateway</b>
+              <small id="route-company-d">Use the key your platform team gave you.</small>
               <span class="collapse"><span class="inner"><span class="reveal">
                 <input class="text" id="gateway-url" type="url" placeholder="https://ai-gw.example.com" autocomplete="off" spellcheck="false" aria-label="Gateway address">
                 <input class="text" id="gateway-key" type="password" placeholder="Your key (sk-orca-…)" autocomplete="off" spellcheck="false" aria-label="Gateway key">
@@ -88,8 +121,30 @@
       <h1 id="done-title">You're set up</h1>
       <ul class="results" id="results"></ul>
       <p>Click the Orca icon in your menu bar or system tray to see today's spend. Restart any open Claude Code sessions so they use Orca.</p>
+      <div class="badge-card" aria-labelledby="badge-title">
+        <h2 id="badge-title">Using Orca on a project? Add the badge to its README.</h2>
+        <span class="badge-preview" aria-hidden="true"><span>budgeted with</span><span>OrcaRouter Lite</span></span>
+        <div class="badge-code">
+          <code id="badge-md" class="selectable" tabindex="0" aria-label="Badge Markdown"></code>
+          <button class="btn btn-ghost btn-sm" type="button" id="badge-copy">Copy</button>
+        </div>
+        <span class="sr-only" id="badge-live" aria-live="polite"></span>
+      </div>
       <button class="btn btn-primary" type="button" id="close">Done</button>
     </section>
+
+    <div class="sheet-backdrop" id="link-sheet" hidden>
+      <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="link-text" aria-describedby="link-note">
+        <span class="sheet-eyebrow" aria-hidden="true">orca:// link</span>
+        <p class="sheet-title" id="link-text"></p>
+        <p class="fine" id="link-skipped" hidden></p>
+        <p class="fine" id="link-note">Continue only fills in the form. Nothing changes until you save it.</p>
+        <div class="sheet-actions">
+          <button class="btn btn-ghost" type="button" id="link-cancel">Cancel</button>
+          <button class="btn btn-primary" type="button" id="link-continue">Continue</button>
+        </div>
+      </section>
+    </div>
   </main>
   <script type="module" src="setup.js"></script>
 </body>

@@ -1,8 +1,10 @@
 # Agent logos
 
-Each coding agent's logo is shown only to identify that agent in the Orca app.
-The names and logos are trademarks of their owners; showing them doesn't mean
-they endorse OrcaRouter Lite.
+Each coding agent's logo is shown only to identify that agent: in the Orca
+app, in the "Works with" strip of the project's README (`README.md`), and on
+the project's landing page (`site/`, which carries a copy of these files in
+`site/assets/agents/`). The names and logos are trademarks of their owners;
+showing them doesn't mean they endorse OrcaRouter Lite.
 
 | Files | Source | Licence |
 |---|---|---|

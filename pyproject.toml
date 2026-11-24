@@ -94,7 +94,7 @@ packages = ["app", "packages"]
 "desktop/ui" = "app/desktop_ui"
 
 [tool.hatch.build.targets.sdist]
-include = ["app", "packages", "design", "desktop/ui", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml"]
+include = ["app", "packages", "design", "desktop/ui", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml", "requirements.lock"]
 exclude = ["**/__pycache__", "**/*.pyc", "design/test_i18n_unittest.py"]
 
 [tool.pytest.ini_options]
@@ -118,3 +118,8 @@ ignore = ["E501", "B008", "E402"]
 # Reuses the desktop API fixtures by importing them; pytest needs the names.
 "tests/integration/test_desktop_budget_stop.py" = ["F811"]
 "tests/integration/test_responses_api.py" = ["F811"]
+"tests/integration/test_agent_budget_stop.py" = ["F811"]
+"tests/integration/test_benchmark_key.py" = ["F811"]
+"tests/integration/test_desktop_settings_fields.py" = ["F811"]
+"tests/integration/test_supported_providers.py" = ["F811"]
+"tests/integration/test_desktop_*.py" = ["F811"]

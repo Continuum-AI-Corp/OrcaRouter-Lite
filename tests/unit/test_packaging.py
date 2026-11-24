@@ -95,6 +95,28 @@ def test_the_windows_uninstaller_restores_agents_but_updates_do_not() -> None:
     assert '"/UPDATE"' in text
 
 
+def test_the_windows_uninstaller_removes_the_orca_command_but_updates_keep_it() -> None:
+    # "Install command-line tool…" writes ~/.orcarouter-lite/bin/orca.cmd and
+    # puts that folder on the user's PATH; uninstalling takes both away.
+    import json
+
+    desktop = Path(__file__).resolve().parents[2] / "desktop" / "src-tauri"
+    conf = json.loads((desktop / "tauri.conf.json").read_text())
+    text = (desktop / conf["bundle"]["windows"]["nsis"]["installerHooks"]).read_text()
+    update_guard = text.index('"/UPDATE"')
+    for needed in (r'Delete "$PROFILE\.orcarouter-lite\bin\orca.cmd"', "HKCU:\\Environment",
+                   "'.orcarouter-lite\\bin'", "STR:Environment"):
+        assert needed in text, needed
+        assert text.index(needed) > update_guard, f"{needed} must be skipped during an update"
+
+
+def test_the_app_registers_orca_links() -> None:
+    import json
+
+    conf = json.loads((Path(__file__).resolve().parents[2] / "desktop" / "src-tauri" / "tauri.conf.json").read_text())
+    assert conf["plugins"]["deep-link"]["desktop"]["schemes"] == ["orca"]
+
+
 def test_the_install_guide_covers_unsigned_builds_and_uninstalling() -> None:
     root = Path(__file__).resolve().parents[2]
     guide = (root / "INSTALL.md").read_text()

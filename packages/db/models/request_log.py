@@ -30,6 +30,10 @@ class RequestLog(Base, UUIDMixin, SoftDeleteMixin):
     status_code: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_streaming: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Why the request was routed (or refused) the way it was, for the desktop
+    # app's panel: substituted, mapped, free, local, needs_paid, no_fallback,
+    # out_of_credit. NULL for ordinary traffic. See app/route_notes.py.
+    route_note: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -5,6 +5,7 @@
 //! the panel, setup and dashboard pages that the engine itself serves.
 
 pub mod engine;
+pub mod install;
 pub mod logic;
 
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,8 @@ use tauri::ipc::CapabilityBuilder;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -31,6 +34,8 @@ struct AppState {
     panel_hidden_at: Mutex<Option<std::time::Instant>>,
     // Built with the updater's public key: updates install in place.
     updates_installable: bool,
+    /// The last orca:// link and when it arrived (dropped after LINK_TTL_SECS).
+    pending_link: Mutex<Option<(std::time::Instant, logic::OrcaLink)>>,
 }
 
 fn engine(state: &AppState) -> Result<Arc<Engine>, String> {
@@ -76,10 +81,16 @@ fn key_script(eng: &Engine) -> String {
     )
 }
 
+/// A click on the tray icon: show the panel, or hide it if it's open.
 fn show_panel(app: &AppHandle) {
+    panel(app, true);
+}
+
+/// Show the panel; `toggle` hides it instead when it's already open.
+fn panel(app: &AppHandle, toggle: bool) {
     let state = app.state::<AppState>();
     if let Some(t) = *state.panel_hidden_at.lock().unwrap() {
-        if t.elapsed() < Duration::from_millis(300) {
+        if toggle && t.elapsed() < Duration::from_millis(300) {
             return; // this click is the one that just closed the panel
         }
     }
@@ -122,7 +133,11 @@ fn show_panel(app: &AppHandle) {
         }
     };
     if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
+        if toggle {
+            let _ = win.hide();
+        } else {
+            let _ = win.set_focus();
+        }
         return;
     }
     // TrayCenter sits above a bottom taskbar (Windows) and below a top menu
@@ -183,6 +198,124 @@ fn setup_window(app: &AppHandle) -> Result<(), String> {
         let _ = p.hide();
     }
     open_window(app, "setup", "/desktop/setup.html", "Set up OrcaRouter Lite", (600.0, 860.0), "")
+}
+
+/// `guard`, and the caller must be this one window.
+fn guard_window(window: &WebviewWindow, label: &str) -> Result<(), String> {
+    guard(window)?;
+    if window.label() == label {
+        Ok(())
+    } else {
+        Err("Not allowed from this page.".into())
+    }
+}
+
+/// H1: an OrcaRouter key the user copied, offered by setup when its window
+/// regains focus. Only setup may ask, only while it has focus, and only text
+/// shaped like an OrcaRouter key comes back; anything else stays private.
+#[tauri::command]
+fn clipboard_orca_key(window: WebviewWindow) -> Result<Option<String>, String> {
+    guard_window(&window, "setup")?;
+    if !window.is_focused().unwrap_or(false) {
+        return Ok(None);
+    }
+    let text = window.app_handle().clipboard().read_text().unwrap_or_default();
+    Ok(logic::orca_key_from_clipboard(&text))
+}
+
+/// H1: after the key is saved, clear it from the clipboard, but only if the
+/// clipboard still holds it (never something copied since).
+#[tauri::command]
+fn clear_clipboard(window: WebviewWindow, key: String) -> Result<bool, String> {
+    guard_window(&window, "setup")?;
+    let clipboard = window.app_handle().clipboard();
+    let text = clipboard.read_text().unwrap_or_default();
+    if logic::should_clear_clipboard(&text, &key) {
+        clipboard.clear().map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// V2: put the savings card (a PNG, base64) on the clipboard.
+#[tauri::command]
+fn copy_png(window: WebviewWindow, base64: String) -> Result<(), String> {
+    guard_window(&window, "panel")?;
+    let bytes = logic::png_from_base64(&base64)?;
+    let image = tauri::image::Image::from_bytes(&bytes).map_err(|_| "That image couldn't be read.".to_string())?;
+    window.app_handle().clipboard().write_image(&image).map_err(|e| e.to_string())
+}
+
+/// V3: the orca:// link waiting for this page, if any (a page that opened
+/// after the link arrived missed its `orca-link` event). Taking it clears it.
+#[tauri::command]
+fn take_pending_link(window: WebviewWindow) -> Result<Option<logic::OrcaLink>, String> {
+    guard(&window)?;
+    let state = window.app_handle().state::<AppState>();
+    let mut pending = state.pending_link.lock().unwrap();
+    if pending.as_ref().is_some_and(|(at, _)| !logic::link_is_fresh(at.elapsed())) {
+        *pending = None;
+    }
+    if pending.as_ref().is_some_and(|(_, l)| l.window() == window.label()) {
+        return Ok(pending.take().map(|(_, l)| l));
+    }
+    Ok(None)
+}
+
+/// V3: an orca:// link arrived. Validate it, keep it for its page, open that
+/// page and tell it. Nothing happens until the user confirms on the page.
+fn handle_link(app: &AppHandle, raw: &str) {
+    let Some(link) = logic::parse_orca_link(raw) else {
+        return; // anything else is ignored
+    };
+    *app.state::<AppState>().pending_link.lock().unwrap() = Some((std::time::Instant::now(), link));
+    if engine(&app.state::<AppState>()).is_err() {
+        return; // start_engine opens it once the engine is up
+    }
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || open_pending_link(&h));
+}
+
+/// Open the page for the pending link, and send it the `orca-link` event
+/// if it's already loaded. The event's detail is the link as JSON.
+fn open_pending_link(app: &AppHandle) {
+    let Some((_, link)) = app.state::<AppState>().pending_link.lock().unwrap().clone() else {
+        return;
+    };
+    let label = link.window();
+    if label == "setup" {
+        let _ = setup_window(app);
+    } else {
+        panel(app, false);
+    }
+    if let Some(w) = app.get_webview_window(label) {
+        let detail = serde_json::to_string(&link).unwrap_or_else(|_| "null".into());
+        let _ = w.eval(format!("window.dispatchEvent(new CustomEvent('orca-link', {{ detail: {detail} }}));"));
+    }
+}
+
+/// D8: copy the engine's diagnostics report and say so.
+fn copy_diagnostics(app: &AppHandle) {
+    let from_engine = engine(&app.state::<AppState>()).ok().and_then(|e| e.diagnostics().ok());
+    let text = from_engine.or_else(Engine::cli_diagnostics);
+    let (title, body) = match text.map(|t| app.clipboard().write_text(t)) {
+        Some(Ok(())) => (
+            "Diagnostics copied",
+            "Paste them into a GitHub issue. Keys and prompts were left out.".to_string(),
+        ),
+        Some(Err(e)) => ("Couldn't copy diagnostics", format!("The clipboard isn't available: {e}")),
+        None => (
+            "Couldn't copy diagnostics",
+            "The Orca engine isn't responding. Its log is at ~/.orcarouter-lite/engine.log.".to_string(),
+        ),
+    };
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// D6: put the `orca` command on the PATH and say what happened.
+fn install_cli(app: &AppHandle) {
+    let (title, body) = install::install();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 #[tauri::command]
@@ -324,9 +457,22 @@ fn start_engine(app: AppHandle) {
                     .permission("allow-quit-app")
                     .permission("allow-resize-panel")
                     .permission("allow-can-install-updates")
-                    .permission("allow-install-update");
-                if let Err(e) = app.add_capability(cap) {
-                    eprintln!("orca: capability: {e}");
+                    .permission("allow-install-update")
+                    .permission("allow-take-pending-link");
+                // The clipboard key check is setup's alone; the card copy the panel's.
+                let setup_only = CapabilityBuilder::new("engine-setup")
+                    .remote(format!("{}/*", eng.base_url))
+                    .windows(["setup"])
+                    .permission("allow-clipboard-orca-key")
+                    .permission("allow-clear-clipboard");
+                let panel_only = CapabilityBuilder::new("engine-panel")
+                    .remote(format!("{}/*", eng.base_url))
+                    .windows(["panel"])
+                    .permission("allow-copy-png");
+                for cap in [cap, setup_only, panel_only] {
+                    if let Err(e) = app.add_capability(cap) {
+                        eprintln!("orca: capability: {e}");
+                    }
                 }
                 let first_run = !eng.home.join("setup.json").exists();
                 *state.engine.lock().unwrap() = Some(eng.clone());
@@ -334,10 +480,14 @@ fn start_engine(app: AppHandle) {
                 // sees the app start instead of a silent menu-bar icon.
                 let launched_by_user = !std::env::args().any(|a| a == "--background");
                 let h = app.clone();
+                let link_waiting = state.pending_link.lock().unwrap().is_some();
                 if first_run {
                     let _ = app.run_on_main_thread(move || {
                         let _ = setup_window(&h);
                     });
+                } else if link_waiting {
+                    // Opened by an orca:// link: show the page that confirms it.
+                    let _ = app.run_on_main_thread(move || open_pending_link(&h));
                 } else if launched_by_user {
                     let _ = app.run_on_main_thread(move || show_panel(&h));
                 }
@@ -395,12 +545,29 @@ fn announce_update(app: &AppHandle, snap: &logic::Snapshot) {
     }
 }
 
+/// D5, H2 and H4. What was announced is kept in notified.json so a restart
+/// doesn't repeat it.
+fn watch_notices(app: &AppHandle, summary: &serde_json::Value) {
+    let path = engine::orca_home().join("notified.json");
+    let prev = std::fs::read_to_string(&path).map(|t| logic::notified_from_json(&t)).unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let (next, alerts) = logic::notices(today, &prev, &logic::parse_watch(summary));
+    // Record first: a notification that fails to show isn't retried every poll.
+    if next != prev && std::fs::write(&path, logic::notified_to_json(&next)).is_err() {
+        return;
+    }
+    for alert in alerts {
+        let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
+    }
+}
+
 fn poll(app: AppHandle, mut eng: Arc<Engine>) {
     let mut prev: Option<logic::Snapshot> = None;
     let mut failures = 0u32;
     let mut last_restart: Option<std::time::Instant> = None;
     loop {
-        match eng.summary().ok().as_ref().and_then(logic::parse_summary) {
+        let summary = eng.summary().ok();
+        match summary.as_ref().and_then(logic::parse_summary) {
             Some(snap) => {
                 failures = 0;
                 let title = logic::tray_title(&snap);
@@ -409,6 +576,9 @@ fn poll(app: AppHandle, mut eng: Arc<Engine>) {
                     let _ = app.notification().builder().title(alert.title()).body(alert.body()).show();
                 }
                 weekly_digest(&app, &snap);
+                if let Some(v) = &summary {
+                    watch_notices(&app, v);
+                }
                 announce_update(&app, &snap);
                 prev = Some(snap);
             }
@@ -440,7 +610,15 @@ pub fn run() {
     let updates_installable = logic::updates_installable(&plugins);
 
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_panel(app)))
+        // First: a second launch hands over (with the deep-link feature, its
+        // orca:// link goes to the deep-link plugin) and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if !logic::argv_has_orca_link(&argv) {
+                show_panel(app);
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
@@ -465,7 +643,11 @@ pub fn run() {
             quit_app,
             resize_panel,
             can_install_updates,
-            install_update
+            install_update,
+            clipboard_orca_key,
+            clear_clipboard,
+            copy_png,
+            take_pending_link
         ])
         .setup(|app| {
             // A menu-bar app: no Dock icon on macOS.
@@ -475,9 +657,11 @@ pub fn run() {
             let open = MenuItem::with_id(app, "open", "Show spend", true, None::<&str>)?;
             let dash = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let setup = MenuItem::with_id(app, "setup", "Setup…", true, None::<&str>)?;
+            let cli = MenuItem::with_id(app, "cli", "Install command-line tool…", true, None::<&str>)?;
+            let diag = MenuItem::with_id(app, "diagnostics", "Copy diagnostics", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit OrcaRouter Lite", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &dash, &setup, &sep, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &dash, &setup, &cli, &diag, &sep, &quit])?;
 
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
@@ -500,10 +684,38 @@ pub fn run() {
                     "setup" => {
                         let _ = setup_window(app);
                     }
+                    "cli" => {
+                        let h = app.clone();
+                        std::thread::spawn(move || install_cli(&h));
+                    }
+                    "diagnostics" => {
+                        let h = app.clone();
+                        std::thread::spawn(move || copy_diagnostics(&h));
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
+
+            // orca:// links: while running (macOS, and second launches on
+            // Windows and Linux) and the one that started the app, if any.
+            // Installers register the scheme; an AppImage or a dev build
+            // registers it here.
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("APPIMAGE").is_some() || cfg!(debug_assertions) {
+                let _ = app.deep_link().register_all();
+            }
+            let h = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    handle_link(&h, url.as_str());
+                }
+            });
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    handle_link(app.handle(), url.as_str());
+                }
+            }
 
             start_engine(app.handle().clone());
             Ok(())

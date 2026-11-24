@@ -54,7 +54,8 @@ AGENT_ALLOWED_PREFIXES: tuple[str, ...] = (
 
 
 async def _desktop_budget_stop(path: str, key_context) -> str | None:
-    """Desktop mode with budget_mode "stop": refuse agents past today's budget."""
+    """Desktop mode: refuse an agent past today's budget (the workspace's in
+    "stop" mode, or the agent's own cap)."""
     from app.config import get_settings
 
     if not get_settings().orca_desktop_mode:
@@ -65,7 +66,7 @@ async def _desktop_budget_stop(path: str, key_context) -> str | None:
         return None
     try:
         async with session_mod._session_factory() as session:
-            return await budget.stop_reason(session, key_context.workspace_id)
+            return await budget.stop_reason(session, key_context.workspace_id, key_name=key_context.name)
     except Exception as exc:
         # Never block traffic because the check itself failed, but say so:
         # a silently failing check means the budget isn't enforced.

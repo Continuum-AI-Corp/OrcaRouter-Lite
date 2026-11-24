@@ -40,7 +40,7 @@ def test_renders_a_two_arch_cask_with_version_and_checksums(dmgs):
     assert 'version "0.2.0"' in cask
     assert f'arm:   "{hashlib.sha256(b"arm-bytes").hexdigest()}"' in cask
     assert f'intel: "{hashlib.sha256(b"intel-bytes").hexdigest()}"' in cask
-    assert "releases/download/v#{version}/OrcaRouter%20Lite_#{version}_#{arch}.dmg" in cask
+    assert "releases/download/v#{version}/OrcaRouter.Lite_#{version}_#{arch}.dmg" in cask
     assert "depends_on arch" not in cask
     assert 'app "OrcaRouter Lite.app"' in cask
     assert 'zap trash: "~/.orcarouter-lite"' in cask

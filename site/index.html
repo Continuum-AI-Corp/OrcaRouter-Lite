@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Orca Router Lite: put a budget on every coding agent</title>
+  <meta name="description" content="A free, open-source menu-bar app that shows and caps what Claude Code, Codex, Gemini CLI and 16 more coding agents spend, across every model provider.">
+  <meta name="color-scheme" content="light dark">
+  <meta property="og:title" content="Orca Router Lite">
+  <meta property="og:description" content="Put a budget on every coding agent. Free and open source for macOS, Windows and Linux.">
+  <meta property="og:image" content="https://continuum-ai-corp.github.io/OrcaRouter-Lite/assets/panel-light.png">
+  <link rel="icon" type="image/png" href="assets/orca.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="download.js" defer></script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="./" aria-label="Orca Router Lite home">
+        <img src="assets/orca.png" alt="" width="28" height="28">
+        <span>Orca Router <b>Lite</b></span>
+      </a>
+      <nav class="top-nav" aria-label="Site">
+        <a href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/INSTALL.md">Install guide</a>
+        <a href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Free and open source · macOS, Windows, Linux</p>
+          <h1>Put a budget on every coding agent</h1>
+          <p class="lede">
+            See and cap what Claude Code, Codex, Gemini CLI and 16 more coding agents spend,
+            across every model provider. Orca lives in your menu bar, and your prompts go
+            straight from your agents to the providers you choose.
+          </p>
+
+          <div class="download" id="download">
+            <a class="btn btn-primary btn-lg" id="download-primary"
+               href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest">
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              <span id="download-label">Download Orca</span>
+              <span class="btn-detail" id="download-detail"></span>
+            </a>
+            <p class="download-meta" id="download-meta">Installers for every system are on the latest GitHub release.</p>
+            <p class="download-mobile" id="download-mobile" hidden>
+              Orca runs on macOS, Windows and Linux. Open this page on your computer, or pick a build below.
+            </p>
+            <ul class="other-os" id="download-options" aria-label="All downloads">
+              <li><a id="dl-mac-arm" data-target="mac-arm" href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest#mac-arm">Mac (Apple silicon)</a></li>
+              <li><a id="dl-mac-intel" data-target="mac-intel" href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest#mac-intel">Mac (Intel)</a></li>
+              <li><a id="dl-windows" data-target="windows" href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest#windows">Windows</a></li>
+              <li><a id="dl-linux-deb" data-target="linux-deb" href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest#linux-deb">Linux (.deb)</a></li>
+              <li><a id="dl-linux-appimage" data-target="linux-appimage" href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest#linux-appimage">Linux (AppImage)</a></li>
+            </ul>
+          </div>
+        </div>
+
+        <figure class="hero-shot">
+          <picture>
+            <source srcset="assets/panel-dark.png" media="(prefers-color-scheme: dark)">
+            <img src="assets/panel-light.png" width="360" height="680"
+                 alt="The Orca menu-bar panel: today's spend against a daily budget, split by coding agent, with provider health">
+          </picture>
+        </figure>
+      </div>
+    </section>
+
+    <section class="install" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <h2 id="install-title">Or install from the terminal</h2>
+        <ul class="commands">
+          <li>
+            <span class="cmd-label">macOS app (Homebrew)</span>
+            <code class="cmd" id="cmd-cask">brew install --cask continuum-ai-corp/tap/orcarouter-lite</code>
+            <button class="copy" type="button" data-copy="cmd-cask" hidden>Copy</button>
+          </li>
+          <li>
+            <span class="cmd-label">Windows app (winget)</span>
+            <code class="cmd" id="cmd-winget">winget install OrcaRouter.Lite</code>
+            <button class="copy" type="button" data-copy="cmd-winget" hidden>Copy</button>
+          </li>
+          <li>
+            <span class="cmd-label">Just the <code>orca</code> CLI (Homebrew)</span>
+            <code class="cmd" id="cmd-formula">brew install continuum-ai-corp/tap/orcarouter-lite</code>
+            <button class="copy" type="button" data-copy="cmd-formula" hidden>Copy</button>
+          </li>
+          <li>
+            <span class="cmd-label">Just the <code>orca</code> CLI (any OS with Python)</span>
+            <code class="cmd" id="cmd-pipx">pipx install orcarouter-lite</code>
+            <button class="copy" type="button" data-copy="cmd-pipx" hidden>Copy</button>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="steps" aria-labelledby="steps-title">
+      <div class="wrap">
+        <h2 id="steps-title">Thirty seconds from install to a budget</h2>
+        <ol class="step-list">
+          <li><b>Install</b><span>One app, with its own engine and a local database. No server, no Docker.</span></li>
+          <li><b>Connect</b><span>Setup finds the coding agents on your computer and connects them in one click. It backs up their settings and restores them when you disconnect.</span></li>
+          <li><b>Spend</b><span>Today's total sits in the menu bar, split by agent. A Monday note sums up the week.</span></li>
+          <li><b>Alert</b><span>Notifications at 80% and 100% of your daily budget. Tick one box and Orca pauses your agents at the limit.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="works" aria-labelledby="works-title">
+      <div class="wrap">
+        <h2 id="works-title">Works with</h2>
+        <ul class="logos">
+          <li><img src="assets/agents/claude-code.svg" alt="Claude Code" width="32" height="32" loading="lazy"><span>Claude Code</span></li>
+          <li><img src="assets/agents/codex.svg" alt="Codex" width="32" height="32" loading="lazy"><span>Codex</span></li>
+          <li><img src="assets/agents/gemini-cli.svg" alt="Gemini CLI" width="32" height="32" loading="lazy"><span>Gemini CLI</span></li>
+          <li><img src="assets/agents/opencode.svg" alt="OpenCode" width="32" height="32" loading="lazy"><span>OpenCode</span></li>
+          <li><img src="assets/agents/cline.svg" alt="Cline" width="32" height="32" loading="lazy"><span>Cline</span></li>
+          <li><img src="assets/agents/command-code.svg" alt="Command Code" width="32" height="32" loading="lazy"><span>Command Code</span></li>
+          <li><img src="assets/agents/hermes.svg" alt="Hermes Agent" width="32" height="32" loading="lazy"><span>Hermes Agent</span></li>
+          <li><img src="assets/agents/pi.svg" alt="Pi" width="32" height="32" loading="lazy"><span>Pi</span></li>
+          <li><img src="assets/agents/omp.svg" alt="OMP" width="32" height="32" loading="lazy"><span>OMP</span></li>
+          <li><img src="assets/agents/kilo.svg" alt="Kilo Code" width="32" height="32" loading="lazy"><span>Kilo Code</span></li>
+          <li><img src="assets/agents/openclaw.svg" alt="OpenClaw" width="32" height="32" loading="lazy"><span>OpenClaw</span></li>
+          <li><img src="assets/agents/kimi-code.svg" alt="Kimi Code" width="32" height="32" loading="lazy"><span>Kimi Code</span></li>
+          <li><img src="assets/agents/goose.svg" alt="Goose" width="32" height="32" loading="lazy"><span>Goose</span></li>
+          <li><img src="assets/agents/cursor.svg" alt="Cursor" width="32" height="32" loading="lazy"><span>Cursor</span></li>
+          <li><img src="assets/agents/aider.svg" alt="Aider" width="32" height="32" loading="lazy"><span>Aider</span></li>
+          <li><img src="assets/agents/zed.svg" alt="Zed" width="32" height="32" loading="lazy"><span>Zed</span></li>
+          <li><img src="assets/agents/openhands.svg" alt="OpenHands" width="32" height="32" loading="lazy"><span>OpenHands</span></li>
+          <li><img src="assets/agents/deepseek-harness.svg" alt="DeepSeek Harness" width="32" height="32" loading="lazy"><span>DeepSeek Harness</span></li>
+          <li><img src="assets/agents/zcode.svg" alt="ZCode" width="32" height="32" loading="lazy"><span>ZCode</span></li>
+        </ul>
+        <p class="fineprint">
+          …and anything that speaks the OpenAI, Anthropic or Gemini API. Agent names and logos are trademarks of their owners,
+          shown only to identify each agent; no endorsement is implied.
+          <a href="assets/agents/NOTICE.md">Sources and licenses</a>.
+        </p>
+      </div>
+    </section>
+
+    <section class="orca" aria-labelledby="orca-title">
+      <div class="wrap orca-card">
+        <div>
+          <p class="eyebrow">OrcaRouter</p>
+          <h2 id="orca-title">Free models to start, one key for every model</h2>
+          <p>
+            Orca works with your own provider keys. If you'd rather not juggle them, OrcaRouter's hosted gateway gives
+            every agent one key for every model, with failover between providers when one is down. Agents start on
+            free models; paid models are billed per request, and only when you choose them.
+          </p>
+        </div>
+        <a class="btn btn-primary" href="https://www.orcarouter.ai/register?ref=lite-site">Get an OrcaRouter key</a>
+      </div>
+    </section>
+
+    <section class="facts" aria-label="Privacy and license">
+      <div class="wrap fact-grid">
+        <div><b>No telemetry.</b> Nothing leaves your computer except requests to the providers you set up and one update check a day.</div>
+        <div><b>Never down.</b> When a provider fails or rate-limits you, requests fall back to another, and Orca counts the rescues.</div>
+        <div><b>Yours to keep.</b> MIT licensed, signed releases with provenance. Works with your team's gateway too.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-row">
+      <span>Orca Router Lite · MIT license · by Continuum AI</span>
+      <span>
+        <a href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite">GitHub</a> ·
+        <a href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/SECURITY.md">Security</a> ·
+        <a href="https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases">All releases</a>
+      </span>
+    </div>
+  </footer>
+</body>
+</html>

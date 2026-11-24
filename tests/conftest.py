@@ -77,6 +77,23 @@ def _no_update_check(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_local_model_discovery(monkeypatch):
+    """The desktop engine probes Ollama / LM Studio / llama.cpp on this
+    machine; tests never do. Tests of discovery delete this variable."""
+    monkeypatch.setenv("ORCA_NO_LOCAL_MODELS", "1")
+    yield
+    try:
+        from app import benchmark_key
+        from packages.desktop import hosted_state, local_models
+
+        local_models.reset()
+        hosted_state.reset()
+        benchmark_key.reset()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _no_system_keychain(monkeypatch):
     """Tests never read or write the machine's real keychain."""
     monkeypatch.setenv("ORCA_KEYCHAIN", "0")

@@ -7,7 +7,7 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
 
 ## 1. Download
 
-- **Releases** (from the first tagged version): the
+- **Releases** (from the next release): the
   [latest release](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest)
   has `.dmg` (Apple silicon and Intel), `.msi`/`.exe` (Windows) and
   `.deb`/`.AppImage` (Linux).
@@ -17,6 +17,18 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
   `orcarouter-lite-<runner>` artifact for your system: `macos-15` (Apple
   silicon), `macos-15-intel`, `windows-2022` or `ubuntu-22.04`. Ignore the
   `-updater-` artifacts; those are update bundles.
+- **Package managers** (from the next release):
+
+  ```bash
+  brew install --cask continuum-ai-corp/tap/orcarouter-lite   # macOS app
+  ```
+
+  ```powershell
+  winget install OrcaRouter.Lite                              # Windows app
+  ```
+
+  The landing page, <https://continuum-ai-corp.github.io/OrcaRouter-Lite/>,
+  picks the right download for your system.
 
 ## 2. Install and open it
 
@@ -67,9 +79,12 @@ Setup opens by itself:
 
 1. **Coding agents on this computer.** The agents Orca found are ticked. It
    backs up each agent's settings before changing them.
-2. **Where should requests go?** Use an OrcaRouter key, or add your own keys
-   (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral, Groq, Together,
-   Fireworks). Each key is checked with its provider before it's saved. More
+2. **Where should requests go?** The OrcaRouter gateway comes first: one key
+   for every model, failover between providers, and free models to start.
+   Paid models are billed per request, and only when you choose them. Or add
+   your own keys instead (Anthropic, OpenAI, Gemini, DeepSeek, xAI, Mistral,
+   Groq, Together, Fireworks); they work with or without OrcaRouter. Each key
+   is checked with its provider before it's saved. More
    providers, and how `model="auto"` picks a model, are in the dashboard
    (menu → Open dashboard).
 3. **Daily budget.** Notifications at 80% and 100%; optionally pause agents
@@ -102,6 +117,28 @@ Then remove the app:
 To remove your data too, delete `~/.orcarouter-lite`. On macOS and Windows the
 encryption key is also in the Keychain / Credential Manager under
 "OrcaRouter Lite".
+
+## Just the command-line tool
+
+For a server, a headless machine, or if you'd rather not run a menu-bar app,
+install the `orca` CLI and engine on their own (from the first tagged
+version):
+
+```bash
+brew install continuum-ai-corp/tap/orcarouter-lite   # macOS and Linux (Homebrew formula)
+```
+
+```bash
+pipx install orcarouter-lite                         # any OS with Python 3.11+
+```
+
+Then `orca up` starts the router, `orca connect claude-code` connects an
+agent and `orca status` shows today's spend. The formula installs the
+dependencies from the release's hash-locked `requirements.lock`. It doesn't
+include the app, and the cask doesn't put `orca` on your PATH by itself:
+use the formula, or the app's **Install command-line tool…** menu item, not
+both. (On Intel Macs both want `/usr/local/bin/orca`; the app's item then
+falls back to `~/.local/bin/orca`, which Homebrew's copy shadows.)
 
 ## Run from source instead
 

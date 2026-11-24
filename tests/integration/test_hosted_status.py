@@ -1,7 +1,7 @@
 """Tests for GET /v1/hosted — the "Hosted fallback" status endpoint.
 
 The dashboard's hosted CTA card calls this on mount to decide whether to
-show the "Get free $5 credit" sign-up flow or the "Active" pill. If this
+show the "get your key" flow or the "Active" pill. If this
 endpoint lies about state, the conversion funnel breaks.
 """
 
@@ -78,11 +78,16 @@ async def test_hosted_status_unconfigured_shows_signup_url(unconfigured_client):
     # (not /signup or any third-party site). The dashboard's "Get free
     # credit" button opens this URL — getting it wrong sends users to a
     # 404 or worse.
-    assert body["signup_url"] == "https://www.orcarouter.ai/register"
+    # Every outgoing link says it came from Lite's setup (H8), nothing more.
+    assert body["signup_url"] == "https://www.orcarouter.ai/register?ref=lite-setup"
     # The primary CTA sends users straight to the token console — the page
     # with the copyable sk-orca-* key. Sign-up is only the secondary link.
-    assert body["token_url"] == "https://www.orcarouter.ai/console/token"
+    assert body["token_url"] == "https://www.orcarouter.ai/console/token?ref=lite-setup"
+    # Where spend and credit are managed (H4).
+    assert body["console_url"] == "https://www.orcarouter.ai/console?ref=lite-setup"
+    assert body["billing_url"] == "https://www.orcarouter.ai/console/topup?ref=lite-setup"
     assert body["provider_name"] == "orcarouter"
+    assert "$5" not in r.text
 
 
 async def test_hosted_status_token_url_overridable_by_env(tmp_sqlite_url, monkeypatch):
@@ -94,7 +99,7 @@ async def test_hosted_status_token_url_overridable_by_env(tmp_sqlite_url, monkey
     )
     async with client as c:
         r = await c.get("/v1/hosted")
-        assert r.json()["token_url"] == "https://orca.internal/console/token"
+        assert r.json()["token_url"] == "https://orca.internal/console/token?ref=lite-setup"
     await engine.dispose()
     from packages.db import session as session_mod
     session_mod._session_factory = None

@@ -19,7 +19,12 @@ tauri = { version = "=2.12.7", features = ["tray-icon", "image-png"] }
 tauri-plugin-notification = "=2.8.1"
 tauri-plugin-opener = "=2.7.3"
 tauri-plugin-positioner = { version = "=2.4.0", features = ["tray-icon"] }
-tauri-plugin-single-instance = "=2.5.5"
+# deep-link: a second launch carrying an orca:// link hands it to this one.
+tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }
+# orca:// links (V3). Parsed and validated in logic.rs; never acted on directly.
+tauri-plugin-deep-link = "=2.6.3"
+# Read an OrcaRouter key the user copied (H1), copy diagnostics (D8) and the savings card (V2).
+tauri-plugin-clipboard-manager = "=2.5.0"
 # Starts Orca at login (with --background) so connected agents keep working after a restart.
 tauri-plugin-autostart = "=2.7.0"
 # Loaded only in builds that carry the updater's public key (release CI adds
@@ -34,6 +39,14 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+url = "=2.5.9"
+base64 = "=0.22.1"
+
+# "Install command-line tool…" on Windows: the user's PATH (HKCU\Environment)
+# and the settings-changed broadcast that makes new terminals see it.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "=0.6.1"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 codegen-units = 1

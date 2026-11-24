@@ -33,6 +33,8 @@ sviluppatore e un router self-hosted per un intero team. Licenza MIT.
 
 OrcaRouter Lite è l'edizione open source di [OrcaRouter](https://www.orcarouter.ai). Gira sul tuo computer o sul tuo server, parla le API di OpenAI, Anthropic e Gemini, e può usare l'`api.orcarouter.ai` ospitato come rete di sicurezza in caso di guasti e per i modelli di cui non hai le chiavi.
 
+**OrcaRouter** è il gateway ospitato dietro la rete di sicurezza di Lite: una sola chiave per ogni modello, failover tra provider, modelli gratuiti per iniziare e pagamento a richiesta per i modelli a pagamento. L'app desktop lo propone per primo e avvia gli agenti sui modelli gratuiti; le tue chiavi dei provider restano un'alternativa completa, con o senza di esso.
+
 ## L'app desktop
 
 L'app Orca vive nella tua barra dei menu. Esegue il router su `127.0.0.1`, vi collega i tuoi agenti
@@ -147,7 +149,7 @@ Niente clone, niente docker. Registrati, ottieni una chiave, punta qualsiasi SDK
 # 2. Usa https://api.orcarouter.ai/v1 come URL base
 ```
 
-**Account richiesto.** L'hosted gestisce routing, fatturazione e la long tail di provider — fatturato per token sul tuo account OrcaRouter. Vedi [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Account richiesto.** Modelli gratuiti per iniziare; i modelli a pagamento sono fatturati a richiesta sul tuo account OrcaRouter. L'hosted gestisce routing, failover tra provider e la long tail di modelli. Vedi [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Poi chiamalo da qualsiasi SDK OpenAI
 
@@ -230,7 +232,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Casi d'uso:
-- **Prova-prima-di-comprare** — nessuna chiave provider locale necessaria
+- **Inizia gratis** — i modelli gratuiti non richiedono chiavi provider; modelli a pagamento solo quando li scegli tu
 - **Logging locale** — l'hosted gestisce il routing, Lite memorizza le righe RequestLog per la dashboard
 - **Failover** — i provider locali falliscono, l'hosted è la rete di sicurezza
 
@@ -299,7 +301,7 @@ Oltre 100 modelli di chat vengono caricati all'avvio dal [database di prezzi man
 - `GET/PUT/DELETE /v1/providers/{provider}` — imposta / lista / revoca chiavi provider cifrate
 - `GET/PUT /v1/routing` — cambia strategia (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — analytics locali, nessuna telemetria esce dalla scatola
-- `GET  /v1/hosted` — stato del fallback hosted (alimenta la card "Get $5 free credit" della dashboard)
+- `GET  /v1/hosted` — stato del gateway ospitato (alimenta la card OrcaRouter della dashboard)
 - `GET/POST/DELETE /v1/keys/...` — lista / ruota / revoca chiavi API
 - `/v1/app/*` — agenti, riepilogo della spesa e budget per l'app desktop (solo se avviato con `orca up`; vedi [SECURITY.md](./SECURITY.md))
 - Dashboard single-page su `/`

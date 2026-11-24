@@ -19,12 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import prompt_cache, router_cache
+from app import desktop_routing, prompt_cache, route_notes, router_cache
 from app.agent_model_fallback import fallback_preferences, is_agent_key
 from app.auto_routing import (
     _VERSION_SUFFIX_RE,
     canonical_model_base,
     choose_auto_model,
+    estimate_prompt_tokens,
     required_capabilities,
 )
 from app.config import get_settings
@@ -34,10 +35,13 @@ from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
+from packages.desktop import hosted_state, prefs
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
+from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
     hidden_params_of,
     hosted_bypass_of_local,
+    hosted_cost_usd,
     match_served_deployment,
 )
 from packages.litellm_adapter.types import UpstreamProviderError
@@ -164,6 +168,50 @@ def _orca_response_headers(
     return headers
 
 
+def _rescued(served_by: str | None, asked: str | None, status_code: int) -> bool:
+    """A request another provider answered after the one asked first failed
+    (an overloaded Anthropic key rescued through OrcaRouter, say): what the
+    panel counts as a failure avoided."""
+    return (
+        status_code < 400
+        and bool(asked)
+        and served_by not in (None, "unknown", "cache", asked)
+    )
+
+
+def _provider_of(ctx, model: str | None) -> str | None:
+    """The provider that serves `model` first: an own key or local model
+    before OrcaRouter, as the router reaches them."""
+    providers = [d.provider for d in ctx.deployments if d.model_name == model]
+    own = [p for p in providers if p != desktop_routing.HOSTED_PROVIDER]
+    return (own or providers or [None])[0]
+
+
+def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPException:
+    """The HTTP error for a request no provider could serve.
+
+    OrcaRouter running out of credit is recorded here (H4): for the next ten
+    minutes auto and agent fallback keep to own keys. In the desktop app the
+    message then says what to do about it in plain words.
+    """
+    detail = f"Upstream provider error: {exc}"
+    if exc.error_type == route_notes.OUT_OF_CREDIT:
+        hosted_state.mark_out_of_credit()
+        if desktop:
+            detail = desktop_routing.out_of_credit_detail(get_settings().orcarouter_billing_url)
+    # The type travels in a header: the generic HTTP status alone loses it
+    # (model_not_found is 422 here but 404 on the Anthropic/Gemini surfaces),
+    # and the native routes map it to their own status/error taxonomy.
+    return HTTPException(status_code=exc.http_status, detail=detail, headers={ERROR_TYPE_HEADER: exc.error_type})
+
+
+def _note_hosted_success(provider: str | None, model: str | None) -> None:
+    """A paid answer from OrcaRouter means it has credit again (H4). Free
+    models answer without credit, so they prove nothing."""
+    if provider == desktop_routing.HOSTED_PROVIDER and not (model and is_free_hosted(model)):
+        hosted_state.note_success()
+
+
 def _meta_hosted_fallback(response: dict | None) -> bool:
     if not isinstance(response, dict):
         return False
@@ -197,6 +245,9 @@ async def _build_log_row(
     strategy: str,
     requested_model: str,
     actual_resolved: str | None = None,
+    route_note: str | None = None,
+    price_model: str | None = None,
+    default_provider: str | None = None,
 ) -> RequestLog:
     """Persist what the client asked for vs. what actually served the request.
 
@@ -205,35 +256,49 @@ async def _build_log_row(
     user intent. `actual_resolved` is the model that ultimately served the
     response, which may differ from the auto-resolved primary if LiteLLM
     Router cascaded to a fallback after a 404 / cooldown.
+
+    `price_model` (the model the engine asked LiteLLM for) prices the row
+    when the served name isn't in the catalog; it beats `requested_model`,
+    which for an agent's swapped model names a model that never ran.
+    `default_provider` attributes a failed request, which has no response
+    to say who failed, to the provider that was asked. Requests served on
+    this computer or by a free OrcaRouter model cost nothing, whatever the
+    token count.
     """
     latency_ms = int((time.perf_counter() - started_perf) * 1000)
     meta = response.get("_orca_meta", {}) or {}
     usage = response.get("usage", {}) or {}
     resolved = actual_resolved or response.get("model") or requested_model
+    provider = meta.get("provider") or default_provider or "unknown"
     input_t = usage.get("prompt_tokens", 0) or 0
     output_t = usage.get("completion_tokens", 0) or 0
+    if route_notes.served_at_no_cost(provider, meta.get("model_group") or resolved):
+        cost = 0
+    else:
+        cost = _compute_cost_microcents(
+            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
+            model_id=resolved,
+            input_tokens=input_t,
+            output_tokens=output_t,
+            fallback_model=price_model or requested_model,
+        )
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
         trace_id=str(uuid.uuid4()),
         model_requested=requested_model,
         model_resolved=resolved,
-        provider=meta.get("provider", "unknown"),
+        provider=provider,
         routing_strategy=strategy,
-        fallback_level=1 if meta.get("fallback") else 0,
+        fallback_level=1 if meta.get("fallback") or _rescued(provider, default_provider, status_code) else 0,
         input_tokens=input_t,
         output_tokens=output_t,
-        cost_microcents=_compute_cost_microcents(
-            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
-            model_id=resolved,
-            input_tokens=input_t,
-            output_tokens=output_t,
-            fallback_model=requested_model,
-        ),
+        cost_microcents=cost,
         latency_ms=meta.get("latency_ms", latency_ms),
         status_code=status_code,
         error_type=error_type,
         is_streaming=body.stream,
+        route_note=route_note,
     )
 
 
@@ -374,6 +439,102 @@ async def execute_chat(
     strategy = raw_strategy if isinstance(raw_strategy, str) and raw_strategy else "balanced"
     raw_preferred = getattr(client, "preferred_models", None)
     preferred_models = raw_preferred if isinstance(raw_preferred, list) else []
+    settings = get_settings()
+    desktop = settings.orca_desktop_mode
+    ctx = desktop_routing.build_context(
+        desktop=desktop,
+        prefs=await prefs.load(db, str(kc.workspace_id)) if desktop else prefs.DEFAULTS,
+        deployments=getattr(client, "_deployments", []) or [],
+    )
+    started_perf = time.perf_counter()
+    # What routing decided before the call, for the request log (see
+    # app/route_notes.py); the served outcome may refine it.
+    route_intent: str | None = None
+
+    async def _refuse(status: int, error_type: str, detail: str, note: str) -> None:
+        """Log a request the engine refuses before calling anyone, then raise.
+
+        These refusals are events the desktop panel reports (a request that
+        needed a paid model), so unlike plain validation errors they get a
+        row, attributed like any other failed request."""
+        row_status = log_status(status, error_type) if log_status is not None else status
+        row = await _build_log_row(
+            body=body, kc=kc, response={}, status_code=row_status, error_type=error_type,
+            started_perf=started_perf, strategy=strategy, requested_model=requested_model,
+            actual_resolved=body.model, route_note=note,
+        )
+        db.add(row)
+        try:
+            await db.commit()
+        except Exception as commit_err:
+            logger.warning("request_log_commit_failed", error=str(commit_err))
+        raise HTTPException(status_code=status, detail=detail, headers={ERROR_TYPE_HEADER: error_type})
+
+    async def _refuse_unavailable_mapping(target: str) -> None:
+        """The agent's mapped model can't be served and auto isn't allowed.
+        A paid OrcaRouter model in "free" mode says how to allow it."""
+        if ctx.free_mode and ctx.hosted_configured and desktop_routing.is_paid_hosted(target):
+            await _refuse(
+                422, desktop_routing.NEEDS_PAID_TYPE,
+                desktop_routing.needs_paid_detail(f"{target} is paid on OrcaRouter"),
+                route_notes.NEEDS_PAID,
+            )
+        from packages.desktop.agents import AGENTS
+
+        spec = AGENTS.get(agent_id or "")
+        await _refuse(
+            422, desktop_routing.MAPPED_UNAVAILABLE_TYPE,
+            desktop_routing.mapped_unavailable_detail(spec.name if spec else agent_id or "this agent", target),
+            route_notes.MAPPED,
+        )
+
+    # D2: the user's model map for this agent decides what serves it.
+    agent_id = prefs.agent_of(kc.name)
+    target = desktop_routing.mapped_model(ctx, agent_id, body.model)
+    if target:
+        route_intent = route_notes.MAPPED
+        if target == "auto":
+            body = body.model_copy(update={"model": "auto"})
+            was_auto = True
+        else:
+            servable = target if target in ctx.deployable else desktop_routing.twin(target, ctx.deployable)
+            if servable is None and not ctx.prefs.agent_models[agent_id].fallback_to_auto:
+                await _refuse_unavailable_mapping(target)
+            # Not servable but allowed: agent fallback below routes it as auto.
+            body = body.model_copy(update={"model": servable or target})
+            was_auto = False
+
+    # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
+    # claude-sonnet-4-6) is the model that was asked for, not a substitute.
+    # Desktop only: a server keeps the operator's pinned name as asked.
+    # While OrcaRouter is out of credit, an agent isn't sent to a model only
+    # OrcaRouter serves; agent fallback below finds it an own-key model.
+    if desktop and not was_auto and body.model not in ctx.deployable:
+        same = desktop_routing.twin(body.model, ctx.deployable)
+        skip = (
+            same is not None
+            and is_agent_key(kc.name)
+            and same not in desktop_routing.auto_deployable(ctx)
+        )
+        if same is not None and not skip:
+            body = body.model_copy(update={"model": same})
+
+    # H0: in "free" mode a paid hosted model isn't deployed. Asking for one
+    # by name (outside an agent, which falls back below) says how to allow
+    # paid models rather than failing as an unknown model.
+    if (
+        not was_auto
+        and ctx.free_mode
+        and ctx.hosted_configured
+        and body.model not in ctx.deployable
+        and not is_agent_key(kc.name)
+        and desktop_routing.is_paid_hosted(body.model)
+    ):
+        await _refuse(
+            422, desktop_routing.NEEDS_PAID_TYPE,
+            desktop_routing.needs_paid_detail(f"{body.model} is paid on OrcaRouter"),
+            route_notes.NEEDS_PAID,
+        )
 
     # A desktop coding agent asking for a model no configured provider serves
     # (Claude Code's claude-* names with only an OpenAI key, say) is routed
@@ -381,15 +542,16 @@ async def execute_chat(
     # `requested_model` above keeps what the agent asked for.
     fallback = fallback_preferences(
         body.model,
-        {d.model_name for d in getattr(client, "_deployments", []) or []},
+        desktop_routing.auto_deployable(ctx),
         catalog=CATALOG,
         is_agent_key=is_agent_key(kc.name),
-        desktop_mode=get_settings().orca_desktop_mode,
+        desktop_mode=desktop,
     )
     if fallback is not None:
         logger.info("agent_model_fallback", requested=body.model, prefer=fallback[:5])
         body = body.model_copy(update={"model": "auto"})
         was_auto = True
+        route_intent = route_intent or route_notes.SUBSTITUTED
         if fallback:
             preferred_models = fallback
 
@@ -402,9 +564,8 @@ async def execute_chat(
     if was_auto:
         body_dict = body.model_dump(exclude_none=True)
         needs = required_capabilities(body_dict)
-        deployable = {
-            d.model_name for d in getattr(client, "_deployments", []) or []
-        }
+        prompt_tokens = estimate_prompt_tokens(body_dict) if desktop else 0
+        deployable = desktop_routing.auto_deployable(ctx)
         if not deployable:
             raise HTTPException(
                 status_code=422,
@@ -439,17 +600,34 @@ async def execute_chat(
         # the top-N truncation. Without this, an allowed model ranked at
         # position 6+ would be silently dropped by top_n=5 and the user
         # would see a false 403 even though they have a valid candidate.
-        candidates, _scoring = choose_auto_model(
-            needs=needs,
-            deployable=deployable,
-            candidates=CATALOG,
-            strategy=strategy,
-            preferred_models=preferred_models,
-            allowlist=kc.model_allowlist,
-            quality_scores=quality_scores,
-            tps_scores=tps_scores,
-            ttft_scores=ttft_scores,
-        )
+        def _rank(pool: set[str]) -> tuple[list[str], dict]:
+            return choose_auto_model(
+                needs=needs,
+                deployable=pool,
+                candidates=desktop_routing.candidates(ctx),
+                strategy=strategy,
+                preferred_models=preferred_models,
+                allowlist=kc.model_allowlist,
+                quality_scores=quality_scores,
+                tps_scores=tps_scores,
+                ttft_scores=ttft_scores,
+                # Free models first in the desktop app whatever the paid-models
+                # setting; paid OrcaRouter models only after every own key.
+                free_first=ctx.desktop,
+                allow_free_hosted=ctx.desktop,
+                hosted_last=desktop_routing.paid_hosted_only(ctx),
+                context_limits=desktop_routing.context_limits(ctx),
+                prompt_tokens=prompt_tokens,
+            )
+
+        candidates, _scoring = _rank(deployable)
+        if not candidates and deployable != set(ctx.deployable):
+            # OrcaRouter was left out for being out of credit, and nothing
+            # else can take this request: try it anyway. It either answers
+            # (credit was added, which clears the state) or says it's still
+            # out of credit, instead of a misleading "no deployable model".
+            deployable = set(ctx.deployable)
+            candidates, _scoring = _rank(deployable)
         if not candidates:
             # Empty result has two distinct causes — distinguish them so the
             # operator can debug the right thing:
@@ -463,7 +641,7 @@ async def execute_chat(
                 any_capable, _ = choose_auto_model(
                     needs=needs,
                     deployable=deployable,
-                    candidates=CATALOG,
+                    candidates=desktop_routing.candidates(ctx),
                     strategy=strategy,
                     preferred_models=preferred_models,
                     allowlist=None,
@@ -471,6 +649,9 @@ async def execute_chat(
                     tps_scores=tps_scores,
                     ttft_scores=ttft_scores,
                     top_n=1,
+                    allow_free_hosted=ctx.desktop,
+                    context_limits=desktop_routing.context_limits(ctx),
+                    prompt_tokens=prompt_tokens,
                 )
                 if any_capable:
                     raise HTTPException(
@@ -480,6 +661,25 @@ async def execute_chat(
                             f"{kc.model_allowlist} satisfies the requested "
                             f"capabilities ({sorted(needs) or 'none'})."
                         ),
+                    )
+            if ctx.free_mode and ctx.hosted_configured:
+                # Free models (and own keys) can't take it, but a paid
+                # OrcaRouter model could: say so instead of sending it there.
+                paid_could, _ = choose_auto_model(
+                    needs=needs,
+                    deployable=set(desktop_routing.PAID_HOSTED_NAMES),
+                    candidates=CATALOG,
+                    strategy="cheapest",
+                    allowlist=kc.model_allowlist,
+                    top_n=1,
+                )
+                if paid_could:
+                    await _refuse(
+                        422, desktop_routing.NEEDS_PAID_TYPE,
+                        desktop_routing.needs_paid_detail(
+                            desktop_routing.needs_paid_reason(needs, prompt_tokens)
+                        ),
+                        route_notes.NEEDS_PAID,
                     )
             raise HTTPException(
                 status_code=422,
@@ -512,6 +712,14 @@ async def execute_chat(
     fallbacks_arg: list | None = None
     if was_auto and len(candidates) > 1:
         fallbacks_arg = [{candidates[0]: candidates[1:]}]
+    elif not was_auto and desktop:
+        # H2: a pinned model OrcaRouter also serves under its own spelling
+        # gets that as its backup, so an overloaded own key is rescued.
+        # Desktop only: a server's pinned request never cascades into
+        # OrcaRouter spend the operator didn't ask for.
+        backup = desktop_routing.twin(body.model, ctx.deployable)
+        if backup is not None:
+            fallbacks_arg = [{body.model: [backup]}]
 
     # On the auto path, set num_retries=0 so a dead primary cascades to the
     # next fallback immediately. Default num_retries (configured on Router)
@@ -521,6 +729,13 @@ async def execute_chat(
     per_call_kwargs: dict = {}
     if was_auto:
         per_call_kwargs["num_retries"] = settings.router_num_retries_auto
+    # Who a failed request is attributed to when no response says so: the
+    # provider that was asked first (own key before OrcaRouter).
+    primary_provider = _provider_of(ctx, resolved_model)
+    chain = [body.model, *((fallbacks_arg or [{}])[0].get(body.model, []))]
+    weights = desktop_routing.own_first_weights(ctx, chain)
+    if weights:
+        per_call_kwargs["_router_weights"] = weights
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"
@@ -622,6 +837,9 @@ async def execute_chat(
                 strategy=strategy,
                 requested_model=requested_model,
                 actual_resolved=resolved_model,
+                route_note=route_notes.for_failure(err_type),
+                price_model=resolved_model,
+                default_provider=primary_provider,
             )
             db.add(log)
             try:
@@ -649,14 +867,7 @@ async def execute_chat(
         except UpstreamProviderError as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
             await _log_pre_stream_failure(exc.http_status, exc.error_type)
-            raise HTTPException(
-                status_code=exc.http_status,
-                detail=f"Upstream provider error: {exc}",
-                # The generic HTTP status alone loses the translated type
-                # (e.g. model_not_found is 422 here but 404 on the
-                # Anthropic/Gemini surfaces).
-                headers={ERROR_TYPE_HEADER: exc.error_type},
-            ) from exc
+            raise _upstream_failure(exc, desktop=desktop) from exc
         except Exception as exc:
             logger.warning("chat_completion_upstream_error", error=str(exc))
             await _log_pre_stream_failure(503, type(exc).__name__)
@@ -692,6 +903,7 @@ async def execute_chat(
                 # wrapping every chunk would be wasteful). Look up provider
                 # attribution from the served model name against the active
                 # deployments — same lookup the non-stream adapter does.
+                served_group: str | None = None
                 if agg_provider == "unknown" and agg_model:
                     deployments = getattr(client, "_deployments", []) or []
                     served = match_served_deployment(
@@ -701,6 +913,7 @@ async def execute_chat(
                     )
                     if served is not None:
                         agg_provider = served.provider
+                        served_group = served.model_name
                         if not agg_fallback:
                             agg_fallback = hosted_bypass_of_local(
                                 deployments, served, requested_model=resolved_model,
@@ -723,6 +936,11 @@ async def execute_chat(
                     "usage": agg_usage,
                     "_orca_meta": {"provider": agg_provider},
                 }
+                if served_group:
+                    synthetic["_orca_meta"]["model_group"] = served_group
+                hosted_cost = hosted_cost_usd(hidden_params_of(stream_obj))
+                if hosted_cost is not None:
+                    synthetic["_orca_meta"]["cost_usd"] = hosted_cost
                 if agg_fallback:
                     synthetic["_orca_meta"]["fallback"] = True
                 if agg_latency:
@@ -751,6 +969,14 @@ async def execute_chat(
                 row_status = status_code
                 if log_status is not None and error_type is not None:
                     row_status = log_status(status_code, error_type)
+                if error_type is None:
+                    note = route_notes.for_success(
+                        intent=route_intent, provider=agg_provider,
+                        served_model=served_group or agg_model or resolved_model,
+                    )
+                    _note_hosted_success(agg_provider, served_group or agg_model or resolved_model)
+                else:
+                    note = route_notes.for_failure(error_type)
                 template = await _build_log_row(
                     body=body, kc=kc, response=synthetic,
                     status_code=row_status, error_type=error_type,
@@ -758,6 +984,9 @@ async def execute_chat(
                     strategy=strategy,
                     requested_model=requested_model,
                     actual_resolved=agg_model,
+                    route_note=note,
+                    price_model=resolved_model,
+                    default_provider=primary_provider,
                 )
                 row_values = {
                     c.key: getattr(template, c.key)
@@ -1081,13 +1310,7 @@ async def execute_chat(
         status_code = exc.http_status
         error_type = exc.error_type
         logger.warning("chat_completion_upstream_error", error=str(exc), error_type=exc.error_type)
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail=f"Upstream provider error: {exc}",
-            # See the streaming-path twin: lets the native routes map the
-            # translated type to their surface's status/error taxonomy.
-            headers={ERROR_TYPE_HEADER: exc.error_type},
-        ) from exc
+        raise _upstream_failure(exc, desktop=desktop) from exc
     except Exception as exc:
         status_code = 503
         error_type = type(exc).__name__
@@ -1096,8 +1319,20 @@ async def execute_chat(
     finally:
         if log_status is not None and error_type is not None:
             status_code = log_status(status_code, error_type)
+        response_dict = response if isinstance(response, dict) else {}
+        if error_type is None and status_code < 400:
+            meta = response_dict.get("_orca_meta") or {}
+            note = route_notes.for_success(
+                intent=route_intent, provider=meta.get("provider"),
+                served_model=meta.get("model_group") or actual_resolved or resolved_model,
+            )
+            _note_hosted_success(
+                meta.get("provider"), meta.get("model_group") or actual_resolved or resolved_model,
+            )
+        else:
+            note = route_notes.for_failure(error_type)
         log = await _build_log_row(
-            body=body, kc=kc, response=response if isinstance(response, dict) else {},
+            body=body, kc=kc, response=response_dict,
             status_code=status_code, error_type=error_type,
             started_perf=started_perf,
             strategy=strategy,
@@ -1106,6 +1341,9 @@ async def execute_chat(
             # primary so the log row records what we tried, not "auto" (which
             # _build_log_row would otherwise default to via requested_model).
             actual_resolved=actual_resolved or resolved_model,
+            route_note=note,
+            price_model=resolved_model,
+            default_provider=primary_provider,
         )
         db.add(log)
         try:

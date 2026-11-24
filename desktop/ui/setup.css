@@ -31,13 +31,13 @@ form { display: flex; flex-direction: column; gap: 14px; }
 .choice > input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
 .choice .radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border-strong); margin-top: 2px; transition: border-width var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease); }
 .choice .body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.choice b { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.choice .body > b { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .choice small { color: var(--ink-2); font-size: 12px; }
 .choice .reveal { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
-.choice .pill.free { background: var(--surface); border: 1px solid var(--brand); color: var(--brand-deep); }
+.choice .pill.free { background: var(--ok-soft); color: var(--ok-ink); }
 .choice:has(> input:checked) { border-color: var(--brand); background: var(--brand-soft); box-shadow: 0 0 0 3px var(--brand-glow); }
 .choice:has(> input:checked) .radio { border: 5px solid var(--brand); }
-.choice:has(> input:checked) .collapse { grid-template-rows: 1fr; opacity: 1; }
+.choice:has(> input:checked) .collapse { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows var(--d) var(--ease), opacity var(--d) var(--ease), visibility 0s; }
 .choice:has(> input:focus-visible) { box-shadow: 0 0 0 3px var(--brand-glow); }
 .choice.disabled { cursor: not-allowed; }
 .choice.disabled .radio, .choice.disabled .dim { opacity: 0.55; }
@@ -69,10 +69,50 @@ form { display: flex; flex-direction: column; gap: 14px; }
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .check-line input { width: 16px; height: 16px; margin: 0; accent-color: var(--brand); }
 
-/* Own API keys: one row per provider */
+/* Own API keys: pick providers as chips, one key row per chosen one (P1) */
+.fine-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: inherit; font-size: 12px; line-height: 1.3; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink-2); cursor: pointer; transition: background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease), color var(--d-fast) var(--ease); }
+.chip:hover { border-color: var(--brand); color: var(--ink); }
+.chip.new { border-color: var(--brand); color: var(--brand-deep); font-weight: 600; }
+.chip.added { border-color: var(--ok); color: var(--ok-ink); }
+.chip.added::before { content: "✓ "; }
+.chip[aria-pressed="true"] { background: var(--btn-bg); border-color: var(--btn-bg); color: var(--btn-fg); }
 .key-rows { display: flex; flex-direction: column; gap: 6px; }
-.key-row { display: grid; grid-template-columns: minmax(0, 9.5rem) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
-.key-row select.text { padding-right: 4px; }
-.key-row .remove { padding: 4px 8px; align-self: center; margin: 0; }
+.key-rows:empty { display: none; }
+.key-row { display: grid; grid-template-columns: minmax(0, 8.5rem) minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+.key-row label { font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.key-row .fine { grid-column: 2; }
 .choice .fine { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; }
 .choice .fine code { font-size: 11px; }
+
+/* OrcaRouter key: open the key page, then offer a key found on the clipboard (H1) */
+.orca-key { display: flex; flex-direction: column; gap: 8px; }
+.get-key { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.offer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--brand); border-radius: var(--r-sm); background: var(--surface); font-size: 12.5px; color: var(--ink-2); animation: rise var(--d) var(--ease) both; }
+.offer b { color: var(--brand-deep); font-weight: 600; }
+.offer-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.offer.err { border-color: var(--err); background: var(--err-soft); }
+.offer-err { color: var(--err-ink); }
+.key-saved { padding: 10px 12px; border-radius: var(--r-sm); background: var(--ok-soft); color: var(--ok-ink); font-size: 12.5px; animation: rise var(--d) var(--ease) both; }
+.key-saved b { font-weight: 600; }
+
+/* orca://setup link: a confirmation over the form (V3) */
+.sheet-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px; background: rgba(10, 15, 28, 0.32); animation: fade var(--d) var(--ease) both; }
+.sheet { width: min(420px, 100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md); box-shadow: var(--shadow-lg); padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; animation: pop var(--d) var(--ease) both; }
+@media (prefers-color-scheme: dark) { .sheet-backdrop { background: rgba(0, 0, 0, 0.6); } }
+.sheet-eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.sheet-title { font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--ink); }
+.sheet .fine { font-size: 12px; color: var(--ink-3); }
+.sheet-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+
+/* Done screen: the README badge (V6). Drawn here, not loaded from shields.io,
+   so the app makes no request of its own. */
+.badge-card { width: 100%; max-width: 440px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 16px; margin-top: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); }
+.badge-card h2 { font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+.badge-preview { display: inline-flex; font-family: Verdana, "DejaVu Sans", sans-serif; font-size: 11px; line-height: 20px; border-radius: 3px; overflow: hidden; color: #fff; }
+.badge-preview span { padding: 0 6px; background: #555; }
+.badge-preview span + span { background: #2D7FF9; }
+.badge-code { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.badge-code code { display: block; padding: 7px 10px; border-radius: var(--r-sm); border: 1px solid var(--border); background: #0A0F1C; color: #E8EEF7; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; text-align: left; }
+.badge-code code:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
