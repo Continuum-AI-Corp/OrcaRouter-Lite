@@ -302,3 +302,25 @@ export function disconnectAllLabel(rows) {
   if (n === 0) return null;
   return n === 1 ? "Disconnect all" : `Disconnect all ${n} agents`;
 }
+
+// ── panel: H8 links ──
+// Every outgoing link the app builds says where it came from (`ref=<source>`),
+// so the landing page can count visits by source without cookies. Only these
+// fixed names: a link never carries anything about the user. Same rules as
+// packages/desktop/links.py.
+export const LINK_SOURCES = ["lite-setup", "lite-card", "lite-badge", "lite-panel", "lite-share"];
+
+export function withRef(url, source) {
+  if (!LINK_SOURCES.includes(source)) throw new Error(`unknown link source: ${source}`);
+  if (!url) return null;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  u.searchParams.delete("ref");
+  u.searchParams.append("ref", source);
+  return u.toString();
+}
