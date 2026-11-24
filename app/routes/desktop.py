@@ -802,3 +802,139 @@ async def summary(
         "gateway": _gateway_info(ctx),
         "update": updates.CHECKER.latest,
     }
+
+
+# ── model picker (H5) ───────────────────────────────────────────────────
+
+
+async def _own_providers(db: AsyncSession) -> set[str]:
+    from app.config import get_settings
+    from app.router_cache import HOSTED_PROVIDER_NAME, usable_providers_from_db
+
+    rows = (await db.execute(select(ProviderKey).where(ProviderKey.is_deleted == 0))).scalars().all()
+    own = set(usable_providers_from_db(list(rows))) | set(get_settings().env_provider_keys())
+    own.discard(HOSTED_PROVIDER_NAME)
+    return own
+
+
+@router.get("/models")
+async def picker_models(
+    q: str | None = Query(None, max_length=200),
+    limit: int = Query(80, ge=1, le=1000),
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Every model a picker can offer: own keys, this computer, OrcaRouter's
+    free and paid models, with prices per million tokens."""
+    from packages.desktop import local_models, model_picker
+
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    hosted = await _hosted_configured(db)
+    inputs = model_picker.PickerInputs(
+        own_providers=frozenset(await _own_providers(db)),
+        runtimes=tuple(local_models.last()),
+        local_selection=settings.local_models,
+        hosted_configured=hosted,
+        hosted_models=settings.hosted_models,
+    )
+    return {"groups": model_picker.groups(inputs, q=q, limit=limit), "hosted_configured": hosted}
+
+
+# ── models on this computer (P2) ────────────────────────────────────────
+
+
+def _local_out(runtimes: list, selection: list[str] | None) -> dict:
+    from packages.desktop import local_models
+
+    out = []
+    for rt in runtimes:
+        allowed = {m.id for m in local_models.enabled(list(rt.models), selection)}
+        out.append({
+            "id": rt.id, "name": rt.name, "url": rt.url, "running": rt.running,
+            "models": [
+                {"id": m.id, "name": m.name, "tools": m.tools, "vision": m.vision, "context": m.context,
+                 "enabled": m.id in allowed}
+                for m in rt.models
+            ],
+        })
+    return {"runtimes": out}
+
+
+@router.get("/local")
+async def local_runtimes(
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Ollama, LM Studio and llama.cpp on this computer, with their models and
+    whether auto may use each (cached; at most a second per runtime)."""
+    from packages.desktop import local_models
+
+    runtimes = local_models.last() if local_models.disabled() else await local_models.discover()
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    return _local_out(runtimes, settings.local_models)
+
+
+@router.post("/local/refresh")
+async def refresh_local_runtimes(
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Look again now (a runtime was just started) and rebuild the router so
+    the models found can serve the next request."""
+    from app import router_cache
+    from packages.desktop import local_models
+
+    runtimes = await local_models.discover(force=True)
+    router_cache.invalidate_router()
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    return _local_out(runtimes, settings.local_models)
+
+
+# ── per-agent request log (D3) ──────────────────────────────────────────
+
+
+@router.get("/agents/{agent_id}/requests")
+async def agent_requests(
+    agent_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The agent's latest requests, newest first, through every key it has had."""
+    if agent_id not in ag.AGENTS:
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_id}")
+    key_ids = select(ApiKey.id).where(
+        ApiKey.workspace_id == kc.workspace_id, ApiKey.name == f"{AGENT_KEY_PREFIX}{agent_id}"
+    )
+    rows = (
+        await db.execute(
+            select(
+                RequestLog.created_at, RequestLog.model_requested, RequestLog.model_resolved, RequestLog.provider,
+                RequestLog.input_tokens, RequestLog.output_tokens, RequestLog.cost_microcents,
+                RequestLog.latency_ms, RequestLog.status_code, RequestLog.fallback_level, RequestLog.route_note,
+            )
+            .where(
+                RequestLog.workspace_id == kc.workspace_id,
+                RequestLog.is_deleted == 0,
+                RequestLog.api_key_id.in_(key_ids),
+            )
+            .order_by(RequestLog.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return {"requests": [
+        {
+            "at": _aware(r.created_at).isoformat(),
+            "model_requested": r.model_requested,
+            "model": r.model_resolved,
+            "provider": r.provider,
+            "input_tokens": r.input_tokens,
+            "output_tokens": r.output_tokens,
+            "cost_microcents": int(r.cost_microcents or 0),
+            "latency_ms": r.latency_ms,
+            "status": r.status_code,
+            "rescued": r.status_code < 400 and (r.fallback_level or 0) > 0,
+            "note": r.route_note,
+        }
+        for r in rows
+    ]}
