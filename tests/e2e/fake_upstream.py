@@ -92,7 +92,8 @@ def _tool_call(body, base):
 # MOONSHOT_API_BASE). POST /_state switches how they behave.
 
 STATE = {"anthropic": "ok", "orca": "ok", "openai": "ok"}
-KEYS = {"orca": "Bearer sk-orca-e2e-key", "moonshot": "Bearer sk-moonshot-e2e"}
+KEYS = {"orca": {"Bearer sk-orca-e2e-key", "Bearer sk-orca-e2e-clipboard-key-7f3a"},  # the second: setup's clipboard e2e
+        "moonshot": {"Bearer sk-moonshot-e2e"}}
 HOSTED_COST_USD = "0.0123"
 
 
@@ -110,7 +111,7 @@ def _record(upstream: str, request: Request, body: dict) -> None:
 
 def _keyed_models(prefix: str):
     async def models(request: Request):
-        if request.headers.get("authorization", "") != KEYS[prefix]:
+        if request.headers.get("authorization", "") not in KEYS[prefix]:
             return JSONResponse({"error": {"message": "Invalid API key"}}, status_code=401)
         return {"object": "list", "data": [{"id": "e2e-model", "object": "model"}]}
     return models

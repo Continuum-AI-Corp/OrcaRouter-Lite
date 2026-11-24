@@ -90,12 +90,19 @@ def stack(tmp_path_factory):
 
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GEMINI_", "ORCAROUTER_", "DATABASE_",
-                                "CREDENTIAL_", "API_KEY_", "ORCA_"))}
-    up_port, engine_port = _free_port(), _free_port()
+                                "CREDENTIAL_", "API_KEY_", "ORCA_", "OLLAMA_", "LMSTUDIO_", "LLAMACPP_"))}
+    up_port, engine_port, ollama_port, closed_port = _free_port(), _free_port(), _free_port(), _free_port()
     env.update({
         "HOME": str(home), "USERPROFILE": str(home), "ORCA_HOME": str(orca_home),
         "ORCA_KEYCHAIN": "0", "ORCA_NO_UPDATE_CHECK": "1", "PYTHONPATH": str(ROOT),
         "OPENAI_API_KEY": "sk-e2e-upstream", "OPENAI_BASE_URL": f"http://127.0.0.1:{up_port}/v1",
+        # Setup checks an OrcaRouter key here (the fake plays OrcaRouter under /orca).
+        "ORCAROUTER_BASE_URL": f"http://127.0.0.1:{up_port}/orca/v1",
+        # Local runtimes: a fake Ollama is started only for the setup test that
+        # needs one; never probe runtimes really running on this machine.
+        "OLLAMA_HOST": f"127.0.0.1:{ollama_port}",
+        "LMSTUDIO_BASE_URL": f"http://127.0.0.1:{closed_port}",
+        "LLAMACPP_BASE_URL": f"http://127.0.0.1:{closed_port}",
         # HOME moves to the throwaway folder; keep packages installed in the
         # runner's user site (pip --user) importable by the engine.
         "PYTHONUSERBASE": site.getuserbase(),
@@ -123,7 +130,7 @@ def stack(tmp_path_factory):
         yield {
             "home": home, "orca_home": orca_home, "env": env, "orca": orca, "logs": logs, "engine_log": engine_log,
             "base": f"http://127.0.0.1:{engine_port}", "upstream": f"http://127.0.0.1:{up_port}",
-            "app_key": (orca_home / "app.key").read_text().strip(),
+            "app_key": (orca_home / "app.key").read_text().strip(), "ollama_port": ollama_port,
         }
     finally:
         engine.stdin.close()
@@ -548,15 +555,24 @@ def test_10b_paste_steps_open_where_the_user_can_see_them(stack):
 def test_10c_setup_checks_keys_with_the_provider(stack):
     report = _browser("setup_flow.cjs", stack["base"], stack["app_key"], "sk-e2e-upstream")
     assert report["errors"] == []
-    assert {"Anthropic", "OpenAI", "Google Gemini", "DeepSeek", "xAI Grok"} <= set(report["providers"])
-    assert "two OpenAI keys" in report["duplicate"]
+    # P1: setup's providers are the engine's list, in its order, the new five marked.
+    supported = _app(stack, "GET", "/v1/providers/supported").json()["providers"]
+    assert report["providers"] == [p["name"] for p in supported if not p.get("hosted")]
+    assert report["newProviders"] == ["Moonshot (Kimi)", "Qwen (DashScope)", "MiniMax", "Z.ai (GLM)", "OpenRouter"]
+    assert report["rows"] == ["OpenAI"] and report["placeholders"] == ["OpenAI key (sk-…)"]
+    assert report["focusedAfterPick"] == "key-minimax"
+    assert report["minimaxNote"] == "MiniMax has no key check, so Orca saves it without checking."
+    assert report["rowsWithAnthropic"] == ["Anthropic", "OpenAI", "MiniMax"]  # the list's order
+    assert report["rowsAfterUnpick"] == ["OpenAI", "MiniMax"]
     assert "rejected" in report["rejected"] and report["doneAfterReject"] is False
     assert report["done"] is True
+    assert "OpenAI key: Checked and saved" in report["results"]
+    assert "MiniMax key: Saved without checking" in report["results"]
     assert report["startAtLogin"] is True  # on by default
     assert _app(stack, "GET", "/v1/app/settings").json()["start_at_login"] is True
-    keys = _app(stack, "GET", "/v1/providers").json()
-    listed = keys.get("providers", keys) if isinstance(keys, dict) else keys
-    assert any((p.get("provider") if isinstance(p, dict) else p) == "openai" for p in listed)
+    listed = {p["provider"] for p in _app(stack, "GET", "/v1/providers").json()["providers"]}
+    assert {"openai", "minimax"} <= listed
+    assert _app(stack, "DELETE", "/v1/providers/minimax").status_code == 204  # keep later routing as it was
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
@@ -575,8 +591,120 @@ def test_10d_disconnect_all_from_the_panel(stack):
     assert r.status_code == 401
 
 
+CLIPBOARD_KEY = "sk-orca-e2e-clipboard-key-7f3a"  # the fake OrcaRouter accepts it
+DECLINED_KEY = "sk-orca-declined-by-the-user-0001"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10e_setup_puts_orcarouter_first_and_offers_a_key_from_the_clipboard(stack):
+    report = _browser("setup_hosted.cjs", stack["base"], stack["app_key"], CLIPBOARD_KEY, DECLINED_KEY)
+    assert report["errors"] == []
+    # H0: three choices, OrcaRouter first and selected, free models, no "$5".
+    assert report["choices"] == ["OrcaRouter gateway", "My own API keys", "My company's gateway"]
+    assert report["descriptions"] == [
+        "One key for every model, with failover between providers. Agents start on free models; paid models only when you choose them.",
+        "Requests go straight to each provider.",
+        "Use the key your platform team gave you.",
+    ]
+    assert report["pill"] == "Free models" and report["selected"] == "hosted"
+    assert "$5" not in report["page"] and "Shown when" not in report["page"]
+    # H1: the key page opens with its source tag.
+    assert len(report["opened"]) == 1 and "ref=lite-setup" in report["opened"][0]
+    assert report["opened"][0].startswith("https://www.orcarouter.ai/")
+    # Offered only on focus, only for a key, only once; "No" leaves the clipboard.
+    assert report["offerForText"] is False and report["offerBeforeFocus"] is False
+    assert report["offerText"] == "OrcaRouter key found on your clipboard (sk-orca-…0001). Use it?"
+    assert report["offerAfterNo"] is False and report["offerAgain"] is False
+    assert report["clearedAfterNo"] == 0 and report["clipAfterNo"] == DECLINED_KEY
+    assert "(sk-orca-…7f3a)" in report["secondOffer"]
+    assert report["saved"] == "Key works. Checked with OrcaRouter and saved in your keychain. The clipboard was cleared."
+    assert report["cleared"] == 1
+    listed = _app(stack, "GET", "/v1/providers").json()["providers"]
+    assert any(p["provider"] == "orcarouter" for p in listed)
+    assert "OrcaRouter key: Checked and saved" in report["results"]
+    # V6: the badge, tagged, copied as Markdown.
+    badge = ("[![budgeted with OrcaRouter Lite](https://img.shields.io/badge/budgeted%20with-OrcaRouter%20Lite-2D7FF9)]"
+             "(https://continuum-ai-corp.github.io/OrcaRouter-Lite/?ref=lite-badge)")
+    assert report["badge"] == badge and report["copied"] == badge and report["copyLabel"] == "Copied"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10f_setup_offers_local_models_only_when_one_is_running(stack):
+    env = {**stack["env"]}
+    ollama = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "tests.e2e.fake_ollama:app", "--port", str(stack["ollama_port"]),
+         "--log-level", "warning"], cwd=ROOT, env=env, stdout=open(stack["logs"] / "ollama.log", "w"),
+        stderr=subprocess.STDOUT)
+    try:
+        _wait(f"http://127.0.0.1:{stack['ollama_port']}/_calls", ollama, "fake ollama")
+        found = _app(stack, "POST", "/v1/app/local/refresh").json()
+        assert any(r["id"] == "ollama" and r["running"] for r in found["runtimes"]), found
+        report = _browser("setup_local.cjs", stack["base"], stack["app_key"])
+        assert report["errors"] == []
+        assert report["choices"] == ["Ollama first, OrcaRouter for the rest", "Only this computer", "OrcaRouter gateway",
+                                     "My own API keys", "My company's gateway"]
+        assert report["descriptions"][:2] == [
+            "Quick requests stay on this computer. Harder ones go to OrcaRouter's free models first, paid ones only when needed.",
+            "Free and offline. Hard requests may fail.",
+        ]
+        # A returning user keeps their route until they pick another (a first run
+        # starts on the local choice; see desktop/tests/setup.test.mjs).
+        assert report["selected"] == "hosted"
+        assert report["firstRunSelected"] == "local_hosted"
+        assert report["keyStepUnderLocal"] is True
+        assert report["afterArrow"] == "local_only"  # arrow keys move between the choices
+        assert "Shown when" not in report["page"] and "$5" not in report["page"]
+        assert "Local models: Ollama first, then OrcaRouter" in report["results"]
+        assert _app(stack, "GET", "/v1/routing").json()["strategy"] == "local_first"
+        assert report["reopenedSelected"] == "local_hosted"
+    finally:
+        _app(stack, "PUT", "/v1/routing", json={"strategy": "balanced"})
+        ollama.terminate()
+        _stop(ollama, graceful_seconds=10)
+        _app(stack, "POST", "/v1/app/local/refresh")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10g_a_setup_link_fills_in_setup_only_after_the_user_continues(stack):
+    report = _browser("setup_link.cjs", stack["base"], stack["app_key"])
+    assert report["errors"] == []
+    assert report["text"] == "A link wants to set up Orca: connect Claude Code, Codex; daily budget $5.00"
+    assert report["dialog"] == {"role": "dialog", "modal": "true"}
+    assert report["focused"] == "link-continue"
+    # Cancel changes nothing; Escape closes it too.
+    assert report["afterCancel"] == report["before"] and report["budgetAfterCancel"] == report["budgetBefore"]
+    assert report["escapeClosed"] is True
+    # Continue ticks exactly the linked agents and fills in the budget; nothing is connected.
+    assert report["afterContinue"] == ["claude-code", "codex"]
+    assert report["budgetAfterContinue"] == "5"
+    assert report["button"] == "Connect 2 agents"
+    agents = _app(stack, "GET", "/v1/app/agents").json()["agents"]
+    assert not any(a["connected"] for a in agents if a["id"] in ("claude-code", "codex"))
+    assert _app(stack, "GET", "/v1/app/settings").json()["daily_budget_cents"] != 500
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10h_the_dashboard_in_the_app(stack):
+    report = _browser("dashboard_flow.cjs", stack["base"], stack["app_key"])
+    assert report["errors"] == []
+    # D7: in the app, the Quality tab points to Orca's Settings, not a .env.
+    assert "Settings" in report["desktopSteps"] and ".env" not in report["desktopSteps"]
+    assert "No restart" in report["desktopSteps"]
+    # A server (no /v1/app) keeps the .env instructions.
+    assert ".env" in report["serverSteps"] and "ARTIFICIAL_ANALYSIS_API_KEY" in report["serverSteps"]
+    # P1: the Providers tab lists the engine's providers, the new five marked.
+    supported = _app(stack, "GET", "/v1/providers/supported").json()["providers"]
+    assert report["options"] == [p["id"] for p in supported]
+    assert report["newChips"] == [p["name"] for p in supported if p.get("new")]
+    assert report["moonshotPlaceholder"] == "sk-…"  # the key's shape, from the same list
+    assert set(report["newChips"]) == {"Moonshot (Kimi)", "Qwen (DashScope)", "MiniMax", "Z.ai (GLM)", "OpenRouter"}
+    # H0: the hosted card's links carry the dashboard's ref.
+    for href in report["hostedLinks"]:
+        assert href.startswith("https://www.orcarouter.ai/") and href.endswith("ref=lite-dashboard"), href
+
+
 def test_11_nothing_leaked_into_the_engine_log(stack):
     log = stack["engine_log"].read_text()
-    for secret in ("sk-e2e-upstream", stack["app_key"]):
+    for secret in ("sk-e2e-upstream", stack["app_key"], CLIPBOARD_KEY):
         assert secret not in log
     assert shlex.quote  # keep the import used for readers of _command_code
