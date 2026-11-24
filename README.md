@@ -45,9 +45,12 @@ coding agents to it, and shows what they spend.
 - **Private by default.** Prompts go straight from your agents to the provider you choose. No telemetry.
 - **Works with your team's gateway.** `orca login https://ai-gw.example.com --key …` (or "Join my company's gateway" in setup) points your agents at the gateway your platform team runs; `orca logout` restores them.
 
-**Install.** Installers (`.dmg`, `.deb`, `.AppImage`, `.msi`) are built by
+**Install.** Just the app: it carries its own engine and a local SQLite file, so there's no
+server or database to set up. Installers (`.dmg`, `.deb`, `.AppImage`, `.msi`) are built by
 [`desktop.yml`](./.github/workflows/desktop.yml) and attached to each release, starting with
-the next tagged version. Until then, the same engine and CLI are one command away:
+the next tagged version. **[INSTALL.md](./INSTALL.md)** covers downloading a build today, opening
+it before it's code-signed, first run, start at login and uninstalling. Without the app, the
+same engine and CLI are one command away:
 
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up

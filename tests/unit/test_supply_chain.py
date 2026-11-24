@@ -121,3 +121,16 @@ def test_every_artifact_carries_the_same_version():
     cargo = tomllib.loads((ROOT / "desktop" / "src-tauri" / "Cargo.toml").read_text())["package"]["version"]
     npm = json.loads((ROOT / "desktop" / "package.json").read_text())["version"]
     assert py == tauri == cargo == npm, f"pyproject {py}, tauri {tauri}, cargo {cargo}, npm {npm}"
+
+
+def test_mac_builds_without_apple_secrets_are_ad_hoc_signed_and_verified():
+    # Apple silicon refuses to open an unsigned app at all ("damaged"); an
+    # ad-hoc signature turns that into the usual unidentified-developer
+    # prompt that right-click → Open gets past. Real secrets still win.
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "desktop.yml").read_text())
+    steps = wf["jobs"]["bundle"]["steps"]
+    ident = next(s for s in steps if s.get("name") == "macOS signing identity (when configured)")
+    assert 'APPLE_SIGNING_IDENTITY=-' in ident["run"]
+    check = next(s for s in steps if s.get("name") == "check the macOS app is signed")
+    assert "codesign --verify --deep --strict" in check["run"]
+    assert "runner.os == 'macOS'" in check["if"]

@@ -170,6 +170,12 @@ jobs:
               { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
             fi
           done
+          # Without Apple's certificate, sign ad hoc: Apple silicon won't open
+          # an unsigned app at all ("damaged"), while an ad-hoc signed one gets
+          # the usual unidentified-developer prompt (right-click → Open).
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
       # In-app updates: a tagged release builds them in only with the real
       # signing key (secret TAURI_SIGNING_PRIVATE_KEY, optional
       # TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the public key in the
@@ -236,6 +242,13 @@ jobs:
           if [ -n "$UPDATER_CONFIG" ]; then args+=(--config "$UPDATER_CONFIG"); fi
           if [ -n "$WINDOWS_SIGN_CONFIG" ]; then args+=(--config "$WINDOWS_SIGN_CONFIG"); fi
           npx tauri build "${args[@]}"
+      - name: check the macOS app is signed
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=$(ls -d "desktop/src-tauri/target/release/bundle/macos/"*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E "^(Identifier|Signature|Authority|TeamIdentifier)" || true
       - name: check the Windows installers are signed
         if: runner.os == 'Windows' && env.WINDOWS_SIGN_CONFIG != ''
         shell: pwsh
