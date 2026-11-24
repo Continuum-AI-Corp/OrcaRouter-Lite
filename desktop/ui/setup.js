@@ -118,6 +118,7 @@ async function load() {
     $("budget").value = cents === null || cents === undefined ? "" : String(cents / 100);
     if (cents === null || cents === undefined) $("budget").placeholder = state.providers.length ? "No budget" : "20";
     $("budget-stop").checked = settings.budget_mode === "stop";
+    $("start-at-login").checked = settings.start_at_login !== false;
     if (!state.providers.length && (cents === null || cents === undefined)) $("budget").value = "20";
   } catch (err) {
     setStatus(err.message, true);
@@ -309,7 +310,10 @@ $("setup-form").addEventListener("submit", async (e) => {
     await engine.saveSettings({
       daily_budget_cents: raw === "" ? null : Math.round(dollars * 100),
       budget_mode: raw !== "" && $("budget-stop").checked ? "stop" : "alert",
+      start_at_login: $("start-at-login").checked,
     });
+    // The app makes the OS login item match the saved setting.
+    if (native.available()) await native.invoke("apply_start_at_login").catch(() => {});
     // Joining a gateway already connected every agent it could.
     for (const id of state.joinedGateway ? [] : selectedAgents()) {
       const name = state.agents.find((a) => a.id === id)?.name || id;

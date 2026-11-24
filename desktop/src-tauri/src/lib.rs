@@ -214,6 +214,35 @@ fn finish_setup(window: WebviewWindow) -> Result<(), String> {
     std::fs::write(eng.home.join("setup.json"), b"{\"done\": true}\n").map_err(|e| e.to_string())
 }
 
+/// Make the OS login item match the "start at login" setting (on unless the
+/// user turned it off). Runs once the engine is up and after setup saves.
+fn sync_start_at_login(app: &AppHandle, eng: &engine::Engine) {
+    use tauri_plugin_autostart::ManagerExt;
+    let Ok(settings) = eng.settings() else {
+        return;
+    };
+    let launcher = app.autolaunch();
+    let enabled = launcher.is_enabled().unwrap_or(false);
+    let result = match logic::autostart_change(logic::wants_start_at_login(&settings), enabled) {
+        Some(true) => launcher.enable(),
+        Some(false) => launcher.disable(),
+        None => Ok(()),
+    };
+    if let Err(e) = result {
+        eprintln!("orca: start at login: {e}");
+    }
+}
+
+#[tauri::command]
+fn apply_start_at_login(window: WebviewWindow) -> Result<(), String> {
+    guard(&window)?;
+    let app = window.app_handle().clone();
+    let state = app.state::<AppState>();
+    let eng = engine(&state)?;
+    std::thread::spawn(move || sync_start_at_login(&app, &eng));
+    Ok(())
+}
+
 #[tauri::command]
 fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
     guard(&window)?;
@@ -291,6 +320,7 @@ fn start_engine(app: AppHandle) {
                     .permission("allow-close-setup")
                     .permission("allow-finish-setup")
                     .permission("allow-open-external")
+                    .permission("allow-apply-start-at-login")
                     .permission("allow-quit-app")
                     .permission("allow-resize-panel")
                     .permission("allow-can-install-updates")
@@ -310,6 +340,10 @@ fn start_engine(app: AppHandle) {
                     });
                 } else if launched_by_user {
                     let _ = app.run_on_main_thread(move || show_panel(&h));
+                }
+                {
+                    let (h, e) = (app.clone(), eng.clone());
+                    std::thread::spawn(move || sync_start_at_login(&h, &e));
                 }
                 poll(app.clone(), eng);
             }
@@ -409,7 +443,11 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_panel(app)))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_positioner::init());
+        .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ));
     if updates_installable {
         // Without a public key the plugin refuses to start, so it's only
         // loaded in builds that have one.
@@ -423,6 +461,7 @@ pub fn run() {
             close_setup,
             finish_setup,
             open_external,
+            apply_start_at_login,
             quit_app,
             resize_panel,
             can_install_updates,

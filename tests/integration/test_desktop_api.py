@@ -655,3 +655,14 @@ async def test_disconnect_all_with_nothing_connected_is_fine(desktop_app, seeded
     async with _client(desktop_app) as c:
         r = await c.post("/v1/app/agents/disconnect-all", headers=_auth(root))
     assert r.status_code == 200 and r.json() == {"disconnected": [], "failed": []}
+
+
+async def test_start_at_login_defaults_on_and_round_trips(desktop_app, seeded):
+    # Connected agents need the engine; after a restart it must be running
+    # without the user opening the app, so this is on unless they turn it off.
+    root, _ = seeded
+    async with _client(desktop_app) as c:
+        assert (await c.get("/v1/app/settings", headers=_auth(root))).json()["start_at_login"] is True
+        r = await c.put("/v1/app/settings", headers=_auth(root), json={"start_at_login": False})
+        assert r.status_code == 200 and r.json()["start_at_login"] is False
+        assert (await c.get("/v1/app/settings", headers=_auth(root))).json()["start_at_login"] is False

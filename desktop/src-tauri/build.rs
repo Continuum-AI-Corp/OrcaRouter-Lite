@@ -10,6 +10,7 @@ fn main() {
             "close_setup",
             "finish_setup",
             "open_external",
+            "apply_start_at_login",
             "quit_app",
             "resize_panel",
             "can_install_updates",

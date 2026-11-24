@@ -241,6 +241,20 @@ impl Engine {
         }
     }
 
+    /// The desktop settings (`/v1/app/settings`): budget, mode, start at login.
+    pub fn settings(&self) -> Result<serde_json::Value, u16> {
+        ureq::get(&format!("{}/v1/app/settings", self.base_url))
+            .set("Authorization", &format!("Bearer {}", self.key()))
+            .timeout(Duration::from_secs(5))
+            .call()
+            .map_err(|e| match e {
+                ureq::Error::Status(code, _) => code,
+                _ => 0,
+            })?
+            .into_json()
+            .map_err(|_| 0)
+    }
+
     /// Close the engine's stdin (it exits on EOF), then make sure it's gone.
     pub fn stop(&self) {
         if let Ok(mut s) = self.stdin.lock() {

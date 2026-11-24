@@ -180,6 +180,18 @@ pub fn updates_installable(plugins: &Value) -> bool {
     has_key && https
 }
 
+/// Whether the engine's desktop settings ask to start Orca at login. On
+/// unless the user turned it off: connected agents point at the engine, so
+/// after a restart it has to be running before anyone opens the app.
+pub fn wants_start_at_login(settings: &Value) -> bool {
+    settings.get("start_at_login").and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// Some(enable) when the OS login item has to change to match `wanted`.
+pub fn autostart_change(wanted: bool, currently_enabled: bool) -> Option<bool> {
+    (wanted != currently_enabled).then_some(wanted)
+}
+
 /// What to tell the user when the engine exits during startup: the last
 /// line it wrote (its own explanation, e.g. a locked keychain), or a pointer
 /// to the log when it wrote nothing.
@@ -516,5 +528,21 @@ mod tests {
         assert_eq!(r.title(), "1 request rescued by fallback");
         assert_eq!(Alert::Rescued { count: 3 }.title(), "3 requests rescued by fallback");
         assert!(!o.body().is_empty());
+    }
+
+    #[test]
+    fn start_at_login_is_on_unless_the_user_turned_it_off() {
+        assert!(wants_start_at_login(&json!({"daily_budget_cents": null})));
+        assert!(wants_start_at_login(&json!({"start_at_login": true})));
+        assert!(!wants_start_at_login(&json!({"start_at_login": false})));
+        assert!(wants_start_at_login(&json!("garbage")));
+    }
+
+    #[test]
+    fn autostart_changes_only_when_it_differs() {
+        assert_eq!(autostart_change(true, false), Some(true));
+        assert_eq!(autostart_change(false, true), Some(false));
+        assert_eq!(autostart_change(true, true), None);
+        assert_eq!(autostart_change(false, false), None);
     }
 }

@@ -49,4 +49,5 @@ async def test_concurrent_partial_saves_keep_both_fields(db_session, monkeypatch
 
     async with Session() as db:
         ws = (await db.execute(select(Workspace).where(Workspace.id == ws_id))).scalar_one()
-        assert ws.settings_json["desktop"] == {"daily_budget_cents": 2_000, "budget_mode": "stop"}
+        saved = ws.settings_json["desktop"]
+        assert (saved["daily_budget_cents"], saved["budget_mode"]) == (2_000, "stop")

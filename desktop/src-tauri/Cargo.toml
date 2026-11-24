@@ -20,6 +20,8 @@ tauri-plugin-notification = "=2.8.1"
 tauri-plugin-opener = "=2.7.3"
 tauri-plugin-positioner = { version = "=2.4.0", features = ["tray-icon"] }
 tauri-plugin-single-instance = "=2.5.5"
+# Starts Orca at login (with --background) so connected agents keep working after a restart.
+tauri-plugin-autostart = "=2.7.0"
 # Loaded only in builds that carry the updater's public key (release CI adds
 # it when the signing key is configured); see logic::updates_installable.
 tauri-plugin-updater = "=2.14.0"

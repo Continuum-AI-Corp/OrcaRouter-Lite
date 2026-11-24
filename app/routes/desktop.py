@@ -313,6 +313,9 @@ class DesktopSettings(BaseModel):
     # "alert": notify at 80% and 100%. "stop": also refuse coding agents'
     # requests once today's spend reaches the budget.
     budget_mode: Literal["alert", "stop"] = "alert"
+    # Connected agents point at this engine, so after a restart it has to be
+    # running before the user thinks to open the app.
+    start_at_login: bool = True
 
 
 # The desktop app runs one engine per home and its panel and setup window both

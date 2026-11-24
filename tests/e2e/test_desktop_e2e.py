@@ -451,6 +451,8 @@ def test_10c_setup_checks_keys_with_the_provider(stack):
     assert "two OpenAI keys" in report["duplicate"]
     assert "rejected" in report["rejected"] and report["doneAfterReject"] is False
     assert report["done"] is True
+    assert report["startAtLogin"] is True  # on by default
+    assert _app(stack, "GET", "/v1/app/settings").json()["start_at_login"] is True
     keys = _app(stack, "GET", "/v1/providers").json()
     listed = keys.get("providers", keys) if isinstance(keys, dict) else keys
     assert any((p.get("provider") if isinstance(p, dict) else p) == "openai" for p in listed)

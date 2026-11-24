@@ -15,6 +15,7 @@ const [base, key, goodKey] = process.argv.slice(2);
   const checked = page.locator('#agents input[type="checkbox"]:checked');
   while (await checked.count()) await checked.first().uncheck({ force: true });
   report.providers = await page.locator("#key-rows .key-row").first().locator("select option").allTextContents();
+  report.startAtLogin = await page.locator("#start-at-login").isChecked();
 
   const rows = page.locator("#key-rows .key-row");
   await rows.nth(0).locator("select").selectOption("openai");
