@@ -312,6 +312,27 @@ def test_5_chat_completions_agents(stack, read):
     assert r.json()["choices"][0]["message"]["content"] == "pong"
 
 
+def test_5b_agents_keep_working_with_their_own_model_names(stack):
+    # Only an OpenAI key is set up here. Claude Code and Gemini CLI still ask
+    # for their own vendors' models; the engine serves those with the best
+    # model it can reach and says which one in the response headers.
+    base, token = _claude(stack["home"])
+    r = httpx.post(f"{base}/v1/messages", headers={"Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01"},
+                   json={"model": "claude-sonnet-4-6", "max_tokens": 64,
+                         "messages": [{"role": "user", "content": "ping"}]}, timeout=60)
+    assert r.status_code == 200, r.text
+    assert r.headers["x-orca-requested-model"] == "claude-sonnet-4-6"
+    assert not r.headers["x-orca-resolved-model"].startswith("claude")
+    gbase, gkey = _gemini(stack["home"])
+    r = httpx.post(f"{gbase}/v1beta/models/gemini-2.5-pro:generateContent", headers={"x-goog-api-key": gkey},
+                   json={"contents": [{"role": "user", "parts": [{"text": "ping"}]}]}, timeout=60)
+    assert r.status_code == 200, r.text
+    # The dashboard's own key keeps strict pinned models.
+    r = _app(stack, "POST", "/v1/chat/completions",
+             json={"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "ping"}]})
+    assert r.status_code >= 400
+
+
 def test_6_every_request_reached_the_provider_and_spend_is_per_agent(stack):
     calls = httpx.get(f"{stack['upstream']}/_calls").json()["calls"]
     assert len(calls) >= len(AUTO_AGENTS)

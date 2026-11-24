@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import prompt_cache, router_cache
+from app.agent_model_fallback import fallback_preferences, is_agent_key
 from app.auto_routing import (
     _VERSION_SUFFIX_RE,
     canonical_model_base,
@@ -373,6 +374,24 @@ async def execute_chat(
     strategy = raw_strategy if isinstance(raw_strategy, str) and raw_strategy else "balanced"
     raw_preferred = getattr(client, "preferred_models", None)
     preferred_models = raw_preferred if isinstance(raw_preferred, list) else []
+
+    # A desktop coding agent asking for a model no configured provider serves
+    # (Claude Code's claude-* names with only an OpenAI key, say) is routed
+    # as auto instead of failing, preferring the same vendor's models.
+    # `requested_model` above keeps what the agent asked for.
+    fallback = fallback_preferences(
+        body.model,
+        {d.model_name for d in getattr(client, "_deployments", []) or []},
+        catalog=CATALOG,
+        is_agent_key=is_agent_key(kc.name),
+        desktop_mode=get_settings().orca_desktop_mode,
+    )
+    if fallback is not None:
+        logger.info("agent_model_fallback", requested=body.model, prefer=fallback[:5])
+        body = body.model_copy(update={"model": "auto"})
+        was_auto = True
+        if fallback:
+            preferred_models = fallback
 
     # Resolve `model="auto"` BEFORE building the request kwargs so the router
     # sees a real model. `candidates` is the top-N list from auto-routing;
