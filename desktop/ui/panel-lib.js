@@ -55,10 +55,24 @@ export function localDate(date = new Date(), tzOffsetMinutes = localOffsetMinute
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
 
+// The home folder, from paths of agent configs (each sits in a dot-folder or
+// dot-file right under home), or null when they don't agree.
+export function guessHome(paths) {
+  const homes = new Set();
+  for (const p of paths || []) {
+    if (!p) continue;
+    const m = String(p).match(/^(.*?)[/\\]\./);
+    if (!m || !m[1]) return null;
+    homes.add(m[1]);
+  }
+  return homes.size === 1 ? [...homes][0] : null;
+}
+
 // Paths shown to people use ~ for the home folder.
-export function tildePath(path) {
+export function tildePath(path, home = null) {
   if (!path) return "";
   const p = String(path);
+  if (home && (p.startsWith(`${home}/`) || p.startsWith(`${home}\\`))) return `~${p.slice(home.length)}`;
   const unix = p.match(/^(?:\/Users\/[^/]+|\/home\/[^/]+|\/root)(\/.*)?$/);
   if (unix) return `~${unix[1] || ""}`;
   const win = p.match(/^[A-Za-z]:\\Users\\[^\\]+(\\.*)?$/);
@@ -150,7 +164,11 @@ export function backupOfferView(offer) {
 
 export function substitutionHint(subs) {
   const top = (subs || [])[0];
-  return top ? `Asked for ${top.requested}, got ${top.served}` : "";
+  if (!top) return "";
+  const asked = modelFamily(top.requested);
+  const got = modelFamily(top.served);
+  if (asked && got && asked.family !== got.family) return `Getting ${got.family} instead of ${asked.family}`;
+  return `Getting ${top.served} instead`;
 }
 
 // `hosted`: the summary's hosted block. action: "setup" (add an OrcaRouter
@@ -193,8 +211,8 @@ export function panelAgentRows(agents, spend = [], opts = { includeOther: true }
   });
 }
 
-export function changedText(agentName, configPath) {
-  const where = configPath ? ` in ${tildePath(configPath)}` : "";
+export function changedText(agentName, configPath, home = null) {
+  const where = configPath ? ` in ${tildePath(configPath, home)}` : "";
   return `Something replaced Orca's settings${where}, probably ${agentName}'s last update. Its requests aren't going through Orca.`;
 }
 
@@ -338,9 +356,13 @@ function requestNote(r, time) {
 }
 
 export function requestRows(requests, { tzOffsetMinutes = localOffsetMinutes() } = {}) {
+  let previous = null; // a run of the same failure is explained once
   return (requests || []).map((r) => {
     const time = clockTime(r.at, tzOffsetMinutes);
     const failed = Number(r.status) >= 400;
+    const kind = failed ? `${r.status}|${r.note}|${r.provider}|${r.model_requested}` : null;
+    const repeat = kind !== null && kind === previous;
+    previous = kind;
     return {
       time,
       model: shortModel(r.model || r.model_requested),
@@ -348,7 +370,7 @@ export function requestRows(requests, { tzOffsetMinutes = localOffsetMinutes() }
       tokens: tokenFlow(r.input_tokens, r.output_tokens),
       cost: costShort(r.cost_microcents),
       tag: failed ? "failed" : r.rescued ? "rescued" : null,
-      note: requestNote(r, time),
+      note: repeat ? "" : requestNote(r, time),
     };
   });
 }
@@ -538,10 +560,10 @@ function fitLine(measure, text, maxWidth, sizes) {
 export function cardLayout(measure, t, { width = 1200, height = 630 } = {}) {
   const pad = Math.round(width * 0.06);
   const inner = width - 2 * pad;
-  const kicker = fitLine(measure, t.kicker, inner, { max: Math.round(height * 0.05), min: Math.round(height * 0.03) });
+  const kicker = fitLine(measure, t.kicker, inner, { max: Math.round(height * 0.058), min: Math.round(height * 0.035) });
   const headline = fitLine(measure, t.headline, inner, { max: Math.round(height * 0.12), min: Math.round(height * 0.06) });
   const sub = fitLine(measure, t.sub || "", inner, { max: headline.size, min: Math.round(height * 0.05) });
-  const footerSize = Math.round(height * 0.04);
+  const footerSize = Math.round(height * 0.048);
   const brandWidth = measure(t.brand || "", footerSize);
   const footer = fitLine(measure, t.footer, inner - brandWidth - footerSize * 3, { max: footerSize, min: Math.round(height * 0.03) });
   const top = pad + kicker.size;
@@ -578,7 +600,7 @@ export function linkSheet(link, agents) {
     if (typeof link.agent !== "string" || !/^[a-z0-9-]{1,64}$/.test(link.agent)) return null;
     const a = (agents || []).find((x) => x.id === link.agent);
     if (!a) return null;
-    let detail = "Orca changes its settings so its requests go through Orca. Your old settings are backed up.";
+    let detail = `Orca changes ${a.name}'s settings so its requests go through Orca. Its old settings are backed up.`;
     let ready = true;
     if (a.connected) [detail, ready] = [`${a.name} is already connected to Orca.`, false];
     else if (!a.installed) [detail, ready] = [`${a.name} isn't installed on this computer.`, false];

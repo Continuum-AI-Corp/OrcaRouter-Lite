@@ -13,6 +13,7 @@ import {
   clockTime,
   costShort,
   fitFontSize,
+  guessHome,
   hostedProviderDetail,
   linkSheet,
   listNames,
@@ -178,7 +179,9 @@ test("backupOfferView says what failed and what OrcaRouter would take", () => {
 
 test("substitution hint and note", () => {
   const subs = [{ requested: "claude-sonnet-4-6", served: "gpt-4.1", count: 41 }];
-  assert.equal(substitutionHint(subs), "Asked for claude-sonnet-4-6, got gpt-4.1");
+  assert.equal(substitutionHint(subs), "Getting GPT instead of Claude");
+  assert.equal(substitutionHint([{ requested: "claude-opus-4-6", served: "claude-haiku-4-5", count: 1 }]), "Getting claude-haiku-4-5 instead");
+  assert.equal(substitutionHint([{ requested: "x-1", served: "gpt-4.1", count: 1 }]), "Getting gpt-4.1 instead");
   assert.equal(substitutionHint([]), "");
   const n = substitutionNote("Claude Code", subs[0], { configured: false, models: "free" });
   assert.equal(n.text, "Claude Code asked for claude-sonnet-4-6 41 times today. You have no Anthropic key, so gpt-4.1 answered.");
@@ -213,7 +216,7 @@ test("panelAgentRows marks changed agents and adds hints", () => {
   assert.equal(cc.action, "reconnect");
   assert.equal(cc.opens, true);
   const codex = rows.find((r) => r.id === "codex");
-  assert.equal(codex.subtitle, "Asked for claude-sonnet-4-6, got gpt-4.1");
+  assert.equal(codex.subtitle, "Getting GPT instead of Claude");
   assert.equal(codex.hint, true);
   assert.equal(codex.opens, true);
   assert.equal(rows.find((r) => r.id === "opencode").opens, false);
@@ -357,6 +360,27 @@ test("requestRows formats the log and explains rescues and substitutions", () =>
 });
 
 // ── D4: test results ──
+
+test("requestRows explains a run of the same failure once", () => {
+  const fail = (at) => ({ at, model_requested: "claude-sonnet-4-6", model: "claude-sonnet-4-6", provider: "anthropic",
+    input_tokens: 0, output_tokens: 0, cost_microcents: 0, status: 529, rescued: false, note: "no_fallback" });
+  const rows = requestRows([fail("2026-11-24T14:13:30Z"), fail("2026-11-24T14:13:20Z"), fail("2026-11-24T14:12:00Z")], { tzOffsetMinutes: 0 });
+  assert.equal(rows[0].note, "Anthropic failed at 14:13 and none of your other keys could take it.");
+  assert.equal(rows[1].note, "");
+  assert.equal(rows[2].note, "");
+  assert.equal(rows.every((r) => r.tag === "failed"), true);
+});
+
+test("guessHome finds the folder every agent config lives under", () => {
+  const paths = ["/tmp/x/home/.claude/settings.json", "/tmp/x/home/.codex/config.toml", "/tmp/x/home/.config/opencode/opencode.json", null];
+  assert.equal(guessHome(paths), "/tmp/x/home");
+  assert.equal(guessHome(["C:\\Users\\a\\.claude\\settings.json", "C:\\Users\\a\\.codex\\config.toml"]), "C:\\Users\\a");
+  assert.equal(guessHome(["/a/.claude/x", "/b/.codex/y"]), null);
+  assert.equal(guessHome([]), null);
+  assert.equal(tildePath("/tmp/x/home/.codex/config.toml", "/tmp/x/home"), "~/.codex/config.toml");
+  assert.equal(changedText("Codex", "/tmp/x/home/.codex/config.toml", "/tmp/x/home"),
+    "Something replaced Orca's settings in ~/.codex/config.toml, probably Codex's last update. Its requests aren't going through Orca.");
+});
 
 test("testResultView", () => {
   assert.deepEqual(testResultView({ ok: true, model: "claude-sonnet-4-6", seconds: 0.84, config_path: "~/.claude/settings.json" }), {

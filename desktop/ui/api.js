@@ -138,8 +138,12 @@ export const native = {
       const link = await this.takePendingLink();
       if (link) callback(link);
     };
-    const handler = () => {
-      deliver();
+    const handler = (event) => {
+      // Natively the event only says "a link is waiting" (taking it clears
+      // it, so it's delivered once). In a plain browser (development, the
+      // e2e suite) there is no native side: the event carries the link.
+      if (!this.available() && event?.detail) callback(event.detail);
+      else deliver();
     };
     window.addEventListener("orca-link", handler);
     deliver();
