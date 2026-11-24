@@ -95,7 +95,7 @@ export function createPicker(opts) {
       const grp = el("div", { role: "group", "aria-labelledby": gid }, el("div", { class: "pick-group", id: gid, role: "presentation" }, g.label));
       for (const item of g.items) {
         grp.append(option(item, [
-          el("span", { class: "po-main" }, el("b", { class: "mono" }, item.name), el("small", {}, item.available ? item.price : `${item.price} · ${item.reason}`)),
+          el("span", { class: "po-main" }, el("b", { class: "mono" }, item.name), el("small", {}, item.price), item.available ? null : el("small", { class: "why" }, item.reason)),
           el("span", { class: `tag ${item.tagTone}` }, item.tag),
         ]));
       }

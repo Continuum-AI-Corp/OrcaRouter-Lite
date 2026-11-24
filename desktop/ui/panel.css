@@ -98,6 +98,7 @@ body { background: var(--surface); }
 .callout.credit { border-color: color-mix(in srgb, var(--err) 35%, var(--border)); background: var(--err-soft); }
 .callout.credit p, .callout.credit span { color: var(--err-ink); font-size: 12.5px; }
 .callout.credit b { display: inline; }
+.callout.credit .btn span { color: inherit; }
 .callout + .callout { margin-top: 8px; }
 
 /* agent rows open their sheet */
@@ -200,6 +201,7 @@ body { background: var(--surface); }
 .po-main b { font-weight: 500; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .po-main b.mono { font-size: 11.5px; }
 .po-main small { color: var(--ink-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.po-main small.why { color: var(--warn-ink); }
 .pick-empty { color: var(--ink-3); font-size: 12px; padding: 10px 6px; }
 .pick-note { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--brand-soft); font-size: 12px; }
 .pick-status:empty { display: none; }

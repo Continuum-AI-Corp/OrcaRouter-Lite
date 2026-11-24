@@ -387,6 +387,7 @@ test("testResultView", () => {
     tone: "ok", lead: "Works.", text: "Answered in 0.8 s by claude-sonnet-4-6, using ~/.claude/settings.json.",
   });
   assert.equal(testResultView({ ok: true, model: "gpt-4.1", seconds: 12.3, config_path: null }).text, "Answered in 12 s by gpt-4.1.");
+  assert.equal(testResultView({ ok: true, model: "gpt-4.1", seconds: 0.02, config_path: null }).text, "Answered in under 0.1 s by gpt-4.1.");
   assert.deepEqual(testResultView({ ok: false, error: "Google rejected the key (401). Replace it in Providers, then test again." }), {
     tone: "err", lead: "", text: "Google rejected the key (401). Replace it in Providers, then test again.",
   });

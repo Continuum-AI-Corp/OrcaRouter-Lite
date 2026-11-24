@@ -381,7 +381,7 @@ export function testResultView(res) {
   if (!res) return null;
   if (res.ok === true) {
     const s = Number(res.seconds) || 0;
-    const secs = s < 10 ? s.toFixed(1) : String(Math.round(s));
+    const secs = s < 0.05 ? "under 0.1" : s < 10 ? s.toFixed(1) : String(Math.round(s));
     const using = res.config_path ? `, using ${tildePath(res.config_path)}` : "";
     return { tone: "ok", lead: "Works.", text: `Answered in ${secs} s by ${res.model}${using}.` };
   }
