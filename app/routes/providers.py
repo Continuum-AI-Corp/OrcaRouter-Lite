@@ -175,10 +175,12 @@ async def supported_providers(_kc: KeyContext = Depends(get_key_context)) -> dic
     """Every provider a key can be added for, in display order, with what the
     UI needs to ask for one (key shape, env var, where to get it). Static
     and key-free, so any valid key may read it."""
+    from packages.desktop.links import SETUP, with_ref
     from packages.desktop.provider_check import CHECKS
     from packages.litellm_adapter.provider_registry import supported_providers as rows
 
-    return {"providers": rows(checkable=set(CHECKS), token_url=get_settings().orcarouter_token_url)}
+    token_url = with_ref(get_settings().orcarouter_token_url, SETUP)
+    return {"providers": rows(checkable=set(CHECKS), token_url=token_url)}
 
 
 @router.get("")

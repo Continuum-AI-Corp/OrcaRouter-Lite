@@ -47,3 +47,11 @@ async def test_supported_providers_in_display_order(providers_app, seeded):
     assert by_id["minimax"]["checkable"] is False
     assert {p["id"] for p in providers if p["new"]} == {"moonshot", "qwen", "minimax", "zai", "openrouter"}
     assert by_id["anthropic"]["key_hint"].startswith("sk-ant-")
+
+
+async def test_orcarouter_key_page_link_says_where_it_came_from(providers_app, seeded):
+    root, _ = seeded
+    async with _client(providers_app) as c:
+        providers = (await c.get("/v1/providers/supported", headers=_auth(root))).json()["providers"]
+    hosted = next(p for p in providers if p["id"] == "orcarouter")
+    assert hosted["docs_url"].endswith("?ref=lite-setup")

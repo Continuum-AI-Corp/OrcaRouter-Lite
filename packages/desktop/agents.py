@@ -304,6 +304,10 @@ class AgentStatus:
     note: str
     config_path: str | None
     warn: bool = False
+    # D5: connected per Orca's records, but the values Orca wrote are gone
+    # from the agent's config (an update or the agent's own setup replaced
+    # them), so its requests no longer go through Orca.
+    changed: bool = False
 
 
 @dataclass(frozen=True)
@@ -950,9 +954,61 @@ def detect_agents(
                 note=spec.note,
                 config_path=str(config_path) if config_path else None,
                 warn=spec.warn,
+                changed=spec.id in state and _entry_changed(spec, state[spec.id]),
             )
         )
     return out
+
+
+# ── D5: has the agent undone Orca's settings? ───────────────────────────
+
+# A setting that decides where the agent's requests go: a base URL, a key
+# (or the reference to Orca's key file) or the provider the agent selects.
+# Model choices aren't among them: picking another model inside the agent
+# (Codex's /model, say) still goes through Orca.
+_ANCHOR_MARKS = ("key", "token", "provider", "selectedtype")
+
+
+def _anchors(prefix: str, value: Any) -> list[tuple[str, Any]]:
+    """The (dotted key, value) leaves of what Orca wrote that route the agent."""
+    if isinstance(value, dict):
+        return [leaf for k, v in value.items() for leaf in _anchors(f"{prefix}.{k}", v)]
+    name = prefix.rsplit(".", 1)[-1].lower()
+    is_url = isinstance(value, str) and value.startswith(("http://", "https://"))
+    return [(prefix, value)] if is_url or any(m in name for m in _ANCHOR_MARKS) else []
+
+
+def _file_replaced(fentry: dict, data: dict[str, Any] | None) -> bool:
+    """True when the file no longer holds every routing value Orca wrote
+    (`data` None: the file is gone or can't be read)."""
+    if data is None:
+        return True
+    for key, written in (fentry.get("values") or {}).items():
+        for dotted, value in _anchors(key, written):
+            if _get(data, dotted) != value:
+                return True
+    return False
+
+
+def _read_parsed(path: Path, fmt: str) -> dict[str, Any] | None:
+    try:
+        raw = _read(path)
+        return None if raw is None else _parse(raw, fmt, path)
+    except AgentConfigError:
+        return None
+
+
+def _entry_changed(spec: AgentSpec, entry: Any) -> bool:
+    if not isinstance(entry, dict) or entry.get("manual"):
+        return False
+    default_fmt = spec.files[0][1] if spec.files else "json"
+    for fentry in _file_entries(entry):
+        if not isinstance(fentry, dict) or "path" not in fentry:
+            continue
+        fmt = fentry.get("fmt") or default_fmt
+        if _file_replaced(fentry, _read_parsed(Path(fentry["path"]), fmt)):
+            return True
+    return False
 
 
 def _file_entry(path: Path, raw: bytes | None, fmt: str, desired: dict[str, Any], data: dict[str, Any]) -> dict:
@@ -974,10 +1030,16 @@ def _reconnect_entry(old: dict, raw: bytes | None, values: dict[str, Any], data:
     we last wrote; once the user has edited it, disconnect reverts our
     settings one by one instead, so their edits survive. Settings this
     connect adds for the first time record their current values.
+
+    A file whose Orca settings were replaced wholesale (D5: an update or the
+    agent's own setup rewrote it) is different: reconnecting re-applies
+    Orca's values over it, and the very first original stays the backup, so
+    disconnect still puts back what the user had before Orca.
     """
     entry = dict(old)
     current_sha = _sha(raw) if raw is not None else None
-    if current_sha != old.get("written_sha256"):
+    replaced = _file_replaced(old, data if raw is not None else None)
+    if current_sha != old.get("written_sha256") and not replaced:
         entry["restorable"] = False
     previous = dict(old.get("previous") or {})
     absent = list(old.get("absent") or [])
