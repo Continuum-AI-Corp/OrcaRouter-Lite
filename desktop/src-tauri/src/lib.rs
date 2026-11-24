@@ -35,7 +35,8 @@ struct AppState {
     // Built with the updater's public key: updates install in place.
     updates_installable: bool,
     // The last orca:// link, until the page it's for takes it.
-    pending_link: Mutex<Option<logic::OrcaLink>>,
+    /// The last orca:// link and when it arrived (dropped after LINK_TTL_SECS).
+    pending_link: Mutex<Option<(std::time::Instant, logic::OrcaLink)>>,
 }
 
 fn engine(state: &AppState) -> Result<Arc<Engine>, String> {
@@ -226,11 +227,11 @@ fn clipboard_orca_key(window: WebviewWindow) -> Result<Option<String>, String> {
 /// H1: after the key is saved, clear it from the clipboard, but only if the
 /// clipboard still holds it (never something copied since).
 #[tauri::command]
-fn clear_clipboard(window: WebviewWindow) -> Result<(), String> {
+fn clear_clipboard(window: WebviewWindow, key: String) -> Result<(), String> {
     guard_window(&window, "setup")?;
     let clipboard = window.app_handle().clipboard();
     let text = clipboard.read_text().unwrap_or_default();
-    if logic::orca_key_from_clipboard(&text).is_some() {
+    if logic::should_clear_clipboard(&text, &key) {
         clipboard.clear().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -252,8 +253,11 @@ fn take_pending_link(window: WebviewWindow) -> Result<Option<logic::OrcaLink>, S
     guard(&window)?;
     let state = window.app_handle().state::<AppState>();
     let mut pending = state.pending_link.lock().unwrap();
-    if pending.as_ref().is_some_and(|l| l.window() == window.label()) {
-        return Ok(pending.take());
+    if pending.as_ref().is_some_and(|(at, _)| !logic::link_is_fresh(at.elapsed())) {
+        *pending = None;
+    }
+    if pending.as_ref().is_some_and(|(_, l)| l.window() == window.label()) {
+        return Ok(pending.take().map(|(_, l)| l));
     }
     Ok(None)
 }
@@ -264,7 +268,7 @@ fn handle_link(app: &AppHandle, raw: &str) {
     let Some(link) = logic::parse_orca_link(raw) else {
         return; // anything else is ignored
     };
-    *app.state::<AppState>().pending_link.lock().unwrap() = Some(link);
+    *app.state::<AppState>().pending_link.lock().unwrap() = Some((std::time::Instant::now(), link));
     if engine(&app.state::<AppState>()).is_err() {
         return; // start_engine opens it once the engine is up
     }
@@ -275,7 +279,7 @@ fn handle_link(app: &AppHandle, raw: &str) {
 /// Open the page for the pending link, and send it the `orca-link` event
 /// if it's already loaded. The event's detail is the link as JSON.
 fn open_pending_link(app: &AppHandle) {
-    let Some(link) = app.state::<AppState>().pending_link.lock().unwrap().clone() else {
+    let Some((_, link)) = app.state::<AppState>().pending_link.lock().unwrap().clone() else {
         return;
     };
     let label = link.window();

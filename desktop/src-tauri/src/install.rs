@@ -97,15 +97,19 @@ fn add_to_user_path(dir: &str) -> Result<(), String> {
         .map_err(|e| format!("Couldn't open your environment settings: {e}"))?;
     // Keep the value's type: REG_EXPAND_SZ entries like %USERPROFILE%\bin
     // must stay unexpanded.
-    let (current, kind) = match key.get_value("Path") {
+    // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND): the user has no Path value yet.
+    const NOT_FOUND: u32 = 0x8007_0002;
+    let (read, kind) = match key.get_value("Path") {
         Ok(v) => {
             let kind = v.ty();
             // A PATH that isn't text is left alone rather than overwritten.
             let text = String::try_from(v).map_err(|_| "Your PATH setting couldn't be read, so it wasn't changed.".to_string())?;
-            (text, kind)
+            (logic::PathRead::Found(text), kind)
         }
-        Err(_) => (String::new(), Type::ExpandString),
+        Err(e) if e.code().0 as u32 == NOT_FOUND => (logic::PathRead::NotFound, Type::ExpandString),
+        Err(e) => (logic::PathRead::Failed(e.to_string()), Type::ExpandString),
     };
+    let current = logic::user_path(read)?;
     if let Some(updated) = logic::path_with_entry(&current, dir) {
         let result = if kind == Type::String {
             key.set_string("Path", &updated)

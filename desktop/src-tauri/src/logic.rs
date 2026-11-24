@@ -544,7 +544,8 @@ pub fn parse_orca_link(raw: &str) -> Option<OrcaLink> {
 /// A second launch carrying a link (Windows, Linux) is handled as the link,
 /// not as a click on the app.
 pub fn argv_has_orca_link(argv: &[String]) -> bool {
-    argv.iter().skip(1).any(|a| a.len() >= 7 && a[..7].eq_ignore_ascii_case("orca://"))
+    // `get` rather than slicing: byte 7 may fall inside a multibyte character.
+    argv.iter().skip(1).any(|a| a.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("orca://")))
 }
 
 // ── V2: the savings card image ──
@@ -666,7 +667,7 @@ pub fn cli_plan(env: &CliEnv) -> CliPlan {
     match env.os {
         Os::Windows => CliPlan::Try(vec![CliStep::WindowsShim {
             dir: format!("{}\\.orcarouter-lite\\bin", env.home.trim_end_matches('\\')),
-            shim: windows_shim(engine),
+            shim: windows_shim(engine, &env.home),
         }]),
         Os::Linux => {
             if env.appimage {
@@ -762,8 +763,57 @@ pub fn admin_link_script(engine: &str, link: &str) -> String {
 }
 
 /// `orca.cmd`: runs the bundled engine with the same arguments.
-pub fn windows_shim(engine_exe: &str) -> String {
-    format!("@echo off\r\n\"{}\" %*\r\n", engine_exe.replace('%', "%%"))
+///
+/// cmd reads a batch file in the console's codepage, not UTF-8, so a profile
+/// folder like `C:\Users\José` would come out garbled; the profile part of
+/// the path is written as `%USERPROFILE%`, which cmd expands correctly.
+pub fn windows_shim(engine_exe: &str, home: &str) -> String {
+    let home = home.trim_end_matches('\\');
+    let path = match engine_exe.get(..home.len()) {
+        Some(head)
+            if !home.is_empty()
+                && head.eq_ignore_ascii_case(home)
+                && engine_exe[home.len()..].starts_with('\\') =>
+        {
+            format!("%USERPROFILE%{}", engine_exe[home.len()..].replace('%', "%%"))
+        }
+        _ => engine_exe.replace('%', "%%"),
+    };
+    format!("@echo off\r\n\"{path}\" %*\r\n")
+}
+
+/// Reading the user's PATH from the registry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PathRead {
+    Found(String),
+    NotFound,
+    Failed(String),
+}
+
+/// The current user PATH, or an error that stops the install: only a
+/// missing value is empty. Treating any other failure (access denied, say)
+/// as empty would overwrite the user's whole PATH with Orca's folder.
+pub fn user_path(read: PathRead) -> Result<String, String> {
+    match read {
+        PathRead::Found(text) => Ok(text),
+        PathRead::NotFound => Ok(String::new()),
+        PathRead::Failed(why) => Err(format!("Your PATH setting couldn't be read ({why}), so it wasn't changed.")),
+    }
+}
+
+/// H1: clear the clipboard after saving only if it still holds the key that
+/// was saved, never another key or anything copied since.
+pub fn should_clear_clipboard(clipboard: &str, saved: &str) -> bool {
+    let saved = saved.trim();
+    !saved.is_empty() && clipboard.trim() == saved
+}
+
+/// V3: how long a link waits for its window to take it. Older links are
+/// dropped so a confirmation never appears long after, out of context.
+pub const LINK_TTL_SECS: u64 = 120;
+
+pub fn link_is_fresh(age: std::time::Duration) -> bool {
+    age.as_secs() < LINK_TTL_SECS
 }
 
 /// The user PATH with `dir` appended, or None when it's already there.
@@ -1593,11 +1643,11 @@ mod tests {
             cli_plan(&env),
             CliPlan::Try(vec![CliStep::WindowsShim {
                 dir: r"C:\Users\ana\.orcarouter-lite\bin".into(),
-                shim: "@echo off\r\n\"C:\\Users\\ana\\AppData\\Local\\OrcaRouter Lite\\orca-engine.exe\" %*\r\n".into(),
+                shim: "@echo off\r\n\"%USERPROFILE%\\AppData\\Local\\OrcaRouter Lite\\orca-engine.exe\" %*\r\n".into(),
             }])
         );
         // cmd expands %VAR% even inside quotes.
-        assert_eq!(windows_shim(r"C:\100%\orca-engine.exe"), "@echo off\r\n\"C:\\100%%\\orca-engine.exe\" %*\r\n");
+        assert_eq!(windows_shim(r"C:\100%\orca-engine.exe", r"C:\Users\ana"), "@echo off\r\n\"C:\\100%%\\orca-engine.exe\" %*\r\n");
     }
 
     #[test]
@@ -1664,5 +1714,54 @@ mod tests {
         assert_eq!(autostart_change(false, true), Some(false));
         assert_eq!(autostart_change(true, true), None);
         assert_eq!(autostart_change(false, false), None);
+    }
+
+    // ── review fixes ──
+
+    #[test]
+    fn a_non_ascii_argument_is_not_a_link_and_never_panics() {
+        let argv = vec!["orca".to_string(), "/home/é".to_string(), "ünïcødé-arg".to_string()];
+        assert!(!argv_has_orca_link(&argv));
+        assert!(argv_has_orca_link(&["orca".into(), "ORCA://connect?agent=codex".into()]));
+    }
+
+    #[test]
+    fn the_shim_names_the_profile_by_variable_so_cmd_can_read_it() {
+        // cmd reads a batch file in the console's codepage, not UTF-8, so a
+        // profile like C:\Users\José would come out garbled.
+        assert_eq!(
+            windows_shim(r"C:\Users\José\AppData\Local\OrcaRouter Lite\orca-engine.exe", r"C:\Users\José"),
+            "@echo off\r\n\"%USERPROFILE%\\AppData\\Local\\OrcaRouter Lite\\orca-engine.exe\" %*\r\n"
+        );
+        assert_eq!(
+            windows_shim(r"C:\Program Files\OrcaRouter Lite\orca-engine.exe", r"C:\Users\ana"),
+            "@echo off\r\n\"C:\\Program Files\\OrcaRouter Lite\\orca-engine.exe\" %*\r\n"
+        );
+    }
+
+    #[test]
+    fn only_a_missing_path_value_counts_as_empty() {
+        assert_eq!(user_path(PathRead::Found("C:\\a".into())), Ok("C:\\a".into()));
+        assert_eq!(user_path(PathRead::NotFound), Ok(String::new()));
+        // Any other failure must stop the install: treating it as empty
+        // would overwrite the user's whole PATH.
+        assert!(user_path(PathRead::Failed("access denied".into())).is_err());
+    }
+
+    #[test]
+    fn the_clipboard_is_cleared_only_if_it_still_holds_the_saved_key() {
+        let saved = "sk-orca-abcdefghijklmnop1234";
+        assert!(should_clear_clipboard(&format!(" {saved}\n"), saved));
+        assert!(!should_clear_clipboard("sk-orca-zzzzzzzzzzzzzzzzzzzz", saved));
+        assert!(!should_clear_clipboard("hello", saved));
+        assert!(!should_clear_clipboard("", ""));
+    }
+
+    #[test]
+    fn a_link_waits_two_minutes_at_most() {
+        use std::time::Duration;
+        assert!(link_is_fresh(Duration::from_secs(5)));
+        assert!(link_is_fresh(Duration::from_secs(119)));
+        assert!(!link_is_fresh(Duration::from_secs(121)));
     }
 }

@@ -113,9 +113,10 @@ export const native = {
     if (this.available()) return this.invoke("clipboard_orca_key");
     return null;
   },
-  // H1 (setup window only): clears the clipboard if it still holds the key.
-  async clearClipboard() {
-    if (this.available()) return this.invoke("clear_clipboard");
+  // H1 (setup window only): clears the clipboard if it still holds exactly
+  // the key that was saved (never another key or anything copied since).
+  async clearClipboard(key) {
+    if (this.available()) return this.invoke("clear_clipboard", { key: String(key || "") });
   },
   // V2 (panel only): put a PNG (base64, or a canvas data: URL) on the clipboard.
   async copyPng(base64) {
