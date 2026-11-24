@@ -18,7 +18,7 @@
       <div id="home">
         <section class="today" id="today" aria-labelledby="today-h">
           <div class="today-top">
-            <h2 class="label" id="today-h">Spend today</h2>
+            <h2 class="label" id="today-h" tabindex="-1">Spend today</h2>
             <button class="btn btn-link btn-sm" id="budget-edit" type="button" aria-expanded="false" aria-controls="budget-collapse">Set daily budget</button>
           </div>
           <div class="today-row">
@@ -67,6 +67,7 @@
             <button class="btn btn-ghost btn-sm" id="offer-dismiss" type="button">Not now</button>
             <button class="btn btn-primary btn-sm" id="offer-add" type="button">Add OrcaRouter backup</button>
           </div>
+          <div id="offer-confirm"></div>
         </section>
 
         <section class="callout credit" id="credit" hidden aria-labelledby="credit-lead">
@@ -85,7 +86,7 @@
         </section>
 
         <section class="block" aria-labelledby="agents-h">
-          <h2 class="label" id="agents-h">Coding agents</h2>
+          <h2 class="label" id="agents-h" tabindex="-1">Coding agents</h2>
           <section class="manual" id="manual" tabindex="-1" hidden aria-labelledby="manual-title">
             <div class="manual-head"><b id="manual-title">Finish in Cursor</b><button class="btn btn-ghost btn-sm" id="manual-close" type="button">Done</button></div>
             <p id="manual-note"></p>

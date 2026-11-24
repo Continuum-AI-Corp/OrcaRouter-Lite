@@ -790,13 +790,27 @@ def test_10p_the_agent_sheet(stack):
         assert report["pickerClosedByEscape"] is True
         assert report["mainShown"] == "gpt-4o-mini"
         assert "needs an OrcaRouter key" in report["needsKey"], report
+        assert report["focusAfterKeep"] == "view-title"  # the note went away while focused
         assert report["backOnHome"] is True
         settings = _app(stack, "GET", "/v1/app/settings").json()
         assert settings["agent_budgets"] == {"claude-code": 500}
         assert settings["agent_models"]["claude-code"] == {"main": "gpt-4o-mini", "background": None,
                                                          "fallback_to_auto": False}
     finally:
-        _app(stack, "PUT", "/v1/app/settings", json={"agent_budgets": {}, "agent_models": {}})
+        _app(stack, "PUT", "/v1/app/settings", json={"agent_budgets": {}, "agent_models": {}, "kept_substitutions": []})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10p2_a_failed_test_reads_as_words_and_disconnect_keeps_focus(stack):
+    httpx.post(f"{stack['upstream']}/_state", json={"openai": "down"}, timeout=10)
+    try:
+        report = _panel(stack, "testfail")
+    finally:
+        httpx.post(f"{stack['upstream']}/_state", json={"openai": "ok"}, timeout=10)
+    assert report["test"].startswith("OpenAI isn't answering right now"), report
+    assert "null" not in report["test"] and "err" in report["testTone"]
+    assert report["focusAfterDisconnect"] == "agents-h"
+    assert not any(a["connected"] for a in _app(stack, "GET", "/v1/app/agents").json()["agents"] if a["id"] == "opencode")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
@@ -814,7 +828,12 @@ def test_10q_the_backup_offer_after_real_failures_and_not_now(stack):
     try:
         report = _panel(stack, "offer")
         assert report["lead"] == "3 requests failed today.", report
-        assert report["rest"] == "Anthropic was overloaded and none of your other keys has Claude."
+        assert report["rest"] == "Anthropic didn't answer and none of your other keys has Claude."
+        # No OrcaRouter key yet: setup opens at its step and turns paid models
+        # on only once a key is saved; nothing is switched on here.
+        assert "step=orcarouter" in report["setupUrlHash"] and "then=paid" in report["setupUrlHash"]
+        assert report["stepRequest"]["step"] == "orcarouter" and report["stepRequest"]["then"] == "paid"
+        assert report["hostedModelsAfterAdd"] == "free"
         assert report["body"].startswith("Add OrcaRouter's gateway as a backup")
         assert report["hiddenAfterReload"] is True
         dismissed = _app(stack, "GET", "/v1/app/settings").json()["dismissed_offers"]
@@ -843,6 +862,27 @@ def test_10r_orcarouter_spend_and_the_out_of_credit_banner(stack):
         assert "ref=lite-panel" in report["opened"][0]
     finally:
         httpx.post(f"{stack['upstream']}/_state", json={"orca": "ok"}, timeout=10)
+        _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "free"})
+        _app(stack, "DELETE", "/v1/providers/orcarouter")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10r2_the_paid_models_switch(stack):
+    assert _app(stack, "PUT", "/v1/providers/orcarouter", json={"api_key": "sk-orca-e2e-key"}).status_code == 200
+    _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "free"})
+    try:
+        report = _panel(stack, "paid")
+        assert report["before"] == {"checked": "false", "text": "Off"}, report
+        assert report["confirm"].startswith("Free models and your own keys still come first;")
+        assert report["confirm"].endswith("This applies to all agents.")
+        assert report["focusOnConfirm"] == "Use paid models"
+        assert report["afterOn"] == "all"
+        assert report["settingsState"] == "On"
+        assert report["settingsText"] == ("Requests free models and your own keys can't handle go to OrcaRouter's "
+                                          "paid models, at the provider's price.")
+        assert report["afterOff"] == "free"
+        assert report["retriesLabel"] == "Retries (pinned models)"
+    finally:
         _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "free"})
         _app(stack, "DELETE", "/v1/providers/orcarouter")
 
@@ -891,6 +931,9 @@ def test_10u_orca_links_only_open_a_confirmation(stack):
         report = _panel(stack, "links")
         assert report["connectTitle"] == "Connect Gemini CLI"
         assert report["focusOnCancel"] == "link-cancel"
+        assert report["titleWhileQueued"] == "Connect Gemini CLI"  # a second link waits its turn
+        assert report["queuedHost"] == "gw.example.dev"
+        assert report["focusAfterSheets"] != "BODY"
         assert report["connectedAfterCancel"] is False
         assert "Works." in report["connectToast"] and report["connectedAfterConfirm"] is True
         assert report["joinTitle"] == "Join a team gateway" and report["joinHost"] == "192.168.1.20:8000"
@@ -910,6 +953,11 @@ def test_10v_settings_in_the_panel(stack):
         assert "0 to 5" in report["badRetries"]
         assert report["routerStatus"].startswith("Saved.") and report["saved"] == {"retries": 2, "cooldown": 60}
         assert report["keyAfterRemove"]["configured"] is False
+        assert report["focusAfterRemove"] == "aa-key"
+        assert (report["panelCollapsed"], report["panelOpened"]) == ("hidden", "visible")
+        assert report["setupCollapses"], report
+        for c in report["setupCollapses"]:  # closed ones are out of the tab order, open ones aren't
+            assert c["visibility"] == ("visible" if c["open"] else "hidden"), report["setupCollapses"]
     finally:
         _app(stack, "PUT", "/v1/app/settings", json={"router_num_retries": None, "router_cooldown_seconds": None})
         _orca(stack, "disconnect", "--all")

@@ -37,7 +37,7 @@ form { display: flex; flex-direction: column; gap: 14px; }
 .choice .pill.free { background: var(--ok-soft); color: var(--ok-ink); }
 .choice:has(> input:checked) { border-color: var(--brand); background: var(--brand-soft); box-shadow: 0 0 0 3px var(--brand-glow); }
 .choice:has(> input:checked) .radio { border: 5px solid var(--brand); }
-.choice:has(> input:checked) .collapse { grid-template-rows: 1fr; opacity: 1; }
+.choice:has(> input:checked) .collapse { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows var(--d) var(--ease), opacity var(--d) var(--ease), visibility 0s; }
 .choice:has(> input:focus-visible) { box-shadow: 0 0 0 3px var(--brand-glow); }
 .choice.disabled { cursor: not-allowed; }
 .choice.disabled .radio, .choice.disabled .dim { opacity: 0.55; }

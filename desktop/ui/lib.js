@@ -308,3 +308,15 @@ export function withRef(url, source) {
   u.searchParams.append("ref", source);
   return u.toString();
 }
+
+// ── panel: engine error messages ──
+// The words to show for a failed engine call: FastAPI's validation errors
+// arrive as a list of {loc, msg}; show the first message, not the JSON.
+export function errorMessage(data, status) {
+  const fallback = `Request failed (${status})`;
+  const msg = data?.error?.message ?? data?.detail;
+  if (msg === undefined || msg === null || msg === "") return fallback;
+  if (typeof msg === "string") return msg;
+  if (Array.isArray(msg)) return typeof msg[0]?.msg === "string" ? msg[0].msg : fallback;
+  return JSON.stringify(msg);
+}
