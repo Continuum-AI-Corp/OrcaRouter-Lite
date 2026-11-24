@@ -493,6 +493,8 @@ _ENGINE_ERROR_STATUS = {
     # Neither succeeds on retry.
     "needs_paid_model": 403,
     "out_of_credit": 402,  # billing_error
+    # A provider's own 402 (no balance left on the user's key).
+    "payment_required": 402,
     # A provider timeout is transient by definition. The Anthropic taxonomy
     # has no 503, and the generic 5xx collapse below would render it as a
     # 500 api_error indistinguishable from a fault in THIS server — so it

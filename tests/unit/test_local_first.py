@@ -24,7 +24,7 @@ LIMITS = {CODER.id: 26_214, LLAVA.id: 3_276}
 def _rank(strategy, needs=(), prompt_tokens=100, preferred=None):
     ids, _ = choose_auto_model(needs=set(needs), deployable=DEPLOYABLE, candidates=[*LOCAL, *CATALOG],
                                strategy=strategy, preferred_models=preferred, context_limits=LIMITS,
-                               prompt_tokens=prompt_tokens)
+                               prompt_tokens=prompt_tokens, allow_free_hosted=True)
     return ids
 
 

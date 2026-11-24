@@ -4,6 +4,8 @@ still win, for servers."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app import config, router_cache
@@ -111,6 +113,12 @@ async def test_local_models_are_deployed_and_follow_discovery(built, db_session,
     assert [d.model_name for d in built[-1]["deployments"] if d.provider == "local"] == ["ollama/b"]
 
     found = [lm.Runtime("ollama", "Ollama", "127.0.0.1:11434", False)]  # Ollama stopped
+    # Once the cached result is stale, a request gets it at once and the
+    # re-probe runs in the background; the next request sees Ollama gone.
+    monkeypatch.setattr(lm, "_cache", (0.0, lm._cache[1]))
+    await router_cache.get_router(db_session)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     await router_cache.get_router(db_session)
     assert not [d for d in built[-1]["deployments"] if d.provider == "local"]
 

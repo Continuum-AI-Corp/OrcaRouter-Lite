@@ -37,6 +37,7 @@ from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.desktop import hosted_state, prefs
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
+from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
     hidden_params_of,
     hosted_bypass_of_local,
@@ -204,9 +205,10 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
     return HTTPException(status_code=exc.http_status, detail=detail, headers={ERROR_TYPE_HEADER: exc.error_type})
 
 
-def _note_hosted_success(provider: str | None) -> None:
-    """Any answer from OrcaRouter means it has credit again (H4)."""
-    if provider == desktop_routing.HOSTED_PROVIDER:
+def _note_hosted_success(provider: str | None, model: str | None) -> None:
+    """A paid answer from OrcaRouter means it has credit again (H4). Free
+    models answer without credit, so they prove nothing."""
+    if provider == desktop_routing.HOSTED_PROVIDER and not (model and is_free_hosted(model)):
         hosted_state.note_success()
 
 
@@ -504,9 +506,17 @@ async def execute_chat(
 
     # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
     # claude-sonnet-4-6) is the model that was asked for, not a substitute.
-    if not was_auto and body.model not in ctx.deployable:
+    # Desktop only: a server keeps the operator's pinned name as asked.
+    # While OrcaRouter is out of credit, an agent isn't sent to a model only
+    # OrcaRouter serves; agent fallback below finds it an own-key model.
+    if desktop and not was_auto and body.model not in ctx.deployable:
         same = desktop_routing.twin(body.model, ctx.deployable)
-        if same is not None:
+        skip = (
+            same is not None
+            and is_agent_key(kc.name)
+            and same not in desktop_routing.auto_deployable(ctx)
+        )
+        if same is not None and not skip:
             body = body.model_copy(update={"model": same})
 
     # H0: in "free" mode a paid hosted model isn't deployed. Asking for one
@@ -532,7 +542,7 @@ async def execute_chat(
     # `requested_model` above keeps what the agent asked for.
     fallback = fallback_preferences(
         body.model,
-        set(ctx.deployable),
+        desktop_routing.auto_deployable(ctx),
         catalog=CATALOG,
         is_agent_key=is_agent_key(kc.name),
         desktop_mode=desktop,
@@ -601,6 +611,7 @@ async def execute_chat(
             tps_scores=tps_scores,
             ttft_scores=ttft_scores,
             free_first=ctx.free_mode,
+            allow_free_hosted=ctx.desktop,
             context_limits=desktop_routing.context_limits(ctx),
             prompt_tokens=prompt_tokens,
         )
@@ -625,6 +636,7 @@ async def execute_chat(
                     tps_scores=tps_scores,
                     ttft_scores=ttft_scores,
                     top_n=1,
+                    allow_free_hosted=ctx.desktop,
                     context_limits=desktop_routing.context_limits(ctx),
                     prompt_tokens=prompt_tokens,
                 )
@@ -687,9 +699,11 @@ async def execute_chat(
     fallbacks_arg: list | None = None
     if was_auto and len(candidates) > 1:
         fallbacks_arg = [{candidates[0]: candidates[1:]}]
-    elif not was_auto:
+    elif not was_auto and desktop:
         # H2: a pinned model OrcaRouter also serves under its own spelling
         # gets that as its backup, so an overloaded own key is rescued.
+        # Desktop only: a server's pinned request never cascades into
+        # OrcaRouter spend the operator didn't ask for.
         backup = desktop_routing.twin(body.model, ctx.deployable)
         if backup is not None:
             fallbacks_arg = [{body.model: [backup]}]
@@ -947,7 +961,7 @@ async def execute_chat(
                         intent=route_intent, provider=agg_provider,
                         served_model=served_group or agg_model or resolved_model,
                     )
-                    _note_hosted_success(agg_provider)
+                    _note_hosted_success(agg_provider, served_group or agg_model or resolved_model)
                 else:
                     note = route_notes.for_failure(error_type)
                 template = await _build_log_row(
@@ -1299,7 +1313,9 @@ async def execute_chat(
                 intent=route_intent, provider=meta.get("provider"),
                 served_model=meta.get("model_group") or actual_resolved or resolved_model,
             )
-            _note_hosted_success(meta.get("provider"))
+            _note_hosted_success(
+                meta.get("provider"), meta.get("model_group") or actual_resolved or resolved_model,
+            )
         else:
             note = route_notes.for_failure(error_type)
         log = await _build_log_row(

@@ -114,6 +114,6 @@ def test_free_models_are_auto_eligible():
 
     m = CATALOG_BY_ID["orcarouter/free"]
     chosen, _ = choose_auto_model(
-        needs=set(), deployable={"orcarouter/free"}, candidates=[m],
+        needs=set(), deployable={"orcarouter/free"}, candidates=[m], allow_free_hosted=True,
     )
     assert chosen == ["orcarouter/free"]

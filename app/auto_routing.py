@@ -261,6 +261,7 @@ def choose_auto_model(
     ttft_scores: dict[str, float] | None = None,
     top_n: int = 5,
     free_first: bool = False,
+    allow_free_hosted: bool = False,
     context_limits: dict[str, int] | None = None,
     prompt_tokens: int = 0,
 ) -> tuple[list[str], dict[str, ScoringDetail]]:
@@ -328,7 +329,10 @@ def choose_auto_model(
         m for m in candidates
         if m.id in deployable
         and _model_meets(m, needs)
-        and _may_auto_pick(m, local_first=local_first, preferred=preferred_set)
+        and _may_auto_pick(
+            m, local_first=local_first, preferred=preferred_set,
+            allow_free_hosted=allow_free_hosted or free_first,
+        )
         and not (prompt_tokens and m.id in limits and prompt_tokens > limits[m.id])
     ]
     if preferred_models:
@@ -520,13 +524,16 @@ def choose_auto_model(
     return final_ids, scoring
 
 
-def _may_auto_pick(m: CatalogModel, *, local_first: bool, preferred: set[str]) -> bool:
+def _may_auto_pick(
+    m: CatalogModel, *, local_first: bool, preferred: set[str], allow_free_hosted: bool,
+) -> bool:
     """Zero-priced models are litellm's unpriced rows (not free), except
-    OrcaRouter's free models and models on this computer — and those only
-    under local_first or when the user prefers them by name."""
+    OrcaRouter's free models in the desktop app (`allow_free_hosted`; a
+    server keeps its old behaviour) and models on this computer — those
+    only under local_first or when the user prefers them by name."""
     if m.provider == LOCAL_PROVIDER:
         return local_first or m.id in preferred
-    return _blended_cost(m) > 0 or is_free_hosted(m.id)
+    return _blended_cost(m) > 0 or (allow_free_hosted and is_free_hosted(m.id))
 
 
 def _free_rank(model_id: str) -> int:

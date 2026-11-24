@@ -160,3 +160,61 @@ def test_catalog_entries_and_usable_context():
     assert lm.usable_context(m) == int(0.8 * lm.MAX_LOCAL_CONTEXT)
     assert lm.usable_context(_model("x", context=4096)) == int(0.8 * 4096)
     assert lm.usable_context(_model("y", context=None)) == int(0.8 * lm.DEFAULT_LOCAL_CONTEXT)
+
+
+async def test_a_slow_show_keeps_what_was_known_about_a_model():
+    # Ollama busy answering a prompt can miss the one-second /api/show; the
+    # model mustn't lose its tools flag (and drop out of routing) for that.
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_ollama_handler)) as c:
+        await lm.discover(client=c, env={})
+
+    def slow_show(req):
+        if req.url.path == "/api/show":
+            raise httpx.ReadTimeout("busy", request=req)
+        return _ollama_handler(req)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_show)) as c:
+        await lm.discover(client=c, env={}, force=True)
+    coder = lm.describe("ollama/qwen3-coder:30b")
+    assert (coder.tools, coder.context) == (True, 262144)
+
+
+async def test_current_serves_the_last_result_while_refreshing_in_the_background(monkeypatch):
+    # The router asks on every request; a stale result is returned at once
+    # and re-probed in the background, so no request waits on a probe.
+    import asyncio
+
+    lm.remember([lm.Runtime("ollama", "Ollama", "127.0.0.1:11434", True, (_model("old"),))])
+    monkeypatch.setattr(lm, "_cache", (0.0, lm._cache[1]))  # expired
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_discover(**_kw):
+        started.set()
+        await release.wait()
+        lm.remember([lm.Runtime("ollama", "Ollama", "127.0.0.1:11434", True, (_model("new"),))])
+        return lm.last()
+
+    monkeypatch.setattr(lm, "discover", slow_discover)
+    got = await asyncio.wait_for(lm.current(), timeout=0.5)
+    assert [m.id for r in got for m in r.models] == ["ollama/old"]
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    again = await asyncio.wait_for(lm.current(), timeout=0.5)  # one refresh at a time
+    assert [m.id for r in again for m in r.models] == ["ollama/old"]
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert [m.id for m in lm.last_models()] == ["ollama/new"]
+
+
+async def test_current_waits_only_for_the_very_first_discovery(monkeypatch):
+    calls = []
+
+    async def discover(**_kw):
+        calls.append(1)
+        lm.remember([])
+        return []
+
+    monkeypatch.setattr(lm, "discover", discover)
+    assert await lm.current() == []
+    assert calls == [1]

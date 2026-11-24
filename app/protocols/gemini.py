@@ -562,6 +562,7 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     # Neither succeeds on retry.
     "needs_paid_model": 403,
     "out_of_credit": 403,  # PERMISSION_DENIED: Google has no 402
+    "payment_required": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
 }
@@ -735,6 +736,9 @@ def stream_error_chunk(message: str) -> dict:
 _STATUS_TO_GOOGLE_STATUS = {
     400: "INVALID_ARGUMENT",
     401: "UNAUTHENTICATED",
+    # Google has no 402; a billing refusal is a permission problem, and
+    # INTERNAL would invite retries that can't succeed.
+    402: "PERMISSION_DENIED",
     403: "PERMISSION_DENIED",
     404: "NOT_FOUND",
     429: "RESOURCE_EXHAUSTED",

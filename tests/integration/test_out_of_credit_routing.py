@@ -77,7 +77,10 @@ async def test_an_agent_falls_back_to_own_keys_too(engine):
 
 
 async def test_with_nothing_else_orcarouter_is_tried_and_an_answer_clears_it(engine):
-    engine.router = FakeRouter(hosted("deepseek/deepseek-v4-pro-free"))
+    # A paid answer proves credit is back (a free one doesn't: see
+    # test_routing_review_fixes).
+    await engine.settings(hosted_models="all")
+    engine.router = FakeRouter(hosted("gpt-5"))
     hosted_state.mark_out_of_credit()
     r = await engine.chat(engine.root_key, PING)
     assert r.status_code == 200
@@ -85,7 +88,8 @@ async def test_with_nothing_else_orcarouter_is_tried_and_an_answer_clears_it(eng
 
 
 async def test_streaming_answer_from_orcarouter_clears_it(engine):
-    engine.router = FakeRouter(hosted("deepseek/deepseek-v4-pro-free"))
+    await engine.settings(hosted_models="all")
+    engine.router = FakeRouter(hosted("gpt-5"))
     hosted_state.mark_out_of_credit()
     r = await engine.chat(engine.root_key, PING, stream=True)
     assert r.status_code == 200

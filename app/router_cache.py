@@ -227,7 +227,7 @@ async def router_inputs(session, settings) -> RouterInputs:
         if p.router_cooldown_seconds is not None and "router_cooldown_seconds" not in explicit:
             cooldown = float(p.router_cooldown_seconds)
         if not local_models.disabled():
-            found = [m for r in await local_models.discover() for m in r.models]
+            found = [m for r in await local_models.current() for m in r.models]
             local = tuple(local_models.enabled(found, p.local_models))
     return RouterInputs(
         num_retries=num_retries, cooldown_seconds=cooldown, hosted_models=hosted_models, local=local,

@@ -128,7 +128,7 @@ def test_logo_notice_travels_with_the_logos(html):
 
 
 def test_every_local_reference_exists(page):
-    for tag, attrs in page.tags:
+    for _tag, attrs in page.tags:
         for attr in ("src", "href", "srcset"):
             ref = attrs.get(attr, "")
             if ref and not re.match(r"[a-z]+:|//|#", ref):

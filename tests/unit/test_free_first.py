@@ -20,7 +20,7 @@ def test_the_free_models_are_the_four_zero_priced_hosted_ones():
 def test_auto_may_pick_free_models_but_not_unpriced_rows():
     unpriced = CatalogModel("mystery-model", "openai", "openai/", True, False, True, 0.0, 0.0)
     ids, _ = choose_auto_model(needs=set(), deployable={*FREE, "mystery-model"}, candidates=[*CATALOG, unpriced],
-                               strategy="cheapest")
+                               strategy="cheapest", allow_free_hosted=True)
     assert set(ids) == set(FREE)
 
 
@@ -39,8 +39,16 @@ def test_free_first_puts_free_models_before_own_keys_under_any_strategy():
 
 def test_without_free_first_free_models_compete_on_price():
     ids, _ = choose_auto_model(needs=set(), deployable={*FREE, "gpt-4o-mini"}, candidates=CATALOG,
-                               strategy="cheapest")
+                               strategy="cheapest", allow_free_hosted=True)
     assert set(ids[:4]) == set(FREE)  # $0 is the cheapest there is
+
+
+def test_a_server_never_auto_picks_zero_priced_free_models():
+    # Outside the desktop app the engine keeps its old rule: zero-priced
+    # rows are never auto-picked, so a server's routing doesn't change.
+    ids, _ = choose_auto_model(needs=set(), deployable={*FREE, "gpt-4o-mini"}, candidates=CATALOG,
+                               strategy="cheapest")
+    assert ids == ["gpt-4o-mini"]
 
 
 def test_free_models_cannot_take_images():

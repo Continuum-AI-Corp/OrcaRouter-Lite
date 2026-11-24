@@ -77,8 +77,9 @@ _lock = asyncio.Lock()
 
 
 def reset() -> None:
-    global _cache
+    global _cache, _refresh
     _cache = None
+    _refresh = None
 
 
 def remember(runtimes: list[Runtime]) -> None:
@@ -131,6 +132,31 @@ async def discover(
         return list(runtimes)
 
 
+_refresh: asyncio.Task | None = None
+
+
+async def current() -> list[Runtime]:
+    """What the router routes to, without making a request wait on a probe.
+
+    The first call discovers (once, at most a second per runtime). After that
+    a stale result is returned at once and re-probed in the background, one
+    refresh at a time, so a slow or hung runtime never delays a request.
+    """
+    global _refresh
+    if _cache is None:
+        return await discover()
+    if _cache[0] <= time.monotonic() and (_refresh is None or _refresh.done()):
+        _refresh = asyncio.get_running_loop().create_task(_background_discover())
+    return list(_cache[1])
+
+
+async def _background_discover() -> None:
+    try:
+        await discover()
+    except Exception:  # a refresh must never surface as an unhandled task error
+        pass
+
+
 def _base_url(configured: str | None, default: str) -> str:
     """A runtime's address as its users write it: OLLAMA_HOST is often a bare
     host:port, and 0.0.0.0 (listen everywhere) is reached on 127.0.0.1;
@@ -165,18 +191,27 @@ async def _ollama(http: httpx.AsyncClient, base: str) -> list[LocalModel]:
     tags = await _get_json(http, f"{base}/api/tags")
     names = [m["name"] for m in tags.get("models") or [] if isinstance(m, dict) and m.get("name")]
     shows = await asyncio.gather(*(_ollama_show(http, base, n) for n in names))
-    return [
-        LocalModel(id=f"ollama/{n}", runtime="ollama", name=n, api_base=base,
-                   context=ctx, tools="tools" in caps, vision="vision" in caps)
-        for n, (caps, ctx) in zip(names, shows, strict=True)
-    ]
+    out = []
+    for n, shown in zip(names, shows, strict=True):
+        known = describe(f"ollama/{n}")
+        if shown is None and known is not None:
+            # Ollama busy with a prompt can miss the probe timeout; keep what
+            # it said last time rather than drop the model's tools flag (which
+            # would take it out of routing and rebuild the router twice).
+            out.append(known)
+            continue
+        caps, ctx = shown or (set(), None)
+        out.append(LocalModel(id=f"ollama/{n}", runtime="ollama", name=n, api_base=base,
+                              context=ctx, tools="tools" in caps, vision="vision" in caps))
+    return out
 
 
-async def _ollama_show(http: httpx.AsyncClient, base: str, name: str) -> tuple[set[str], int | None]:
+async def _ollama_show(http: httpx.AsyncClient, base: str, name: str) -> tuple[set[str], int | None] | None:
+    """What a model can do and its context size; None if Ollama didn't say."""
     try:
         info = await _get_json(http, f"{base}/api/show", json={"model": name})
     except (httpx.HTTPError, ValueError):
-        return set(), None
+        return None
     caps = {c for c in info.get("capabilities") or [] if isinstance(c, str)}
     ctx = next(
         (v for k, v in (info.get("model_info") or {}).items()
