@@ -107,6 +107,44 @@ export const native = {
   async quit() {
     if (this.available()) return this.invoke("quit_app");
   },
+  // H1 (setup window only): the clipboard text if it's an OrcaRouter key
+  // and the window has focus, else null. Offer it; never use it silently.
+  async clipboardOrcaKey() {
+    if (this.available()) return this.invoke("clipboard_orca_key");
+    return null;
+  },
+  // H1 (setup window only): clears the clipboard if it still holds the key.
+  async clearClipboard() {
+    if (this.available()) return this.invoke("clear_clipboard");
+  },
+  // V2 (panel only): put a PNG (base64, or a canvas data: URL) on the clipboard.
+  async copyPng(base64) {
+    if (this.available()) return this.invoke("copy_png", { base64 });
+    const b64 = base64.replace(/^data:image\/png;base64,/, "");
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([bytes], { type: "image/png" }) })]);
+  },
+  // V3: the orca:// link waiting for this page ({action: "connect", agent} |
+  // {action: "join", gateway} | {action: "setup", agents, budget_cents}), or null.
+  async takePendingLink() {
+    if (this.available()) return this.invoke("take_pending_link");
+    return null;
+  },
+  // V3: call `callback(link)` for each orca:// link meant for this page,
+  // including one that arrived before it loaded. Show a confirmation; never
+  // act on a link without the user's click. Returns an unsubscribe function.
+  onLink(callback) {
+    const deliver = async () => {
+      const link = await this.takePendingLink();
+      if (link) callback(link);
+    };
+    const handler = () => {
+      deliver();
+    };
+    window.addEventListener("orca-link", handler);
+    deliver();
+    return () => window.removeEventListener("orca-link", handler);
+  },
 };
 
 let toastTimer = null;
