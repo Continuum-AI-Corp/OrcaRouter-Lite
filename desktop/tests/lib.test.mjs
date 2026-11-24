@@ -6,7 +6,6 @@ import { test } from "node:test";
 import {
   AGENT_COLORS,
   NO_AGENTS_TEXT,
-  SETUP_PROVIDERS,
   agentLogo,
   collectProviderKeys,
   disconnectAllLabel,
@@ -247,23 +246,19 @@ test("agentNote styles only real warnings as warnings", () => {
   assert.deepEqual(agentNote({ note: "" }), { text: "Orca will update its settings", warn: false });
 });
 
-test("setup offers every provider the engine can check a key for", () => {
-  const ids = SETUP_PROVIDERS.map((p) => p.id);
-  for (const id of ["anthropic", "openai", "google", "deepseek", "xai", "mistral", "groq", "together", "fireworks"]) {
-    assert.ok(ids.includes(id), `${id} missing`);
-  }
-  for (const p of SETUP_PROVIDERS) assert.ok(p.name && p.placeholder, p.id);
-  assert.equal(new Set(ids).size, ids.length);
-});
-
 test("collectProviderKeys trims, skips empty rows and refuses the same provider twice", () => {
   assert.deepEqual(collectProviderKeys([{ provider: "openai", key: "  sk-a  " }, { provider: "google", key: "" }]), {
     keys: [{ provider: "openai", key: "sk-a", index: 0 }],
     error: null,
   });
-  const dup = collectProviderKeys([{ provider: "openai", key: "sk-a" }, { provider: "openai", key: "sk-b" }]);
+  const dup = collectProviderKeys([
+    { provider: "openai", name: "OpenAI", key: "sk-a" },
+    { provider: "openai", name: "OpenAI", key: "sk-b" },
+  ]);
   assert.equal(dup.error.index, 1);
-  assert.match(dup.error.message, /OpenAI/);
+  assert.match(dup.error.message, /two OpenAI keys/);
+  // Rows carry their provider's name (setup reads it from the engine's list).
+  assert.match(collectProviderKeys([{ provider: "zai", key: "a" }, { provider: "zai", key: "b" }]).error.message, /two zai keys/);
 });
 
 test("keyCheckOutcome blocks only keys the provider rejected", () => {
