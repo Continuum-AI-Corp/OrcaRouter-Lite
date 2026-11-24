@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from packages.litellm_adapter.types import UpstreamProviderError
-from tests.integration.routing_harness import FakeRouter, engine, hosted, own  # noqa: F401
+from tests.integration.routing_harness import FakeRouter, hosted, own
 
 ASK = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "ping"}]}
 

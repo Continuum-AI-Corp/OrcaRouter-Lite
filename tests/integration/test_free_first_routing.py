@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration.routing_harness import FakeRouter, engine, hosted, own  # noqa: F401
+from tests.integration.routing_harness import FakeRouter, hosted, own
 
 FREE_DEPS = hosted("deepseek/deepseek-v4-pro-free", "deepseek/deepseek-v4-flash-free",
                    "qwen/qwen3.8-27b-free", "orcarouter/free")

@@ -9,7 +9,7 @@ import pytest
 
 from packages.desktop import hosted_state
 from packages.litellm_adapter.types import UpstreamProviderError
-from tests.integration.routing_harness import FakeRouter, engine, hosted, own  # noqa: F401
+from tests.integration.routing_harness import FakeRouter, hosted, own
 
 PING = {"model": "auto", "messages": [{"role": "user", "content": "ping"}]}
 DETAIL = ("OrcaRouter is out of credit. Add credit at https://www.orcarouter.ai/console/topup, "

@@ -8,7 +8,7 @@ import pytest
 
 from packages.desktop import local_models as lm
 from packages.litellm_adapter.types import UpstreamProviderError
-from tests.integration.routing_harness import FakeRouter, engine, local, own  # noqa: F401
+from tests.integration.routing_harness import FakeRouter, local, own
 
 CODER = lm.LocalModel(id="ollama/qwen3-coder:30b", runtime="ollama", name="qwen3-coder:30b",
                       api_base="http://127.0.0.1:11434", context=32768, tools=True, vision=False)

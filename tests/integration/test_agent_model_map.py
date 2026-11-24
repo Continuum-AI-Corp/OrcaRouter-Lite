@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration.routing_harness import FakeRouter, engine, own  # noqa: F401
+from tests.integration.routing_harness import FakeRouter, own
 
 DEPS = [*own("anthropic", "claude-sonnet-4-6", "claude-haiku-4-5"), *own("openai", "gpt-4.1", "gpt-4o-mini")]
 MAIN = {"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "ping"}]}

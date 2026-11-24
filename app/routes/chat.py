@@ -39,8 +39,8 @@ from packages.desktop import hosted_state, prefs
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_fallback import (
     hidden_params_of,
-    hosted_cost_usd,
     hosted_bypass_of_local,
+    hosted_cost_usd,
     match_served_deployment,
 )
 from packages.litellm_adapter.types import UpstreamProviderError

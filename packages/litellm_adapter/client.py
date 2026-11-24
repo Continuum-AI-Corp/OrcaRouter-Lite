@@ -11,7 +11,6 @@ from __future__ import annotations
 import time
 
 import httpx
-
 import structlog
 
 from packages.litellm_adapter.hosted_fallback import (
