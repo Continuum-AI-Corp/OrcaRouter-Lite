@@ -7,7 +7,8 @@ in a throwaway HOME next to a fake OpenAI-compatible provider. The test:
 2. reads each agent's written config the way that agent does and sends a
    request in that agent's own protocol (Anthropic Messages for Claude Code,
    Responses for Codex, Gemini for Gemini CLI, Chat Completions for
-   OpenCode, Command Code and Aider), all reaching the fake provider;
+   OpenCode, Command Code, Aider, Hermes, Pi, OMP, Kilo, OpenClaw, Kimi Code
+   and Goose), all reaching the fake provider;
 3. checks spend is attributed to each agent, the budget stop returns 429,
    and agent keys can't reach the app API;
 4. disconnects everything and checks every config is back byte for byte and
@@ -33,6 +34,8 @@ import httpx
 import pytest
 import yaml
 
+from packages.desktop.agents import _GOOSE_DIR, _HERMES_DIR
+
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.e2e
 
@@ -43,9 +46,16 @@ EXISTING = {
     ".codex/config.toml": '# my codex settings\nmodel = "gpt-5.1-codex"\n\n[projects."/home/me/app"]\ntrust_level = "trusted"\n',
     ".gemini/settings.json": '{"ui": {"theme": "GitHub"}, "security": {"auth": {"selectedType": "oauth-personal"}}}\n',
     ".aider.conf.yml": "# my aider settings\nauto-commits: false\n",
+    f"{_HERMES_DIR}/config.yaml": "# my hermes settings\nmodel:\n  default: anthropic/claude-sonnet-4.6\n  provider: openrouter\n",
+    ".kimi-code/config.toml": '# my kimi settings\ndefault_model = "kimi-code/k3"\n\n[providers."managed:kimi-code"]\ntype = "kimi"\n',
+    ".openclaw/openclaw.json": '{\n  "agents": {\n    "defaults": {\n      "model": {\n        "primary": "anthropic/claude-opus-4-6"\n      }\n    }\n  }\n}\n',
+    f"{_GOOSE_DIR}/config.yaml": "# my goose settings\nGOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet-4-6\n",
 }
-AGENT_DIRS = [".claude", ".codex", ".gemini", ".config/opencode", ".commandcode", ".cline"]
-AUTO_AGENTS = ["claude-code", "codex", "gemini-cli", "opencode", "command-code", "aider"]
+AGENT_DIRS = [".claude", ".codex", ".gemini", ".config/opencode", ".commandcode", ".cline", _HERMES_DIR, ".pi", ".omp",
+              ".config/kilo", ".openclaw", ".kimi-code", _GOOSE_DIR, ".config/zed"]
+AUTO_AGENTS = ["claude-code", "codex", "gemini-cli", "opencode", "command-code", "aider",
+               "hermes", "pi", "omp", "kilo", "openclaw", "kimi-code", "goose"]
+MANUAL_AGENTS = {"cline": "OpenAI Compatible", "zed": "openai_compatible"}
 
 
 def _free_port() -> int:
@@ -170,6 +180,57 @@ def _aider(home):
     return cfg["openai-api-base"], cfg["openai-api-key"], cfg["model"].removeprefix("openai/")
 
 
+def _hermes(home):
+    cfg = yaml.safe_load((home / _HERMES_DIR / "config.yaml").read_text())
+    kind, _, name = cfg["model"]["provider"].partition(":")
+    assert kind == "custom"
+    p = cfg["providers"][name]
+    return p["api"], p["api_key"], cfg["model"]["default"]
+
+
+def _pi(home):
+    settings = json.loads((home / ".pi/agent/settings.json").read_text())
+    p = json.loads((home / ".pi/agent/models.json").read_text())["providers"][settings["defaultProvider"]]
+    assert p["api"] == "openai-completions"
+    return p["baseUrl"], p["apiKey"], settings["defaultModel"]
+
+
+def _omp(home):
+    provider_id, model = yaml.safe_load((home / ".omp/agent/config.yml").read_text())["modelRoles"]["default"].split("/", 1)
+    p = yaml.safe_load((home / ".omp/agent/models.yml").read_text())["providers"][provider_id]
+    return p["baseUrl"], p["apiKey"], model
+
+
+def _kilo(home):
+    cfg = json.loads((home / ".config/kilo/kilo.json").read_text())
+    provider_id, model = cfg["model"].split("/", 1)
+    opts = cfg["provider"][provider_id]["options"]
+    return opts["baseURL"], Path(opts["apiKey"][len("{file:"):-1]).read_text().strip(), model
+
+
+def _openclaw(home):
+    cfg = json.loads((home / ".openclaw/openclaw.json").read_text())
+    provider_id, model = cfg["agents"]["defaults"]["model"]["primary"].split("/", 1)
+    p = cfg["models"]["providers"][provider_id]
+    return p["baseUrl"], p["apiKey"], model
+
+
+def _kimi(home):
+    cfg = tomllib.loads((home / ".kimi-code/config.toml").read_text())
+    m = cfg["models"][cfg["default_model"]]
+    p = cfg["providers"][m["provider"]]
+    assert p["type"] == "openai"
+    return p["base_url"], p["api_key"], m["model"]
+
+
+def _goose(home):
+    cfg = yaml.safe_load((home / _GOOSE_DIR / "config.yaml").read_text())
+    p = json.loads((home / _GOOSE_DIR / "custom_providers" / f"{cfg['GOOSE_PROVIDER']}.json").read_text())
+    auth = p["auth"]  # Goose runs this command (no shell) for the key
+    key = subprocess.run([auth["command"], *auth["args"]], capture_output=True, text=True, check=True).stdout.strip()
+    return p["base_url"], key, cfg["GOOSE_MODEL"]
+
+
 # ── the tests, in order ─────────────────────────────────────────────────
 
 
@@ -179,14 +240,16 @@ def test_1_every_automatic_agent_connects(stack):
     for agent in AUTO_AGENTS:
         r = _orca(stack, "connect", agent)
         assert r.returncode == 0, f"{agent}: {r.stderr}"
-    r = _orca(stack, "connect", "cline")
-    assert r.returncode == 0 and "OpenAI Compatible" in r.stdout  # manual: shows what to paste
+    for agent, hint in MANUAL_AGENTS.items():
+        r = _orca(stack, "connect", agent)
+        assert r.returncode == 0 and hint in r.stdout, f"{agent}: {r.stdout}{r.stderr}"  # manual: what to paste
     data = _app(stack, "GET", "/v1/app/agents").json()
     connected = {a["id"] for a in data["agents"] if a["connected"]}
-    assert set(AUTO_AGENTS) | {"cline"} <= connected
+    assert set(AUTO_AGENTS) | set(MANUAL_AGENTS) <= connected
     # The user's own settings are still there.
     assert json.loads((stack["home"] / ".claude/settings.json").read_text())["theme"] == "dark"
     assert "# my codex settings" in (stack["home"] / ".codex/config.toml").read_text()
+    assert "# my hermes settings" in (stack["home"] / _HERMES_DIR / "config.yaml").read_text()
 
 
 def test_2_claude_code_speaks_anthropic_messages(stack):
@@ -220,7 +283,11 @@ def test_4_gemini_cli_speaks_gemini(stack):
     assert settings["security"]["auth"]["selectedType"] == "gateway"
 
 
-@pytest.mark.parametrize("read", [_opencode, _command_code, _aider], ids=["opencode", "command-code", "aider"])
+CHAT_AGENTS = {"opencode": _opencode, "command-code": _command_code, "aider": _aider, "hermes": _hermes, "pi": _pi,
+               "omp": _omp, "kilo": _kilo, "openclaw": _openclaw, "kimi-code": _kimi, "goose": _goose}
+
+
+@pytest.mark.parametrize("read", list(CHAT_AGENTS.values()), ids=list(CHAT_AGENTS))
 def test_5_chat_completions_agents(stack, read):
     base, key, model = read(stack["home"])
     r = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"},
@@ -231,12 +298,12 @@ def test_5_chat_completions_agents(stack, read):
 
 def test_6_every_request_reached_the_provider_and_spend_is_per_agent(stack):
     calls = httpx.get(f"{stack['upstream']}/_calls").json()["calls"]
-    assert len(calls) >= 6
+    assert len(calls) >= len(AUTO_AGENTS)
     assert all(c["auth"] == "Bearer sk-e2e-upstream" for c in calls)  # the provider key, never an agent key
     r = _orca(stack, "status", "--json")
     assert r.returncode == 0, r.stderr
     summary = json.loads(r.stdout)
-    assert summary["today"]["requests"] >= 6
+    assert summary["today"]["requests"] >= len(AUTO_AGENTS)
     by_agent = {a["id"]: a for a in summary["agents"]}
     for agent in AUTO_AGENTS:
         assert by_agent[agent]["today_microcents"] > 0, f"no spend recorded for {agent}"
@@ -266,12 +333,14 @@ def test_8_the_budget_stop_pauses_agents(stack):
 def test_9_disconnect_restores_every_file_and_revokes_the_keys(stack):
     home = stack["home"]
     old_keys = [_claude(home)[1], _codex(home)[1], _opencode(home)[1]]
-    for agent in [*AUTO_AGENTS, "cline"]:
+    for agent in [*AUTO_AGENTS, *MANUAL_AGENTS]:
         r = _orca(stack, "disconnect", agent)
         assert r.returncode == 0, f"{agent}: {r.stderr}"
     for rel, text in EXISTING.items():
         assert (home / rel).read_text() == text, f"{rel} wasn't restored exactly"
-    for created in (".gemini/.env", ".config/opencode/opencode.json", ".commandcode/providers.json"):
+    for created in (".gemini/.env", ".config/opencode/opencode.json", ".commandcode/providers.json",
+                    ".pi/agent/models.json", ".pi/agent/settings.json", ".omp/agent/models.yml",
+                    ".omp/agent/config.yml", ".config/kilo/kilo.json", f"{_GOOSE_DIR}/custom_providers/orca.json"):
         assert not (home / created).exists(), f"{created} should be removed"
     assert not list((stack["orca_home"] / "agents" / "keys").glob("*"))
     for key in old_keys:
