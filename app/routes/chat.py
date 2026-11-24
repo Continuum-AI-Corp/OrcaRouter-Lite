@@ -593,7 +593,7 @@ async def execute_chat(
         candidates, _scoring = choose_auto_model(
             needs=needs,
             deployable=deployable,
-            candidates=CATALOG,
+            candidates=desktop_routing.candidates(ctx),
             strategy=strategy,
             preferred_models=preferred_models,
             allowlist=kc.model_allowlist,
@@ -617,7 +617,7 @@ async def execute_chat(
                 any_capable, _ = choose_auto_model(
                     needs=needs,
                     deployable=deployable,
-                    candidates=CATALOG,
+                    candidates=desktop_routing.candidates(ctx),
                     strategy=strategy,
                     preferred_models=preferred_models,
                     allowlist=None,

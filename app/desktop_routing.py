@@ -20,8 +20,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from packages.desktop import hosted_state
+from packages.desktop import hosted_state, local_models
 from packages.desktop.prefs import DEFAULTS, DesktopPrefs
+from packages.litellm_adapter.catalog import CATALOG, CatalogModel
 from packages.litellm_adapter.hosted_catalog import (
     FREE_HOSTED_CONTEXT_TOKENS,
     HOSTED_MODEL_ALIASES,
@@ -30,6 +31,7 @@ from packages.litellm_adapter.hosted_catalog import (
 )
 
 HOSTED_PROVIDER = "orcarouter"
+LOCAL_PROVIDER = local_models.PROVIDER
 
 NEEDS_PAID_TYPE = "needs_paid_model"
 OUT_OF_CREDIT_TYPE = "out_of_credit"
@@ -49,6 +51,8 @@ class RoutingContext:
     # Names only OrcaRouter serves (no own key or local model has them).
     hosted_only: frozenset[str] = frozenset()
     hosted_configured: bool = False
+    # Names served by a model on this computer.
+    local_names: frozenset[str] = frozenset()
 
     @property
     def free_mode(self) -> bool:
@@ -67,6 +71,7 @@ def build_context(*, desktop: bool, prefs: DesktopPrefs, deployments: Iterable) 
         deployable=frozenset(by_name),
         hosted_only=frozenset(n for n, provs in by_name.items() if provs == {HOSTED_PROVIDER}),
         hosted_configured=any(d.provider == HOSTED_PROVIDER for d in deps),
+        local_names=frozenset(n for n, provs in by_name.items() if LOCAL_PROVIDER in provs),
     )
 
 
@@ -87,10 +92,33 @@ def auto_deployable(ctx: RoutingContext) -> set[str]:
 
 
 def context_limits(ctx: RoutingContext) -> dict[str, int]:
-    """Usable context per model, for models whose limit routing must respect."""
+    """Usable context per model, for models whose limit routing must respect:
+    the free hosted models and the models on this computer."""
     if not ctx.desktop:
         return {}
-    return {name: FREE_HOSTED_CONTEXT_TOKENS for name in ctx.deployable if is_free_hosted(name)}
+    limits = {name: FREE_HOSTED_CONTEXT_TOKENS for name in ctx.deployable if is_free_hosted(name)}
+    for m in local_catalog_models(ctx):
+        known = local_models.describe(m.id)
+        limits[m.id] = local_models.usable_context(known) if known else int(
+            local_models.FIT_SHARE * local_models.DEFAULT_LOCAL_CONTEXT
+        )
+    return limits
+
+
+def local_catalog_models(ctx: RoutingContext) -> list:
+    """Catalog entries for the local models deployed right now, with what
+    their runtime said they can do (nothing, if it's no longer listed)."""
+    out = []
+    for name in sorted(n for n in ctx.deployable if n in ctx.local_names):
+        known = local_models.describe(name)
+        out.append(local_models.catalog_entry(known) if known else CatalogModel(name, LOCAL_PROVIDER, ""))
+    return out
+
+
+def candidates(ctx: RoutingContext) -> list:
+    """What auto ranks: the catalog, plus this computer's models."""
+    local = local_catalog_models(ctx)
+    return [*local, *CATALOG] if local else CATALOG
 
 
 def twin(model: str, deployable: Iterable[str]) -> str | None:

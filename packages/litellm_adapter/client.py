@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+import httpx
+
 import structlog
 
 from packages.litellm_adapter.hosted_fallback import (
@@ -134,6 +136,13 @@ class OrcaLiteLLMClient:
                 params["custom_llm_provider"] = d.custom_llm_provider
             if d.extra_headers:
                 params["extra_headers"] = d.extra_headers
+            if d.timeout:
+                params["timeout"] = (
+                    httpx.Timeout(d.timeout, connect=d.connect_timeout) if d.connect_timeout else d.timeout
+                )
+                params["stream_timeout"] = d.timeout
+            if d.extra_params:
+                params.update(d.extra_params)
             if d.rpm:
                 params["rpm"] = d.rpm
             if d.tpm:

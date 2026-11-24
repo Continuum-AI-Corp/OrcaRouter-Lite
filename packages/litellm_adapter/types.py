@@ -68,3 +68,10 @@ class ProviderDeployment:
     # really the SAME upstream under two names (the hosted wire-id aliases)
     # must share one id, or each name probes a dead upstream separately.
     deployment_id: str | None = None
+    # Per-deployment request timeout in seconds (local models: a slow
+    # computer must hand the request on to the cloud, not hang it).
+    timeout: float | None = None
+    connect_timeout: float | None = None
+    # Extra provider parameters sent with every request to this deployment
+    # (Ollama's num_ctx, the context size it runs the model with).
+    extra_params: dict | None = None

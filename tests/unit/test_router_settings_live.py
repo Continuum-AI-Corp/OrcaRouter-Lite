@@ -85,6 +85,50 @@ async def test_servers_never_read_desktop_settings(built, db_session, monkeypatc
     assert built[-1]["num_retries"] == s.router_num_retries_default
 
 
+async def test_local_models_are_deployed_and_follow_discovery(built, db_session, monkeypatch):
+    from packages.desktop import local_models as lm
+
+    def _model(name, tools=True):
+        return lm.LocalModel(id=f"ollama/{name}", runtime="ollama", name=name, api_base="http://127.0.0.1:11434",
+                             context=8192, tools=tools, vision=False)
+
+    found = [lm.Runtime("ollama", "Ollama", "127.0.0.1:11434", True, (_model("a"), _model("b", tools=False)))]
+
+    async def _discover(**_kw):
+        lm.remember(found)
+        return found
+
+    monkeypatch.delenv("ORCA_NO_LOCAL_MODELS")
+    monkeypatch.setattr(lm, "discover", _discover)
+    await _save(db_session)
+    first = await router_cache.get_router(db_session)
+    local = [d for d in built[-1]["deployments"] if d.provider == "local"]
+    assert [d.model_name for d in local] == ["ollama/a"]  # default: models with tools
+    assert await router_cache.get_router(db_session) is first
+
+    await _save(db_session, local_models=["ollama/b"])  # the user's choice
+    await router_cache.get_router(db_session)
+    assert [d.model_name for d in built[-1]["deployments"] if d.provider == "local"] == ["ollama/b"]
+
+    found = [lm.Runtime("ollama", "Ollama", "127.0.0.1:11434", False)]  # Ollama stopped
+    await router_cache.get_router(db_session)
+    assert not [d for d in built[-1]["deployments"] if d.provider == "local"]
+
+
+async def test_servers_never_look_for_local_models(built, db_session, monkeypatch):
+    from packages.desktop import local_models as lm
+
+    async def _discover(**_kw):
+        raise AssertionError("no discovery outside the desktop app")
+
+    monkeypatch.delenv("ORCA_NO_LOCAL_MODELS")
+    monkeypatch.delenv("ORCA_DESKTOP_MODE")
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(lm, "discover", _discover)
+    await _save(db_session)
+    await router_cache.get_router(db_session)
+
+
 async def test_switching_hosted_models_rebuilds_with_paid_models(built, db_session, monkeypatch):
     monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-x")
     config.get_settings.cache_clear()

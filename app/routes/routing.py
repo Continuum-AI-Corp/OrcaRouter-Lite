@@ -16,7 +16,7 @@ from packages.db.models.routing_config import RoutingConfig
 
 router = APIRouter(prefix="/v1/routing", tags=["routing"])
 
-VALID_STRATEGIES = {"balanced", "cheapest", "fastest", "quality"}
+VALID_STRATEGIES = {"balanced", "cheapest", "fastest", "quality", "local_first"}
 
 
 class UpdateRouting(BaseModel):

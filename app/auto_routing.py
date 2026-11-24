@@ -121,7 +121,13 @@ STRATEGY_TO_LITELLM: dict[str, str | None] = {
     "cheapest": "cost-based-routing",
     "fastest": None,
     "quality": None,
+    # Ranked here like cheapest, behind the local models that fit.
+    "local_first": None,
 }
+
+LOCAL_FIRST = "local_first"
+# Provider id of models running on this computer (packages/desktop/local_models.py).
+LOCAL_PROVIDER = "local"
 
 
 @dataclass(frozen=True)
@@ -309,19 +315,23 @@ def choose_auto_model(
 
     `free_first` (the desktop app's "free" hosted mode) puts the free models
     first, ahead of the strategy's ranking of everything else; those don't
-    count toward `top_n`. `context_limits` + `prompt_tokens` rule out a
+    count toward `top_n`. The "local_first" strategy puts models on this
+    computer (provider "local") ahead even of those, and ranks the rest like
+    `cheapest`; other strategies only use a local model the user prefers by
+    name. `context_limits` + `prompt_tokens` rule out a
     model whose usable context (in tokens) the prompt would exceed.
     """
     limits = context_limits or {}
+    preferred_set = set(preferred_models or [])
+    local_first = strategy == LOCAL_FIRST
     eligible = [
         m for m in candidates
         if m.id in deployable
         and _model_meets(m, needs)
-        and (_blended_cost(m) > 0 or is_free_hosted(m.id))
+        and _may_auto_pick(m, local_first=local_first, preferred=preferred_set)
         and not (prompt_tokens and m.id in limits and prompt_tokens > limits[m.id])
     ]
     if preferred_models:
-        preferred_set = set(preferred_models)
         narrowed = [m for m in eligible if m.id in preferred_set]
         if narrowed:
             eligible = narrowed
@@ -341,14 +351,19 @@ def choose_auto_model(
     # lead in their fixed order, whatever the strategy (they have no
     # benchmark scores, so balanced/fastest would otherwise drop them), and
     # the strategy ranks everything else behind them as fallbacks.
-    free_lead: list[CatalogModel] = []
-    if free_first:
-        free_lead = sorted(
+    # Local first (P2 · D1): models on this computer that fit the request go
+    # before everything, then the free models, then the cheapest cloud.
+    lead: list[CatalogModel] = []
+    if local_first:
+        lead = sorted((m for m in eligible if m.provider == LOCAL_PROVIDER), key=lambda m: m.id)
+        eligible = [m for m in eligible if m.provider != LOCAL_PROVIDER]
+    if free_first or local_first:
+        lead += sorted(
             (m for m in eligible if is_free_hosted(m.id)), key=lambda m: _free_rank(m.id)
         )
         eligible = [m for m in eligible if not is_free_hosted(m.id)]
-        if not eligible:
-            return [m.id for m in free_lead], {m.id: _cheapest_breakdown(m) for m in free_lead}
+    if lead and not eligible:
+        return [m.id for m in lead], {m.id: _cheapest_breakdown(m) for m in lead}
 
     # Per-strategy: sort `eligible` (which may shrink under strict-coverage)
     # AND build a per-model `scoring_per_model` dict keyed by id. Dedupe +
@@ -499,10 +514,19 @@ def choose_auto_model(
     final_ids = [m.id for m in final]
     # Filter scoring to survivors only — sibling-deduped models drop out.
     scoring = {mid: scoring_per_model[mid] for mid in final_ids if mid in scoring_per_model}
-    if free_lead:
-        scoring.update({m.id: _cheapest_breakdown(m) for m in free_lead})
-        final_ids = [m.id for m in free_lead] + final_ids
+    if lead:
+        scoring.update({m.id: _cheapest_breakdown(m) for m in lead})
+        final_ids = [m.id for m in lead] + final_ids
     return final_ids, scoring
+
+
+def _may_auto_pick(m: CatalogModel, *, local_first: bool, preferred: set[str]) -> bool:
+    """Zero-priced models are litellm's unpriced rows (not free), except
+    OrcaRouter's free models and models on this computer — and those only
+    under local_first or when the user prefers them by name."""
+    if m.provider == LOCAL_PROVIDER:
+        return local_first or m.id in preferred
+    return _blended_cost(m) > 0 or is_free_hosted(m.id)
 
 
 def _free_rank(model_id: str) -> int:

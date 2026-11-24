@@ -193,25 +193,27 @@ _cache_lock = asyncio.Lock()
 class RouterInputs:
     """What the router is built from besides provider keys and routing config.
 
-    In desktop mode these come from the app's stored settings (and later,
-    locally discovered models), which change without a restart: the cached
-    router is rebuilt whenever they differ from what it was built with.
-    Environment variables win over stored router knobs, so a server's
+    In desktop mode these come from the app's stored settings and from the
+    models found running on this computer, which change without a restart:
+    the cached router is rebuilt whenever they differ from what it was built
+    with. Environment variables win over stored router knobs, so a server's
     `.env` keeps meaning what it says.
     """
 
     num_retries: int
     cooldown_seconds: float
     hosted_models: str = "all"
+    local: tuple = ()
 
 
 async def router_inputs(session, settings) -> RouterInputs:
     num_retries = settings.router_num_retries_default
     hosted_models = "all"
     cooldown = float(settings.router_cooldown_seconds)
+    local: tuple = ()
     if settings.orca_desktop_mode:
         from app.seed import DEFAULT_WORKSPACE_ID
-        from packages.desktop import prefs
+        from packages.desktop import local_models, prefs
 
         p = await prefs.load(session, DEFAULT_WORKSPACE_ID)
         hosted_models = p.hosted_models
@@ -220,7 +222,12 @@ async def router_inputs(session, settings) -> RouterInputs:
             num_retries = p.router_num_retries
         if p.router_cooldown_seconds is not None and "router_cooldown_seconds" not in explicit:
             cooldown = float(p.router_cooldown_seconds)
-    return RouterInputs(num_retries=num_retries, cooldown_seconds=cooldown, hosted_models=hosted_models)
+        if not local_models.disabled():
+            found = [m for r in await local_models.discover() for m in r.models]
+            local = tuple(local_models.enabled(found, p.local_models))
+    return RouterInputs(
+        num_retries=num_retries, cooldown_seconds=cooldown, hosted_models=hosted_models, local=local,
+    )
 
 
 async def get_router(session) -> object:
@@ -260,6 +267,10 @@ async def get_router(session) -> object:
             settings=settings,
             hosted_models=inputs.hosted_models,
         )
+        if inputs.local:
+            from packages.desktop import local_models
+
+            deployments += local_models.deployments(list(inputs.local))
 
         routing_row = (
             await session.execute(
