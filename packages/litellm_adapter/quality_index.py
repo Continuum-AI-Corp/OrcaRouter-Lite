@@ -719,7 +719,10 @@ async def get_quality_index(
     from app.config import get_settings
 
     s = get_settings()
-    api_key = s.artificial_analysis_api_key
+    # The environment variable, or the key saved in the desktop app.
+    from app.benchmark_key import effective_key
+
+    api_key = effective_key()
     if not api_key:
         return _apply_static_baseline(QualityIndex(
             scores={}, fetched_at=0.0, source="missing-key",

@@ -83,10 +83,12 @@ def _no_local_model_discovery(monkeypatch):
     monkeypatch.setenv("ORCA_NO_LOCAL_MODELS", "1")
     yield
     try:
+        from app import benchmark_key
         from packages.desktop import hosted_state, local_models
 
         local_models.reset()
         hosted_state.reset()
+        benchmark_key.reset()
     except Exception:
         pass
 

@@ -397,6 +397,40 @@ async def put_settings_route(
     return updated.model_dump()
 
 
+# ── benchmark key (Artificial Analysis) ─────────────────────────────────
+
+
+class BenchmarkKey(BaseModel):
+    api_key: str | None = Field(default=None, max_length=512)
+
+
+@router.get("/benchmark-key")
+async def get_benchmark_key(
+    _kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whether a key is set and where it comes from; never the key."""
+    from app import benchmark_key
+
+    await benchmark_key.ensure_loaded(db)
+    return benchmark_key.status()
+
+
+@router.put("/benchmark-key")
+async def put_benchmark_key(
+    body: BenchmarkKey,
+    kc: KeyContext = Depends(require_app_caller),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Save (or with null, clear) the key, encrypted. The environment
+    variable, when set, still wins."""
+    from app import benchmark_key
+
+    async with _SETTINGS_WRITE_LOCK:  # same row as the settings; don't interleave
+        await benchmark_key.save(db, (body.api_key or "").strip() or None, workspace_id=kc.workspace_id)
+    return benchmark_key.status()
+
+
 # ── provider key check ──────────────────────────────────────────────────
 
 
