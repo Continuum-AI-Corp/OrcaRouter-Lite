@@ -1,24 +1,50 @@
 // First-run setup: pick agents, choose where requests go, set a daily alert.
 // Also reopened later from the menu, so it starts from the current settings.
-import { createEngine, native } from "./api.js";
+import { createEngine, native, setupCalls } from "./api.js";
 import {
   AGENT_COLORS,
   NO_AGENTS_TEXT,
-  SETUP_PROVIDERS,
   agentLogo,
   agentNote,
   agentRows,
   collectProviderKeys,
   keyCheckOutcome,
 } from "./lib.js";
+import {
+  BADGE_MARKDOWN,
+  byokProviders,
+  createClipboardOffers,
+  localChoice,
+  localRuntime,
+  maskOrcaKey,
+  savedKeyResult,
+  setupLinkConfirmation,
+  setupRoutes,
+  setupWithRef,
+  strategyChange,
+} from "./setup-lib.js";
 
-const PROVIDER_NAMES = { ...Object.fromEntries(SETUP_PROVIDERS.map((p) => [p.id, p.name])), orcarouter: "OrcaRouter" };
 const TICK =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg>';
+const HOSTED_ROUTES = new Set(["hosted", "local_hosted"]);
 
 const engine = createEngine();
+const calls = setupCalls(engine);
 const $ = (id) => document.getElementById(id);
-const state = { agents: [], providers: [], keyWarnings: [], tokenUrl: "https://www.orcarouter.ai/console/token" };
+const state = {
+  agents: [],
+  providers: [], // ids that already have a key
+  byok: [], // the engine's provider list, as setup shows it
+  names: { orcarouter: "OrcaRouter" },
+  keyResults: [],
+  tokenUrl: setupWithRef("https://www.orcarouter.ai/console/token"),
+  strategy: null,
+  initialRoute: "hosted",
+  runtime: null,
+  hostedSaved: false,
+  loaded: false,
+};
+const offers = createClipboardOffers();
 
 function agentItem(row, agent) {
   const connectable = row.state === "available" && row.setup === "auto";
@@ -88,8 +114,12 @@ function agentItem(row, agent) {
   return li;
 }
 
+function agentBoxes() {
+  return [...document.querySelectorAll(".agents input[type=checkbox]:not(:disabled)")];
+}
+
 function selectedAgents() {
-  return [...document.querySelectorAll(".agents input[type=checkbox]:checked:not(:disabled)")].map((i) => i.value);
+  return agentBoxes().filter((i) => i.checked).map((i) => i.value);
 }
 
 function route() {
@@ -102,17 +132,122 @@ function updateButton() {
   $("go").textContent = n === 0 ? (setUp ? "Save changes" : "Save") : n === 1 ? "Connect 1 agent" : `Connect ${n} agents`;
 }
 
+// ── step 2: where requests go ──
+
+function showRoutes() {
+  const { routes, selected } = setupRoutes({ runtime: state.runtime, providers: state.providers, strategy: state.strategy });
+  for (const label of document.querySelectorAll(".choice[data-route]")) label.hidden = !routes.includes(label.dataset.route);
+  if (state.runtime) {
+    const text = localChoice(state.runtime);
+    $("route-local-hosted").textContent = text.title;
+    $("route-local-hosted-d").textContent = text.body;
+  }
+  document.querySelector(`input[name="route"][value="${selected}"]`).checked = true;
+  state.initialRoute = selected;
+  placeKeyBlock();
+}
+
+// The OrcaRouter key step sits under whichever OrcaRouter choice is selected.
+function placeKeyBlock() {
+  const slot = document.querySelector(`.choice[data-route="${route() === "local_hosted" ? "local_hosted" : "hosted"}"] [data-key-slot]`);
+  if (slot && $("orca-key").parentElement !== slot) slot.append($("orca-key"));
+}
+
+for (const input of document.querySelectorAll('input[name="route"]')) input.addEventListener("change", placeKeyBlock);
+
+// ── own API keys: a chip per provider, a key row per chosen one ──
+
+function renderProviderChips(pressed) {
+  const chips = state.byok.map((p) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.dataset.provider = p.id;
+    chip.textContent = p.name;
+    if (p.isNew) chip.classList.add("new");
+    const added = state.providers.includes(p.id);
+    if (added) chip.classList.add("added");
+    const extra = [p.isNew ? "new" : "", added ? "key added" : ""].filter(Boolean).join(", ");
+    if (extra) {
+      const sr = document.createElement("span");
+      sr.className = "sr-only";
+      sr.textContent = ` (${extra})`;
+      chip.append(sr);
+    }
+    chip.setAttribute("aria-pressed", "false");
+    chip.addEventListener("click", () => toggleProvider(p.id, true));
+    return chip;
+  });
+  $("provider-chips").replaceChildren(...chips);
+  for (const id of pressed) toggleProvider(id, false);
+}
+
+function toggleProvider(id, focus) {
+  const chip = document.querySelector(`#provider-chips [data-provider="${id}"]`);
+  const existing = document.querySelector(`#key-rows .key-row[data-provider="${id}"]`);
+  if (existing) {
+    existing.remove();
+    chip?.setAttribute("aria-pressed", "false");
+    return;
+  }
+  const p = state.byok.find((x) => x.id === id);
+  if (!p) return;
+  chip?.setAttribute("aria-pressed", "true");
+  const row = document.createElement("span");
+  row.className = "key-row";
+  row.dataset.provider = id;
+  const label = document.createElement("label");
+  label.htmlFor = `key-${id}`;
+  label.textContent = p.name;
+  const input = document.createElement("input");
+  input.className = "text";
+  input.id = `key-${id}`;
+  input.type = "password";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = p.placeholder;
+  row.append(label, input);
+  if (!p.checkable) {
+    const note = document.createElement("small");
+    note.className = "fine";
+    note.textContent = `${p.name} has no key check, so Orca saves it without checking.`;
+    row.append(note);
+  }
+  // Keep rows in the list's order, whatever order they were picked in.
+  const order = state.byok.map((x) => x.id);
+  const after = [...$("key-rows").children].find((r) => order.indexOf(r.dataset.provider) > order.indexOf(id));
+  $("key-rows").insertBefore(row, after || null);
+  if (focus) input.focus();
+}
+
+function keyRows() {
+  return [...document.querySelectorAll("#key-rows .key-row")].map((row) => {
+    const p = state.byok.find((x) => x.id === row.dataset.provider);
+    return { provider: p.id, name: p.name, checkable: p.checkable, key: row.querySelector("input").value, input: row.querySelector("input") };
+  });
+}
+
+// ── load ──
+
 async function load() {
   try {
-    const [agents, summary, settings, hosted] = await Promise.all([
+    const [agents, summary, settings, hosted, supported, local, routing] = await Promise.all([
       engine.agents(),
       engine.summary(),
       engine.settings(),
       engine.hosted().catch(() => null),
+      calls.supportedProviders().catch(() => null),
+      calls.localRuntimes().catch(() => null),
+      calls.routing().catch(() => null),
     ]);
     state.agents = agents.agents;
-    state.providers = (summary.providers || []).map((p) => p.provider);
-    if (hosted?.token_url) state.tokenUrl = hosted.token_url;
+    if (hosted?.token_url) state.tokenUrl = setupWithRef(hosted.token_url);
+    state.byok = byokProviders(supported);
+    for (const p of state.byok) state.names[p.id] = p.name;
+    // Providers with a key; the summary can also list "unknown" from old requests.
+    state.providers = (summary.providers || []).map((p) => p.provider).filter((id) => !state.byok.length || id in state.names);
+    state.runtime = localRuntime(local);
+    state.strategy = routing?.strategy || null;
     // Start from what's saved: never silently reset someone's alert.
     const cents = settings.daily_budget_cents;
     $("budget").value = cents === null || cents === undefined ? "" : String(cents / 100);
@@ -147,10 +282,16 @@ async function load() {
     $("setup-title").textContent = "You're already set up";
     $("setup-lede").textContent = "Change anything below. Leave a field empty to keep what you have.";
     $("providers-ready").hidden = false;
-    $("providers-ready").textContent = `Already added: ${state.providers.map((p) => PROVIDER_NAMES[p] || p).join(", ")}. Adding a key here is optional.`;
-    if (!state.providers.includes("orcarouter")) document.querySelector('input[name="route"][value="byok"]').checked = true;
+    $("providers-ready").textContent = `Already added: ${state.providers.map((p) => state.names[p] || p).join(", ")}. Adding a key here is optional.`;
   }
+  if (!state.byok.length) {
+    $("byok-fine").textContent = "Couldn't load the provider list. Close setup and open it again.";
+  }
+  renderProviderChips(state.providers.length ? [] : ["anthropic", "openai"].filter((id) => state.byok.some((p) => p.id === id)));
+  showRoutes();
   updateButton();
+  state.loaded = true;
+  native.onLink(showLinkSheet);
 }
 
 function setStatus(text, isError = false) {
@@ -177,86 +318,31 @@ function invalidEl(input, message) {
   return false;
 }
 
-// ── own API keys: one row per provider ──
-
-function keyRow(providerId) {
-  const row = document.createElement("span");
-  row.className = "key-row";
-  const select = document.createElement("select");
-  select.className = "text";
-  select.setAttribute("aria-label", "Provider");
-  for (const p of SETUP_PROVIDERS) select.append(new Option(p.name, p.id, false, p.id === providerId));
-  const input = document.createElement("input");
-  input.className = "text";
-  input.type = "password";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  const placeholder = () => {
-    const p = SETUP_PROVIDERS.find((x) => x.id === select.value);
-    input.placeholder = p.placeholder;
-    input.setAttribute("aria-label", `${p.name} key`);
-  };
-  select.addEventListener("change", placeholder);
-  placeholder();
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "btn btn-ghost btn-sm remove";
-  remove.textContent = "Remove";
-  remove.addEventListener("click", () => {
-    row.remove();
-    syncKeyRows();
-  });
-  row.append(select, input, remove);
-  return row;
-}
-
-function keyRows() {
-  return [...document.querySelectorAll("#key-rows .key-row")].map((row) => ({
-    provider: row.querySelector("select").value,
-    key: row.querySelector("input").value,
-    input: row.querySelector("input"),
-  }));
-}
-
-function syncKeyRows() {
-  const rows = document.querySelectorAll("#key-rows .key-row");
-  for (const r of rows) r.querySelector(".remove").hidden = rows.length === 1;
-  $("add-key").hidden = rows.length >= SETUP_PROVIDERS.length;
-}
-
-function addKeyRow() {
-  const used = new Set(keyRows().map((r) => r.provider));
-  const next = SETUP_PROVIDERS.find((p) => !used.has(p.id)) || SETUP_PROVIDERS[0];
-  const row = keyRow(next.id);
-  $("key-rows").append(row);
-  syncKeyRows();
-  return row;
-}
-
-$("key-rows").append(keyRow("anthropic"), keyRow("openai"));
-syncKeyRows();
-$("add-key").addEventListener("click", () => addKeyRow().querySelector("input").focus());
-
-// Check a key with its provider, then save it. False stops setup.
-async function checkAndSave(provider, key, input) {
-  const name = PROVIDER_NAMES[provider] || provider;
-  setStatus(`Checking your ${name} key…`);
+// Check a key with its provider (when it has a check), then save it.
+// False stops setup.
+async function checkAndSave(provider, key, input, checkable = true) {
+  const name = state.names[provider] || provider;
   let result = null;
-  try {
-    result = await engine.checkProviderKey(provider, key);
-  } catch {
-    result = null; // an engine that can't check still saves the key
-  }
+  if (checkable) {
+    setStatus(`Checking your ${name} key…`);
+    try {
+      result = await engine.checkProviderKey(provider, key);
+    } catch {
+      result = null; // an engine that can't check still saves the key
+    }
+  } else setStatus(`Saving your ${name} key…`);
   const outcome = keyCheckOutcome(result);
   if (!outcome.save) return invalidEl(input, outcome.warn);
-  if (outcome.warn) state.keyWarnings.push(outcome.warn);
   await engine.setProviderKey(provider, key);
+  offers.seen(key);
+  state.keyResults.push(savedKeyResult(name, checkable ? result || { status: "unreachable", detail: `Couldn't check the ${name} key; it's saved anyway.` } : null));
   return true;
 }
 
 async function saveProviders() {
   const haveAny = state.providers.length > 0;
-  if (route() === "company") {
+  const r = route();
+  if (r === "company") {
     const url = field("gateway-url");
     const key = field("gateway-key");
     if (!url) return invalid("gateway-url", "Enter the gateway address your platform team gave you.");
@@ -270,27 +356,203 @@ async function saveProviders() {
     state.joinedGateway = true;
     return true;
   }
-  if (route() === "hosted") {
+  if (r === "local_only") return true;
+  if (HOSTED_ROUTES.has(r)) {
+    if (state.hostedSaved) return true;
     const key = field("hosted-key");
-    if (!key) return haveAny ? true : invalid("hosted-key", "Paste your OrcaRouter key, or choose your own API keys.");
+    const hasHosted = state.providers.includes("orcarouter");
+    if (!key) {
+      if (r === "local_hosted") return hasHosted ? true : invalid("hosted-key", "Get your OrcaRouter key, or choose Only this computer.");
+      return haveAny ? true : invalid("hosted-key", "Get your OrcaRouter key, or choose your own API keys.");
+    }
     if (!key.startsWith("sk-orca-")) return invalid("hosted-key", "OrcaRouter keys start with sk-orca-.");
     return checkAndSave("orcarouter", key, $("hosted-key"));
   }
   const rows = keyRows();
-  for (const r of rows) {
-    r.input.classList.remove("invalid");
-    r.input.removeAttribute("aria-invalid");
+  for (const row of rows) {
+    row.input.classList.remove("invalid");
+    row.input.removeAttribute("aria-invalid");
   }
   const { keys, error } = collectProviderKeys(rows);
   if (error) return invalidEl(rows[error.index].input, error.message);
-  if (!keys.length && !haveAny) return invalidEl(rows[0].input, "Add at least one provider key.");
+  if (!keys.length && !haveAny) {
+    if (rows.length) return invalidEl(rows[0].input, "Add at least one provider key.");
+    $("provider-chips").querySelector("button")?.focus();
+    setStatus("Choose a provider and add its key.", true);
+    return false;
+  }
   for (const k of keys) {
-    if (!(await checkAndSave(k.provider, k.key, rows[k.index].input))) return false;
+    if (!(await checkAndSave(k.provider, k.key, rows[k.index].input, rows[k.index].checkable))) return false;
   }
   return true;
 }
 
+// Local choices turn on the "local first" strategy; leaving them turns it off.
+async function saveStrategy(results) {
+  const r = route();
+  const next = strategyChange(state.initialRoute, r, state.strategy);
+  if (next) {
+    await calls.setStrategy(next);
+    state.strategy = next;
+  }
+  if (r === "local_hosted") results.push({ name: "Local models", ok: true, text: `${state.runtime.name} first, then OrcaRouter` });
+  if (r === "local_only") results.push({ name: "Local models", ok: true, text: `Only ${state.runtime.name} on this computer` });
+}
+
 $("get-key").addEventListener("click", () => native.openExternal(state.tokenUrl));
+
+// ── H1: an OrcaRouter key on the clipboard, offered when the window regains focus ──
+
+let offered = null;
+
+async function onFocus() {
+  if (!state.loaded || offered || state.hostedSaved || !$("done").hidden || !HOSTED_ROUTES.has(route())) return;
+  let text = null;
+  try {
+    text = await native.clipboardOrcaKey();
+  } catch {
+    return;
+  }
+  const key = offers.onFocus(text);
+  if (!key || state.hostedSaved || !HOSTED_ROUTES.has(route())) return;
+  offered = key;
+  $("clip-offer-key").textContent = maskOrcaKey(key);
+  $("clip-offer").classList.remove("err");
+  $("clip-offer-err").hidden = true;
+  $("clip-offer-text").hidden = false;
+  $("clip-offer").querySelector(".offer-actions").hidden = false;
+  $("clip-no").disabled = false;
+  $("clip-use").disabled = false;
+  $("clip-offer").hidden = false;
+  $("key-live").textContent = `OrcaRouter key found on your clipboard (${maskOrcaKey(key)}). Use it?`;
+}
+
+window.addEventListener("focus", onFocus);
+
+$("clip-no").addEventListener("click", () => {
+  // Declined: the clipboard stays as it is and this key isn't offered again.
+  offered = null;
+  $("clip-offer").hidden = true;
+  $("key-live").textContent = "";
+  $("get-key").focus();
+});
+
+$("clip-use").addEventListener("click", async () => {
+  const key = offered;
+  if (!key) return;
+  $("clip-no").disabled = true;
+  $("clip-use").disabled = true;
+  setStatus("Checking your OrcaRouter key…");
+  let result = null;
+  try {
+    result = await engine.checkProviderKey("orcarouter", key);
+  } catch {
+    result = null;
+  }
+  const outcome = keyCheckOutcome(result);
+  if (!outcome.save) {
+    offered = null;
+    $("clip-offer").classList.add("err");
+    $("clip-offer-text").hidden = true;
+    $("clip-offer-err").textContent = outcome.warn;
+    $("clip-offer-err").hidden = false;
+    $("clip-offer").querySelector(".offer-actions").hidden = true;
+    setStatus(outcome.warn, true);
+    $("key-live").textContent = outcome.warn;
+    $("hosted-key").focus();
+    return;
+  }
+  try {
+    await engine.setProviderKey("orcarouter", key);
+  } catch (err) {
+    offered = null;
+    $("clip-offer").hidden = true;
+    setStatus(err.message, true);
+    return;
+  }
+  await native.clearClipboard(key).catch(() => {});
+  offered = null;
+  state.hostedSaved = true;
+  if (!state.providers.includes("orcarouter")) state.providers.push("orcarouter");
+  state.keyResults.push(savedKeyResult("OrcaRouter", result));
+  $("clip-offer").hidden = true;
+  $("get-key").parentElement.hidden = true;
+  $("hosted-key").hidden = true;
+  const checked = result?.status === "valid";
+  $("key-saved").querySelector("b").textContent = checked ? "Key works." : "Key saved.";
+  $("key-saved-text").textContent = checked
+    ? "Checked with OrcaRouter and saved in your keychain. The clipboard was cleared."
+    : `${outcome.warn || "Orca couldn't check it with OrcaRouter."} The clipboard was cleared.`;
+  $("key-saved").hidden = false;
+  $("key-live").textContent = $("key-saved").textContent;
+  setStatus("");
+  updateButton();
+  $("go").focus();
+});
+
+// ── V3: orca://setup links fill in the form; only the user's click acts ──
+
+let lastFocus = null;
+
+function showLinkSheet(link) {
+  const c = setupLinkConfirmation(link, state.agents);
+  if (!c) return;
+  state.link = c;
+  $("link-text").textContent = c.text;
+  $("link-skipped").hidden = c.skipped.length === 0;
+  $("link-skipped").textContent = c.skipped.length ? `Orca can't connect these here: ${c.skipped.join(", ")}.` : "";
+  lastFocus = document.activeElement;
+  $("setup-form").inert = true;
+  $("setup-header").inert = true;
+  $("link-sheet").hidden = false;
+  $("link-continue").focus();
+}
+
+function closeLinkSheet() {
+  $("link-sheet").hidden = true;
+  $("setup-form").inert = false;
+  $("setup-header").inert = false;
+  state.link = null;
+}
+
+$("link-cancel").addEventListener("click", () => {
+  closeLinkSheet();
+  lastFocus?.focus?.();
+});
+
+$("link-continue").addEventListener("click", () => {
+  const c = state.link;
+  closeLinkSheet();
+  if (!c) return;
+  for (const box of agentBoxes()) {
+    box.checked = c.agents.includes(box.value);
+    box.closest(".agent")?.classList.toggle("on", box.checked);
+  }
+  if (c.budgetCents !== null) $("budget").value = String(c.budgetCents / 100);
+  updateButton();
+  setStatus("Filled in from the link. Check it, then click below.");
+  $("go").focus();
+});
+
+$("link-sheet").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    $("link-cancel").click();
+  } else if (e.key === "Tab") {
+    // Keep focus on the two buttons while the sheet is open.
+    const first = $("link-cancel");
+    const last = $("link-continue");
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+});
+
+// ── save ──
 
 $("setup-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -304,9 +566,10 @@ $("setup-form").addEventListener("submit", async (e) => {
   $("skip").disabled = true;
   setStatus("Saving…");
   const results = [];
-  state.keyWarnings = [];
+  state.keyResults = state.keyResults.filter((r) => r.name === "OrcaRouter key" && state.hostedSaved);
   try {
     if (!(await saveProviders())) return;
+    await saveStrategy(results);
     await engine.saveSettings({
       daily_budget_cents: raw === "" ? null : Math.round(dollars * 100),
       budget_mode: raw !== "" && $("budget-stop").checked ? "stop" : "alert",
@@ -327,8 +590,7 @@ $("setup-form").addEventListener("submit", async (e) => {
     }
     await native.finishSetup().catch(() => {});
     if (state.joinedGateway) results.push({ name: "Team gateway", ok: true, text: "Agents connected" });
-    for (const w of state.keyWarnings) results.push({ name: "Provider key", ok: false, text: w });
-    showDone(results);
+    showDone([...results, ...state.keyResults]);
   } catch (err) {
     setStatus(err.message, true);
   } finally {
@@ -353,9 +615,40 @@ function showDone(results) {
     }),
   );
   $("results").hidden = results.length === 0;
+  $("badge-md").textContent = BADGE_MARKDOWN;
   $("done").hidden = false;
   $("close").focus();
 }
+
+// ── V6: the README badge ──
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Older webviews: copy the selected text instead.
+    const range = document.createRange();
+    range.selectNodeContents($("badge-md"));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand("copy");
+    sel.removeAllRanges();
+    return ok;
+  }
+}
+
+let copiedTimer = null;
+$("badge-copy").addEventListener("click", async () => {
+  const ok = await copyText(BADGE_MARKDOWN);
+  $("badge-copy").textContent = ok ? "Copied" : "Select and copy";
+  $("badge-live").textContent = ok ? "Badge Markdown copied." : "Couldn't copy. Select the text and copy it.";
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    $("badge-copy").textContent = "Copy";
+  }, 2000);
+});
 
 function close() {
   if (native.available()) native.invoke("close_setup");
