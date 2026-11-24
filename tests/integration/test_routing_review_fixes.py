@@ -75,3 +75,15 @@ async def test_out_of_credit_agent_falls_back_to_own_keys_not_orcarouter(engine)
     r = await engine.chat(key, {**PING, "model": "claude-sonnet-4-6"})
     assert r.status_code == 200
     assert set(_chain(engine.router.calls[-1])) <= {"gpt-4o-mini"}
+
+
+async def test_with_paid_models_on_auto_still_goes_free_then_own_keys_then_paid_orcarouter(engine):
+    # "Use paid models" mustn't make ordinary requests paid: free models
+    # still come first and the user's own key (gpt-4.1, dearer than kimi-k2.6)
+    # before any paid OrcaRouter model.
+    await engine.settings(hosted_models="all")
+    engine.router = FakeRouter([
+        *hosted("deepseek/deepseek-v4-pro-free", "kimi-k2.6"), *own("openai", "gpt-4.1"),
+    ])
+    await engine.chat(engine.root_key, PING)
+    assert _chain(engine.router.calls[-1]) == ["deepseek/deepseek-v4-pro-free", "gpt-4.1", "kimi-k2.6"]

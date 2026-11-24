@@ -81,3 +81,23 @@ def test_free_mode_builds_only_free_hosted_deployments(monkeypatch):
     assert any(d.provider == "openai" for d in free)  # own keys unaffected
     everything = build_deployments(env_keys={}, db_keys=[], settings=s, hosted_models="all")
     assert "claude-sonnet-4.6" in {d.model_name for d in everything}
+
+
+def test_paid_orcarouter_models_come_after_every_own_key_model():
+    # With paid models on, OrcaRouter is the backup: a cheap paid hosted
+    # model mustn't jump ahead of the user's own keys.
+    paid = {"kimi-k2.6", "glm-5"} & {m.id for m in CATALOG} or {"kimi-k2.6"}
+    own = {"gpt-4o-mini", "gpt-4.1"}
+    ids, _ = choose_auto_model(needs=set(), deployable={*FREE, *own, *paid}, candidates=CATALOG,
+                               strategy="cheapest", free_first=True, hosted_last=paid)
+    assert ids[:4] == FREE
+    rest = ids[4:]
+    assert set(rest[: len(own)]) == own
+    assert set(rest[len(own):]) <= paid and rest[len(own):]
+
+
+def test_one_paid_orcarouter_model_stays_in_reach_when_own_keys_fill_the_list():
+    own = {"gpt-4o-mini", "gpt-4.1", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano", "o3-mini"} & {m.id for m in CATALOG}
+    ids, _ = choose_auto_model(needs=set(), deployable={*own, "kimi-k2.6"}, candidates=CATALOG,
+                               strategy="cheapest", hosted_last={"kimi-k2.6"})
+    assert len(ids) == 5 and ids[-1] == "kimi-k2.6"

@@ -262,6 +262,7 @@ def choose_auto_model(
     top_n: int = 5,
     free_first: bool = False,
     allow_free_hosted: bool = False,
+    hosted_last: set[str] | frozenset[str] | None = None,
     context_limits: dict[str, int] | None = None,
     prompt_tokens: int = 0,
 ) -> tuple[list[str], dict[str, ScoringDetail]]:
@@ -314,7 +315,10 @@ def choose_auto_model(
     the savings calculation — except OrcaRouter's free models
     (FREE_HOSTED_MODELS), which really are free.
 
-    `free_first` (the desktop app's "free" hosted mode) puts the free models
+    `hosted_last` (the desktop app's paid OrcaRouter models) ranks those
+    after every other model, keeping one as the last fallback.
+
+    `free_first` (the desktop app, with OrcaRouter configured) puts the free models
     first, ahead of the strategy's ranking of everything else; those don't
     count toward `top_n`. The "local_first" strategy puts models on this
     computer (provider "local") ahead even of those, and ranks the rest like
@@ -514,6 +518,16 @@ def choose_auto_model(
         seen_bases.add(base)
         deduped.append(m)
 
+    # The desktop app's paid OrcaRouter models are the backup: every own-key
+    # model is tried before them, whatever they cost, and one stays in reach
+    # (the last fallback) even when own-key models fill the list.
+    if hosted_last:
+        own = [m for m in deduped if m.id not in hosted_last]
+        backup = [m for m in deduped if m.id in hosted_last]
+        if own and backup:
+            deduped = own[: max(top_n - 1, 0)] + backup
+        else:
+            deduped = own or backup
     final = deduped[:top_n]
     final_ids = [m.id for m in final]
     # Filter scoring to survivors only — sibling-deduped models drop out.

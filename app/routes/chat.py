@@ -610,8 +610,11 @@ async def execute_chat(
             quality_scores=quality_scores,
             tps_scores=tps_scores,
             ttft_scores=ttft_scores,
-            free_first=ctx.free_mode,
+            # Free models first in the desktop app whatever the paid-models
+            # setting; paid OrcaRouter models only after every own key.
+            free_first=ctx.desktop,
             allow_free_hosted=ctx.desktop,
+            hosted_last=desktop_routing.paid_hosted_only(ctx),
             context_limits=desktop_routing.context_limits(ctx),
             prompt_tokens=prompt_tokens,
         )

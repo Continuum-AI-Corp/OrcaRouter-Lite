@@ -113,6 +113,14 @@ def own_first_weights(ctx: RoutingContext, groups: Iterable[str]) -> dict[str, d
     return out
 
 
+def paid_hosted_only(ctx: RoutingContext) -> frozenset[str]:
+    """Models only OrcaRouter serves, at a price: auto's last resort in the
+    desktop app (own keys first; OrcaRouter is the backup)."""
+    if not ctx.desktop:
+        return frozenset()
+    return frozenset(n for n in ctx.hosted_only if not is_free_hosted(n))
+
+
 def context_limits(ctx: RoutingContext) -> dict[str, int]:
     """Usable context per model, for models whose limit routing must respect:
     the free hosted models and the models on this computer."""
