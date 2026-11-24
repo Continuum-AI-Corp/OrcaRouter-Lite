@@ -45,8 +45,9 @@
               <b>Use my own API keys</b>
               <small>Stored encrypted on this computer. Requests go straight to the provider.</small>
               <span class="collapse"><span class="inner"><span class="reveal">
-                <input class="text" id="key-anthropic" type="password" placeholder="Anthropic key (sk-ant-…)" autocomplete="off" spellcheck="false" aria-label="Anthropic key">
-                <input class="text" id="key-openai" type="password" placeholder="OpenAI key (sk-…)" autocomplete="off" spellcheck="false" aria-label="OpenAI key">
+                <span class="key-rows" id="key-rows"></span>
+                <button class="btn btn-ghost btn-sm" type="button" id="add-key">Add another key</button>
+                <small class="fine">Each key is checked with its provider before it's saved. More providers, and how <code>auto</code> picks a model, are in the dashboard (menu → Open dashboard).</small>
               </span></span></span>
             </span>
           </label>

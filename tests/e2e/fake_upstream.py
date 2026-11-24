@@ -11,7 +11,7 @@ import json
 import time
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 CALLS: list[dict] = []
@@ -20,7 +20,10 @@ USAGE = {"prompt_tokens": 200_000, "completion_tokens": 100_000, "total_tokens":
 
 
 @app.get("/v1/models")
-async def models() -> dict:
+async def models(request: Request):
+    # Like a real provider: a wrong key is refused, which setup's key check relies on.
+    if request.headers.get("authorization", "") != "Bearer sk-e2e-upstream":
+        return JSONResponse({"error": {"message": "Incorrect API key provided"}}, status_code=401)
     return {"object": "list", "data": [{"id": "gpt-4o-mini", "object": "model", "owned_by": "e2e"}]}
 
 

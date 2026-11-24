@@ -68,3 +68,11 @@ form { display: flex; flex-direction: column; gap: 14px; }
 
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
 .check-line input { width: 16px; height: 16px; margin: 0; accent-color: var(--brand); }
+
+/* Own API keys: one row per provider */
+.key-rows { display: flex; flex-direction: column; gap: 6px; }
+.key-row { display: grid; grid-template-columns: minmax(0, 9.5rem) minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.key-row select.text { padding-right: 4px; }
+.key-row .remove { padding: 4px 8px; }
+.choice .fine { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; }
+.choice .fine code { font-size: 11px; }

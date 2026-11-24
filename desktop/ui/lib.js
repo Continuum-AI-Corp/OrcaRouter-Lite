@@ -247,3 +247,51 @@ export function agentNote(agent) {
   if (!agent || !agent.note) return { text: "Orca will update its settings", warn: false };
   return { text: agent.note, warn: Boolean(agent.warn) };
 }
+
+// ── setup: provider keys ──
+
+// Providers setup can add a key for; the engine checks each key with the
+// provider before saving it. Every other provider is in the dashboard.
+export const SETUP_PROVIDERS = [
+  { id: "anthropic", name: "Anthropic", placeholder: "Anthropic key (sk-ant-…)" },
+  { id: "openai", name: "OpenAI", placeholder: "OpenAI key (sk-…)" },
+  { id: "google", name: "Google Gemini", placeholder: "Gemini API key (AIza…)" },
+  { id: "deepseek", name: "DeepSeek", placeholder: "DeepSeek key (sk-…)" },
+  { id: "xai", name: "xAI Grok", placeholder: "xAI key (xai-…)" },
+  { id: "mistral", name: "Mistral", placeholder: "Mistral key" },
+  { id: "groq", name: "Groq", placeholder: "Groq key (gsk_…)" },
+  { id: "together", name: "Together", placeholder: "Together key" },
+  { id: "fireworks", name: "Fireworks", placeholder: "Fireworks key (fw_…)" },
+];
+
+const PROVIDER_LABEL = Object.fromEntries(SETUP_PROVIDERS.map((p) => [p.id, p.name]));
+
+// rows: [{provider, key}] as typed. Returns the keys to save, or the first problem.
+export function collectProviderKeys(rows) {
+  const keys = [];
+  const seen = new Set();
+  for (const [index, row] of (rows || []).entries()) {
+    const key = (row.key || "").trim();
+    if (!key) continue;
+    if (seen.has(row.provider)) {
+      const name = PROVIDER_LABEL[row.provider] || row.provider;
+      return { keys, error: { index, message: `You added two ${name} keys. Keep one.` } };
+    }
+    seen.add(row.provider);
+    keys.push({ provider: row.provider, key, index });
+  }
+  return { keys, error: null };
+}
+
+// What to do with a key after the engine checked it with the provider:
+// only a key the provider rejected stops setup; a check that couldn't run
+// still saves the key, with a note.
+export function keyCheckOutcome(result) {
+  if (!result) return { save: true, warn: null };
+  if (result.status === "invalid") return { save: false, warn: result.detail };
+  if (result.status === "unreachable") return { save: true, warn: result.detail };
+  return { save: true, warn: null };
+}
+
+export const NO_AGENTS_TEXT =
+  "No coding agents found yet. Install one (Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Goose and more), then reopen setup.";

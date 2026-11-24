@@ -54,16 +54,15 @@
 
       <section class="block" aria-labelledby="agents-h">
         <h2 class="label" id="agents-h">Coding agents</h2>
+        <section class="manual" id="manual" tabindex="-1" hidden aria-labelledby="manual-title">
+          <div class="manual-head"><b id="manual-title">Finish in Cursor</b><button class="btn btn-ghost btn-sm" id="manual-close" type="button">Done</button></div>
+          <p id="manual-note"></p>
+          <div class="copy-row"><span class="k">Base URL</span><code class="selectable" id="manual-url"></code><button class="btn btn-ghost btn-sm" data-copy="manual-url" type="button" aria-label="Copy base URL">Copy</button></div>
+          <div class="copy-row"><span class="k">API key</span><code class="selectable" id="manual-key"></code><button class="btn btn-ghost btn-sm" data-copy="manual-key" type="button" aria-label="Copy API key">Copy</button></div>
+          <p class="fine">This key is shown once. Disconnect to revoke it.</p>
+        </section>
         <ul class="rows" id="agents"></ul>
         <p class="missing" id="agents-missing" hidden></p>
-      </section>
-
-      <section class="manual" id="manual" hidden aria-labelledby="manual-title">
-        <div class="manual-head"><b id="manual-title">Finish in Cursor</b><button class="btn btn-ghost btn-sm" id="manual-close" type="button">Done</button></div>
-        <p id="manual-note"></p>
-        <div class="copy-row"><span class="k">Base URL</span><code class="selectable" id="manual-url"></code><button class="btn btn-ghost btn-sm" data-copy="manual-url" type="button" aria-label="Copy base URL">Copy</button></div>
-        <div class="copy-row"><span class="k">API key</span><code class="selectable" id="manual-key"></code><button class="btn btn-ghost btn-sm" data-copy="manual-key" type="button" aria-label="Copy API key">Copy</button></div>
-        <p class="fine">This key is shown once. Disconnect to revoke it.</p>
       </section>
 
       <section class="block" aria-labelledby="routing-h">

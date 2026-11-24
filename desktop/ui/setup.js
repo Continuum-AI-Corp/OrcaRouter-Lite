@@ -1,15 +1,24 @@
 // First-run setup: pick agents, choose where requests go, set a daily alert.
 // Also reopened later from the menu, so it starts from the current settings.
 import { createEngine, native } from "./api.js";
-import { AGENT_COLORS, agentLogo, agentNote, agentRows } from "./lib.js";
+import {
+  AGENT_COLORS,
+  NO_AGENTS_TEXT,
+  SETUP_PROVIDERS,
+  agentLogo,
+  agentNote,
+  agentRows,
+  collectProviderKeys,
+  keyCheckOutcome,
+} from "./lib.js";
 
-const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", orcarouter: "OrcaRouter" };
+const PROVIDER_NAMES = { ...Object.fromEntries(SETUP_PROVIDERS.map((p) => [p.id, p.name])), orcarouter: "OrcaRouter" };
 const TICK =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12l5 5L20 6"/></svg>';
 
 const engine = createEngine();
 const $ = (id) => document.getElementById(id);
-const state = { agents: [], providers: [], tokenUrl: "https://www.orcarouter.ai/console/token" };
+const state = { agents: [], providers: [], keyWarnings: [], tokenUrl: "https://www.orcarouter.ai/console/token" };
 
 function agentItem(row, agent) {
   const connectable = row.state === "available" && row.setup === "auto";
@@ -123,7 +132,7 @@ async function load() {
   if (!shown.length) {
     const li = document.createElement("li");
     li.className = "hint";
-    li.textContent = "No coding agents found yet. Install Claude Code or Aider, then reopen setup.";
+    li.textContent = NO_AGENTS_TEXT;
     $("agents").append(li);
   }
   if (missing.length) {
@@ -156,11 +165,92 @@ function field(id) {
 }
 
 function invalid(id, message) {
-  $(id).classList.add("invalid");
-  $(id).setAttribute("aria-invalid", "true");
-  $(id).focus();
+  return invalidEl($(id), message);
+}
+
+function invalidEl(input, message) {
+  input.classList.add("invalid");
+  input.setAttribute("aria-invalid", "true");
+  input.focus();
   setStatus(message, true);
   return false;
+}
+
+// ── own API keys: one row per provider ──
+
+function keyRow(providerId) {
+  const row = document.createElement("span");
+  row.className = "key-row";
+  const select = document.createElement("select");
+  select.className = "text";
+  select.setAttribute("aria-label", "Provider");
+  for (const p of SETUP_PROVIDERS) select.append(new Option(p.name, p.id, false, p.id === providerId));
+  const input = document.createElement("input");
+  input.className = "text";
+  input.type = "password";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const placeholder = () => {
+    const p = SETUP_PROVIDERS.find((x) => x.id === select.value);
+    input.placeholder = p.placeholder;
+    input.setAttribute("aria-label", `${p.name} key`);
+  };
+  select.addEventListener("change", placeholder);
+  placeholder();
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn btn-ghost btn-sm remove";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    row.remove();
+    syncKeyRows();
+  });
+  row.append(select, input, remove);
+  return row;
+}
+
+function keyRows() {
+  return [...document.querySelectorAll("#key-rows .key-row")].map((row) => ({
+    provider: row.querySelector("select").value,
+    key: row.querySelector("input").value,
+    input: row.querySelector("input"),
+  }));
+}
+
+function syncKeyRows() {
+  const rows = document.querySelectorAll("#key-rows .key-row");
+  for (const r of rows) r.querySelector(".remove").hidden = rows.length === 1;
+  $("add-key").hidden = rows.length >= SETUP_PROVIDERS.length;
+}
+
+function addKeyRow() {
+  const used = new Set(keyRows().map((r) => r.provider));
+  const next = SETUP_PROVIDERS.find((p) => !used.has(p.id)) || SETUP_PROVIDERS[0];
+  const row = keyRow(next.id);
+  $("key-rows").append(row);
+  syncKeyRows();
+  return row;
+}
+
+$("key-rows").append(keyRow("anthropic"), keyRow("openai"));
+syncKeyRows();
+$("add-key").addEventListener("click", () => addKeyRow().querySelector("input").focus());
+
+// Check a key with its provider, then save it. False stops setup.
+async function checkAndSave(provider, key, input) {
+  const name = PROVIDER_NAMES[provider] || provider;
+  setStatus(`Checking your ${name} key…`);
+  let result = null;
+  try {
+    result = await engine.checkProviderKey(provider, key);
+  } catch {
+    result = null; // an engine that can't check still saves the key
+  }
+  const outcome = keyCheckOutcome(result);
+  if (!outcome.save) return invalidEl(input, outcome.warn);
+  if (outcome.warn) state.keyWarnings.push(outcome.warn);
+  await engine.setProviderKey(provider, key);
+  return true;
 }
 
 async function saveProviders() {
@@ -183,14 +273,19 @@ async function saveProviders() {
     const key = field("hosted-key");
     if (!key) return haveAny ? true : invalid("hosted-key", "Paste your OrcaRouter key, or choose your own API keys.");
     if (!key.startsWith("sk-orca-")) return invalid("hosted-key", "OrcaRouter keys start with sk-orca-.");
-    await engine.setProviderKey("orcarouter", key);
-    return true;
+    return checkAndSave("orcarouter", key, $("hosted-key"));
   }
-  const anthropic = field("key-anthropic");
-  const openai = field("key-openai");
-  if (!anthropic && !openai && !haveAny) return invalid("key-anthropic", "Add at least one provider key.");
-  if (anthropic) await engine.setProviderKey("anthropic", anthropic);
-  if (openai) await engine.setProviderKey("openai", openai);
+  const rows = keyRows();
+  for (const r of rows) {
+    r.input.classList.remove("invalid");
+    r.input.removeAttribute("aria-invalid");
+  }
+  const { keys, error } = collectProviderKeys(rows);
+  if (error) return invalidEl(rows[error.index].input, error.message);
+  if (!keys.length && !haveAny) return invalidEl(rows[0].input, "Add at least one provider key.");
+  for (const k of keys) {
+    if (!(await checkAndSave(k.provider, k.key, rows[k.index].input))) return false;
+  }
   return true;
 }
 
@@ -208,6 +303,7 @@ $("setup-form").addEventListener("submit", async (e) => {
   $("skip").disabled = true;
   setStatus("Saving…");
   const results = [];
+  state.keyWarnings = [];
   try {
     if (!(await saveProviders())) return;
     await engine.saveSettings({
@@ -227,6 +323,7 @@ $("setup-form").addEventListener("submit", async (e) => {
     }
     await native.finishSetup().catch(() => {});
     if (state.joinedGateway) results.push({ name: "Team gateway", ok: true, text: "Agents connected" });
+    for (const w of state.keyWarnings) results.push({ name: "Provider key", ok: false, text: w });
     showDone(results);
   } catch (err) {
     setStatus(err.message, true);

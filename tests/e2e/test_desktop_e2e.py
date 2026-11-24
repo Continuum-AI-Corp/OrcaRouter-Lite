@@ -52,7 +52,7 @@ EXISTING = {
     f"{_GOOSE_DIR}/config.yaml": "# my goose settings\nGOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet-4-6\n",
 }
 AGENT_DIRS = [".claude", ".codex", ".gemini", ".config/opencode", ".commandcode", ".cline", _HERMES_DIR, ".pi", ".omp",
-              ".config/kilo", ".openclaw", ".kimi-code", _GOOSE_DIR, ".config/zed"]
+              ".config/kilo", ".openclaw", ".kimi-code", _GOOSE_DIR, ".config/zed", ".cursor"]
 AUTO_AGENTS = ["claude-code", "codex", "gemini-cli", "opencode", "command-code", "aider",
                "hermes", "pi", "omp", "kilo", "openclaw", "kimi-code", "goose"]
 MANUAL_AGENTS = {"cline": "OpenAI Compatible", "zed": "openai_compatible"}
@@ -115,7 +115,7 @@ def stack(tmp_path_factory):
     engine = subprocess.Popen([*orca, "up", "--port", str(engine_port), "--exit-with-stdin"], cwd=ROOT, env=env,
                               stdin=subprocess.PIPE, stdout=open(logs / "engine.log", "w"), stderr=subprocess.STDOUT)
     try:
-        _wait(f"http://127.0.0.1:{up_port}/v1/models", upstream, "fake provider")
+        _wait(f"http://127.0.0.1:{up_port}/_calls", upstream, "fake provider")
         _wait(f"http://127.0.0.1:{engine_port}/health", engine, "engine")
         yield {
             "home": home, "orca_home": orca_home, "env": env, "orca": orca, "logs": logs,
@@ -333,6 +333,19 @@ def test_5b_agents_keep_working_with_their_own_model_names(stack):
     assert r.status_code >= 400
 
 
+def test_5c_setup_checks_a_provider_key_before_saving_it(stack):
+    good = _app(stack, "POST", "/v1/app/providers/openai/check", json={"api_key": "sk-e2e-upstream"})
+    assert good.status_code == 200 and good.json()["status"] == "valid", good.text
+    bad = _app(stack, "POST", "/v1/app/providers/openai/check", json={"api_key": "sk-wrong-key"})
+    assert bad.status_code == 200 and bad.json()["status"] == "invalid", bad.text
+    assert "sk-wrong-key" not in bad.text
+    # Agent keys can't use it (it would let a leaked agent key probe other keys).
+    _base, token = _claude(stack["home"])
+    r = httpx.post(f"{stack['base']}/v1/app/providers/openai/check", headers={"Authorization": f"Bearer {token}"},
+                   json={"api_key": "sk-e2e-upstream"}, timeout=10)
+    assert r.status_code == 403
+
+
 def test_6_every_request_reached_the_provider_and_spend_is_per_agent(stack):
     calls = httpx.get(f"{stack['upstream']}/_calls").json()["calls"]
     assert len(calls) >= len(AUTO_AGENTS)
@@ -404,6 +417,41 @@ def test_10_the_panel_connects_and_disconnects_an_agent(stack):
         assert not cfg.exists(), cfg.read_text() if cfg.exists() else ""
     finally:
         proc.kill()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10b_paste_steps_open_where_the_user_can_see_them(stack):
+    # With every agent installed the list is long; the values to paste for a
+    # one-paste-step agent must still appear on screen, not below the fold.
+    script = ROOT / "tests" / "e2e" / "manual_card.cjs"
+    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"], "Cursor"], cwd=ROOT / "desktop",
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
+        pytest.skip("browser unavailable")
+    assert r.returncode == 0, r.stderr[-1500:]
+    report = json.loads(r.stdout.strip().splitlines()[-1])
+    assert report["errors"] == []
+    assert report["title"] == "Finish in Cursor"
+    assert report["onScreen"], report["box"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10c_setup_checks_keys_with_the_provider(stack):
+    script = ROOT / "tests" / "e2e" / "setup_flow.cjs"
+    r = subprocess.run(["node", str(script), stack["base"], stack["app_key"], "sk-e2e-upstream"], cwd=ROOT / "desktop",
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 and "Executable doesn't exist" in r.stderr:
+        pytest.skip("browser unavailable")
+    assert r.returncode == 0, r.stderr[-1500:]
+    report = json.loads(r.stdout.strip().splitlines()[-1])
+    assert report["errors"] == []
+    assert {"Anthropic", "OpenAI", "Google Gemini", "DeepSeek", "xAI Grok"} <= set(report["providers"])
+    assert "two OpenAI keys" in report["duplicate"]
+    assert "rejected" in report["rejected"] and report["doneAfterReject"] is False
+    assert report["done"] is True
+    keys = _app(stack, "GET", "/v1/providers").json()
+    listed = keys.get("providers", keys) if isinstance(keys, dict) else keys
+    assert any((p.get("provider") if isinstance(p, dict) else p) == "openai" for p in listed)
 
 
 def test_11_nothing_leaked_into_the_engine_log(stack):

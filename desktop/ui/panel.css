@@ -49,7 +49,7 @@ body { background: var(--surface); }
 .rows.compact .row { grid-template-columns: minmax(0, 1fr) auto; min-height: 34px; }
 .missing { color: var(--ink-3); font-size: 11.5px; padding: 2px 0 0; }
 
-.manual { margin: 8px 16px 0; padding: 12px; border: 1px solid var(--brand); border-radius: var(--r); background: var(--brand-soft); display: flex; flex-direction: column; gap: 8px; animation: rise var(--d) var(--ease) both; }
+.manual { margin: 8px 0 10px; scroll-margin: 12px; outline: none; padding: 12px; border: 1px solid var(--brand); border-radius: var(--r); background: var(--brand-soft); display: flex; flex-direction: column; gap: 8px; animation: rise var(--d) var(--ease) both; }
 .manual-head { display: flex; align-items: center; justify-content: space-between; }
 .manual p { color: var(--ink-2); font-size: 12px; }
 .copy-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: center; gap: 8px; }

@@ -341,6 +341,32 @@ async def put_settings_route(
     return updated.model_dump()
 
 
+# ── provider key check ──────────────────────────────────────────────────
+
+
+class ProviderKeyCheck(BaseModel):
+    api_key: str = Field(min_length=1, max_length=8192)
+
+
+@router.post("/providers/{provider}/check")
+async def check_provider_key_route(
+    provider: str,
+    body: ProviderKeyCheck,
+    _kc: KeyContext = Depends(require_app_caller),
+) -> dict:
+    """Ask the provider whether a key works before setup saves it."""
+    import httpx
+
+    from packages.desktop import provider_check
+
+    env = dict(os.environ)
+    from app.config import get_settings
+
+    env.setdefault("ORCAROUTER_BASE_URL", get_settings().orcarouter_base_url)
+    async with httpx.AsyncClient() as client:
+        return await provider_check.check_key(provider.strip().lower(), body.api_key.strip(), client=client, env=env)
+
+
 # ── summary ─────────────────────────────────────────────────────────────
 
 

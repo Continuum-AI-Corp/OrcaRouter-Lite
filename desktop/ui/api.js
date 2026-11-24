@@ -60,6 +60,8 @@ export function createEngine(win = window) {
     joinGateway: (url, key) => call("POST", "/v1/app/gateway", { url, key }),
     leaveGateway: () => call("DELETE", "/v1/app/gateway"),
     setProviderKey: (provider, apiKey) => call("PUT", `/v1/providers/${encodeURIComponent(provider)}`, { api_key: apiKey }),
+    checkProviderKey: (provider, apiKey) =>
+      call("POST", `/v1/app/providers/${encodeURIComponent(provider)}/check`, { api_key: apiKey }),
   };
 }
 

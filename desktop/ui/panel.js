@@ -261,6 +261,10 @@ async function connect(row) {
       $("manual-url").textContent = res.base_url;
       $("manual-key").textContent = res.api_key;
       $("manual").hidden = false;
+      // Above the agent list and scrolled into view: with many agents it
+      // would otherwise open off screen.
+      $("manual").scrollIntoView({ block: "nearest" });
+      $("manual").focus({ preventScroll: true });
     } else {
       toast("ok", `${res.name} connected`, "Restart open sessions to use Orca. Your old settings are backed up.");
     }
