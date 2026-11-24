@@ -26,6 +26,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Lets hosted OrcaRouter answer for any model without a direct key.
+          ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
         run: |
           PYTHONPATH=. nohup python scripts/start.py > lite.log 2>&1 &
           echo $! > lite.pid
@@ -41,6 +43,9 @@ jobs:
           grep -oE 'sk-orca-[a-f0-9]+' lite.log | head -n 1 > .lite_api_key
           test -s .lite_api_key
 
+      # bench/run.py exits non-zero without writing BENCHMARK.md when no
+      # model answered, so a run without working keys fails here instead of
+      # committing a table of failures.
       - name: run benchmark
         env:
           LITE_BASE_URL: http://localhost:8000

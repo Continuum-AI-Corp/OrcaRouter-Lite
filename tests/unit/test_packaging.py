@@ -78,3 +78,27 @@ def test_start_script_delegates_to_the_cli() -> None:
     """
     source = (REPO_ROOT / "scripts" / "start.py").read_text(encoding="utf-8")
     assert "from app.cli import main" in source
+
+
+def test_the_windows_uninstaller_restores_agents_but_updates_do_not() -> None:
+    # Uninstalling must not leave agents pointed at an engine that's gone.
+    # Tauri's updater runs the uninstaller with /UPDATE; that must not
+    # disconnect anyone.
+    import json
+
+    desktop = Path(__file__).resolve().parents[2] / "desktop" / "src-tauri"
+    conf = json.loads((desktop / "tauri.conf.json").read_text())
+    hooks = desktop / conf["bundle"]["windows"]["nsis"]["installerHooks"]
+    text = hooks.read_text()
+    assert "!macro NSIS_HOOK_PREUNINSTALL" in text
+    assert '"$INSTDIR\\orca-engine.exe" disconnect --all' in text
+    assert '"/UPDATE"' in text
+
+
+def test_the_install_guide_covers_unsigned_builds_and_uninstalling() -> None:
+    root = Path(__file__).resolve().parents[2]
+    guide = (root / "INSTALL.md").read_text()
+    for needed in ("no server, no Docker and no database", "Open Anyway", "com.apple.quarantine",
+                   "Run anyway", "orca disconnect --all", "Start Orca when I log in"):
+        assert needed in guide, needed
+    assert "INSTALL.md" in (root / "README.md").read_text()

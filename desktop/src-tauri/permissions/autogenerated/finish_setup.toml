@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-setup"
+description = "Enables the finish_setup command without any pre-configured scope."
+commands.allow = ["finish_setup"]
+
+[[permission]]
+identifier = "deny-finish-setup"
+description = "Denies the finish_setup command without any pre-configured scope."
+commands.deny = ["finish_setup"]

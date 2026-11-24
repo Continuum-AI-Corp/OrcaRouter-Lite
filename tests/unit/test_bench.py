@@ -64,3 +64,55 @@ def test_render_markdown_handles_empty_summary():
     from bench.report import render_markdown
     md = render_markdown([], total_prompts=0)
     assert "no benchmark results" in md.lower()
+
+
+# ── never publish a report nobody could reproduce ───────────────────────
+
+
+def _row(model, cost, ok_rate, n=10, latency=100):
+    return {"model": model, "request_count": n, "total_cost_usd": cost,
+            "avg_latency_ms": latency if ok_rate else 0, "success_rate": ok_rate}
+
+
+def test_nothing_is_published_when_no_model_answered():
+    from bench.report import should_publish
+
+    ok, reason = should_publish([_row("a", 0.0, 0.0), _row("b", 0.0, 0.0)])
+    assert ok is False
+    assert "provider keys" in reason
+
+
+def test_a_run_with_answers_is_published():
+    from bench.report import should_publish
+
+    ok, _ = should_publish([_row("a", 0.1, 1.0), _row("b", 0.0, 0.0)])
+    assert ok is True
+
+
+def test_models_that_never_answered_are_not_ranked_or_used_for_savings():
+    from bench.report import render_markdown
+
+    md = render_markdown([_row("cheap", 0.05, 1.0), _row("dead", 0.0, 0.0), _row("pricey", 1.0, 1.0)],
+                         total_prompts=10)
+    assert "dead" not in md.split("| Model |")[1].split("\n\n")[0]  # not in the ranked table
+    assert "Did not answer" in md and "`dead`" in md
+    assert "`pricey` → `cheap`" in md
+    assert "~95%" in md
+
+
+def test_savings_compare_cost_per_answered_request():
+    from bench.report import render_markdown
+
+    # "half" answered 5/10 for $0.50 total = $0.10 per answer; "full" answered
+    # 10/10 for $0.50 = $0.05 per answer. Totals tie; per-answer cost does not.
+    md = render_markdown([_row("half", 0.50, 0.5), _row("full", 0.50, 1.0)], total_prompts=10)
+    assert "`half` → `full`" in md
+    assert "~50%" in md
+
+
+def test_one_answering_model_makes_no_savings_claim():
+    from bench.report import render_markdown
+
+    md = render_markdown([_row("only", 0.1, 1.0), _row("dead", 0.0, 0.0)], total_prompts=10)
+    assert "saved" not in md.lower()
+    assert "Only one model answered" in md

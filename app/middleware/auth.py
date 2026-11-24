@@ -24,6 +24,7 @@ from packages.db import session as session_mod
 
 SKIP_AUTH_PATHS: set[str] = {
     "/health",
+    "/health/identity",
     "/health/ready",
     "/docs",
     "/redoc",
@@ -38,6 +39,40 @@ SKIP_AUTH_PREFIXES: tuple[str, ...] = ("/static",)
 # Gemini surface needs its own entry or it would be waved through as
 # "static" with no credential check at all.
 GUARDED_PREFIXES: tuple[str, ...] = ("/api/", "/v1/", "/v1beta/")
+
+# Keys the desktop app mints for coding agents (`agent:<id>`) may only call
+# models. An agent key lifted from a config file must not be able to mint
+# keys, read spend, change providers or rewire other agents.
+AGENT_KEY_PREFIX = "agent:"
+AGENT_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/responses",
+    "/v1/models",
+    "/v1beta/",
+)
+
+
+async def _desktop_budget_stop(path: str, key_context) -> str | None:
+    """Desktop mode with budget_mode "stop": refuse agents past today's budget."""
+    from app.config import get_settings
+
+    if not get_settings().orca_desktop_mode:
+        return None
+    from packages.desktop import budget
+
+    if not budget.is_generation(path):
+        return None
+    try:
+        async with session_mod._session_factory() as session:
+            return await budget.stop_reason(session, key_context.workspace_id)
+    except Exception as exc:
+        # Never block traffic because the check itself failed, but say so:
+        # a silently failing check means the budget isn't enforced.
+        import structlog
+
+        structlog.get_logger().error("budget_stop_check_failed", error=repr(exc))
+        return None
 
 
 def _is_public(path: str) -> bool:
@@ -249,6 +284,16 @@ class AuthMiddleware:
             message = auth_error.message if auth_error else "Invalid API key"
             await _send_error(send, scope, status, message, "auth_error")
             return
+        if key_context.name.startswith(AGENT_KEY_PREFIX) and not path.startswith(AGENT_ALLOWED_PREFIXES):
+            await _send_error(
+                send, scope, 403, "This key belongs to a coding agent and can only call models.", "forbidden"
+            )
+            return
+        if key_context.name.startswith(AGENT_KEY_PREFIX):
+            reason = await _desktop_budget_stop(path, key_context)
+            if reason:
+                await _send_error(send, scope, 429, reason, "budget_exceeded")
+                return
         scope.setdefault("state", {})["key_context"] = key_context
         scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id
 

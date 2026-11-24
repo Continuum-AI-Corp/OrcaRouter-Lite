@@ -1,15 +1,20 @@
 # Releasing
 
-OrcaRouter Lite ships three artifacts. `.github/workflows/release.yml` publishes
-the two automatable ones; the Railway template needs a Railway account and stays
-manual. This file covers the one-time setup each one needs and the steps to cut a
-release.
+OrcaRouter Lite ships these artifacts. `.github/workflows/release.yml` and
+`.github/workflows/desktop.yml` publish the automatable ones; the Railway
+template and the Homebrew tap need accounts outside this repo. This file covers
+the one-time setup each one needs and the steps to cut a release.
 
 | Artifact | Where | Published by |
 |---|---|---|
-| Container image | `ghcr.io/continuum-ai-corp/orcarouter-lite` | `release.yml` — `image` job |
+| Container image | `ghcr.io/continuum-ai-corp/orcarouter-lite` | `release.yml` — `image` job (cosign-signed, SBOM + provenance) |
 | Python package | [pypi.org/p/orcarouter-lite](https://pypi.org/p/orcarouter-lite) | `release.yml` — `pypi` job |
+| Desktop installers (`.dmg`, `.deb`, `.AppImage`, `.msi`, `.exe`) | GitHub release | `desktop.yml` — `bundle` job |
+| Homebrew cask | GitHub release asset `orcarouter-lite.rb`, copied to the tap | `desktop.yml` — `homebrew-cask` job, then manual copy |
 | Railway template | [railway.com](https://railway.com) marketplace | manual, see below |
+
+Pull requests that touch `desktop/` build every installer unsigned, as
+workflow artifacts, so a release never ships a platform that wasn't built.
 
 ---
 
@@ -87,9 +92,75 @@ Steps 3 and 4 are scriptable against Railway's public API (`templateGenerate` +
 `templatePublish` both accept an account token); that tooling is not part of
 this change.
 
+### 4. macOS signing and notarisation
+
+Without these the `.dmg` is built unsigned and Gatekeeper warns on first open.
+Add repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | What it is |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the "Developer ID Application" certificate exported as `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Continuum AI Corp (TEAMID)` |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarisation: Apple ID, an app-specific password, the team ID |
+
+The workflow exports them only when set, so forks keep building unsigned.
+`desktop/src-tauri/Entitlements.plist` carries the hardened-runtime exceptions
+the bundled Python engine needs.
+
+### 5. Homebrew tap
+
+Create `Continuum-AI-Corp/homebrew-tap` once. After each release, copy the
+`orcarouter-lite.rb` asset into `Casks/` there. Users then install with
+`brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
+
+### 6. Benchmark secrets
+
+`benchmark.yml` needs provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GOOGLE_API_KEY`, `GROQ_API_KEY`) or one `ORCAROUTER_API_KEY`. Without them the
+nightly job fails instead of publishing a report of failures.
+
+### 7. Windows code signing
+
+Without a certificate the `.msi` and `.exe` are built unsigned and SmartScreen
+warns on first run. Add repository secrets:
+
+| Secret | What it is |
+|---|---|
+| `WINDOWS_CERTIFICATE` | base64 of the code-signing certificate exported as `.pfx` |
+| `WINDOWS_CERTIFICATE_PASSWORD` | the `.pfx` export password |
+
+The Windows job imports it, signs both installers with SHA-256 and a DigiCert
+timestamp, and checks each file carries a signature. Pull requests sign with a
+throwaway self-signed certificate so that path stays tested.
+
+### 8. In-app updates
+
+Released apps announce new versions either way. To have them **install**
+updates in place (download, verify the signature, restart), create the
+updater's signing key once, on a trusted machine:
+
+```bash
+cd desktop && npx tauri signer generate -w ~/.tauri/orcarouter-lite.key
+```
+
+Then add the private key as the secret `TAURI_SIGNING_PRIVATE_KEY` (the file's
+contents), its password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the
+contents of the `.pub` file as the repository **variable**
+`TAURI_UPDATER_PUBKEY`. Tagged releases then build the public key into the
+app, sign each platform's update, and attach `latest.json`; the app fetches it
+from `releases/latest/download/latest.json` and refuses anything not signed by
+that key. Keep the private key backed up: losing it means shipped apps can't
+take updates until users reinstall. Pull requests sign with a throwaway key so
+the updater build stays tested.
+
 ---
 
 ## Cutting a release
+
+Bump the version in all four places first (a test fails if they disagree):
+`pyproject.toml`, `desktop/src-tauri/tauri.conf.json`,
+`desktop/src-tauri/Cargo.toml` and `desktop/package.json`.
 
 1. Bump `version` in `pyproject.toml`. The `pypi` job refuses to publish if it
    does not match the tag, so this is the only place the number lives.

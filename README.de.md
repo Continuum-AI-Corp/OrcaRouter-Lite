@@ -1,17 +1,18 @@
 # OrcaRouter Lite
 
-**Selbst gehosteter LLM-Router mit verwaltetem Sicherheitsnetz.**
-OpenAI-kompatibel. BYOK. Einzelner Workspace. Streaming. `model="auto"`.
+**Ein Budget für jeden Coding-Agenten.**
+Sehen und begrenzen Sie, was Claude Code, Codex, Gemini CLI, OpenCode und Ihre eigenen Apps ausgeben, über
+alle Modell-Provider hinweg, ohne dass Ihre Prompts Ihren Rechner verlassen. Eine Menüleisten-App
+für einzelne Entwickler und ein selbst gehosteter Router für ganze Teams. MIT-lizenziert.
 
-![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
-
-[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
-[![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
+[![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
-![OrcaRouter Lite Failover-Demo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
-
-*`model="auto"` fängt einen Provider-Ausfall in Echtzeit ab — ohne Codeänderung. Aufnahme-Anleitung: [DEMO.md](./DEMO.md).*
+<p>
+  <img src="docs/screenshots/desktop-panel.png" alt="Das Menüleisten-Panel von OrcaRouter Lite: heutige Ausgaben im Vergleich zum Tagesbudget, verbundene Coding-Agenten und Provider-Status" width="340">
+  <img src="docs/screenshots/desktop-setup.png" alt="Ersteinrichtung: erkannte Coding-Agenten, wohin Anfragen gehen, und ein Tagesbudget" width="420">
+</p>
 
 ## Sprachen
 
@@ -30,11 +31,94 @@ OpenAI-kompatibel. BYOK. Einzelner Workspace. Streaming. `model="auto"`.
 
 **Mehr von uns:** [Alle Modell-APIs](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
-OrcaRouter Lite ist die Open-Source-Edition für einen einzelnen Workspace von [OrcaRouter](https://www.orcarouter.ai). Führen Sie es auf Ihrem Laptop aus, liefern Sie es in Ihrem Produkt aus oder nutzen Sie das gehostete `api.orcarouter.ai` direkt für die Long-Tail-Modelle, deren Schlüssel Sie nicht selbst verwalten möchten.
+OrcaRouter Lite ist die Open-Source-Edition von [OrcaRouter](https://www.orcarouter.ai). Es läuft auf Ihrem Rechner oder Ihrem Server, spricht die APIs von OpenAI, Anthropic und Gemini und kann das gehostete `api.orcarouter.ai` als Sicherheitsnetz bei Ausfällen und für Modelle nutzen, für die Sie keine Schlüssel haben.
 
-> **Warum wir?** LiteLLM ist eine Bibliothek; OpenRouter ist Closed-Source und gehostet; Ollama ist nur lokal. Wir sind der **selbst gehostete Server mit verwaltetem Fallback** — ein Satz, den keiner der anderen sagen kann.
+## Die Desktop-App
 
-## 60-Sekunden-Schnellstart
+Die Orca-App sitzt in Ihrer Menüleiste. Sie betreibt den Router auf `127.0.0.1`, verbindet Ihre
+Coding-Agenten damit und zeigt, was sie ausgeben.
+
+- **Heutige Ausgaben, pro Agent.** Die Tagessumme steht neben der Uhr; das Panel schlüsselt sie nach Agent auf, und montags fasst eine Benachrichtigung die Woche zusammen.
+- **Ein Tagesbudget.** Benachrichtigungen bei 80 % und 100 % des festgelegten Betrags. Standardmäßig nur Warnungen; mit einem Häkchen pausiert Orca Ihre Coding-Agenten, sobald der Betrag erreicht ist.
+- **Verbinden mit einem Klick.** Orca passt die Einstellungen des Agenten selbst an, legt ein Backup an und stellt es wieder her, wenn Sie die Verbindung trennen.
+- **Nie offline.** Fällt ein Provider aus oder bremst Sie per Rate-Limit aus, weichen Anfragen auf einen anderen Provider oder auf das gehostete OrcaRouter aus, und die App zählt, wie viele sie gerettet hat. Ihr Konto verknüpfen Sie mit `orca link --key sk-orca-…` oder im Setup.
+- **Standardmäßig privat.** Prompts gehen direkt von Ihren Agenten an den Provider Ihrer Wahl. Keine Telemetrie.
+- **Funktioniert mit dem Gateway Ihres Teams.** `orca login https://ai-gw.example.com --key …` (oder "Join my company's gateway" in der Einrichtung) richtet Ihre Agenten auf das Gateway aus, das Ihr Plattform-Team betreibt; `orca logout` stellt den vorherigen Zustand wieder her.
+
+**Installation.** Installer (`.dmg`, `.deb`, `.AppImage`, `.msi`) werden von
+[`desktop.yml`](./.github/workflows/desktop.yml) gebaut und ab der nächsten getaggten Version an
+jedes Release angehängt. Bis dahin sind dieselbe Engine und CLI nur einen Befehl entfernt:
+
+**Nur die App nötig:** Sie bringt ihre eigene Engine und eine lokale SQLite-Datei mit – kein Server, keine Datenbank. Download, erster Start, Start bei der Anmeldung und Deinstallation: [INSTALL.md](./INSTALL.md) (Englisch).
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect claude-code
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
+```
+
+`orca up` stellt das Panel unter `http://127.0.0.1:8765/desktop/panel.html` bereit; wie Sie die
+Menüleisten-App selbst bauen, steht in [`desktop/`](./desktop/README.md). Sobald das erste Release erschienen ist,
+können macOS-Nutzer auch `brew install --cask continuum-ai-corp/tap/orcarouter-lite` ausführen.
+
+Die heutigen Ausgaben in der Statusleiste von Claude Code: Fügen Sie dies zu `~/.claude/settings.json` hinzu.
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` gibt die Woche als Markdown (oder `--format csv`) aus, zum Einfügen in einen Chat oder eine Tabelle.
+
+| Agent | So wird verbunden |
+|---|---|
+| Claude Code | Automatisch: setzt `ANTHROPIC_BASE_URL` und einen eigenen Schlüssel in `~/.claude/settings.json` |
+| Codex | Automatisch: fügt einen Provider `orca` (Responses API) zu `~/.codex/config.toml` hinzu und wählt ihn mit `model = "auto"` aus |
+| Gemini CLI | Automatisch: setzt `GOOGLE_GEMINI_BASE_URL` und einen eigenen Schlüssel in `~/.gemini/.env` sowie die Gateway-Anmeldung von Gemini CLI in `~/.gemini/settings.json` |
+| OpenCode | Automatisch: fügt einen Provider `orca` zu `~/.config/opencode/opencode.json` hinzu und wählt `orca/auto` aus; der Schlüssel bleibt in einer privaten Datei, die OpenCode liest |
+| Command Code | Automatisch: fügt einen Provider `orca` zu `~/.commandcode/providers.json` hinzu, dessen Schlüssel aus einer privaten Datei kommt (Command Code lehnt dort Klartext-Schlüssel ab) |
+| Cline | Ein Schritt per Copy & Paste: Wählen Sie in Cline API Provider → OpenAI Compatible und fügen Sie die Basis-URL und den Schlüssel ein, die die App anzeigt |
+| Aider | Automatisch: setzt `openai-api-base`, einen eigenen Schlüssel und `model: openai/auto` in `~/.aider.conf.yml` |
+| Cursor | Ein Schritt per Copy & Paste: Die App zeigt eine Basis-URL und einen Schlüssel für die Modelleinstellungen von Cursor |
+| Hermes Agent | Automatisch: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Automatisch: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Automatisch: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Automatisch: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Automatisch: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Automatisch: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Automatisch: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Ein Schritt per Copy & Paste: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Ein Schritt per Copy & Paste: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Ein Schritt per Copy & Paste: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Ein Schritt per Copy & Paste: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
+
+Jeder verbundene Agent erhält einen eigenen Schlüssel: So werden die Ausgaben pro Agent aufgeteilt,
+und deshalb entzieht das Trennen der Verbindung sofort den Zugriff. Worauf die App auf Ihrem Rechner
+zugreifen darf, ist in [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch) genau beschrieben.
+
+<a id="free-and-open-for-good"></a>
+
+## Frei und offen, für immer
+
+- **MIT, dauerhaft.** Alles, was ein einzelner Entwickler oder ein Team braucht, bleibt unter MIT in diesem Repository: Routing, `model="auto"`, Budgets, das Dashboard, die Desktop-App. Wir werden kein Feature aus Lite in einen kostenpflichtigen Plan verschieben.
+- **Kostenpflichtig ist das Angebot für Organisationen.** Die Verwaltung vieler Teams (SSO/SCIM, rollenbasierter Zugriff, flottenweite Budgets und Richtlinien, Aufbewahrung von Audit-Logs, Alerts an Slack und per E-Mail) gibt es im [gehosteten OrcaRouter](https://www.orcarouter.ai).
+- **Überprüfbar.** Releases sind signiert und werden mit Provenance und einer SBOM ausgeliefert. Siehe [SECURITY.md](./SECURITY.md).
+
+## Im Vergleich
+
+| | Am besten für | So läuft es |
+|---|---|---|
+| **OrcaRouter Lite** | Vom einzelnen Entwickler bis zum Team, das Ausgaben pro Agent, Budgets und Failover ohne neue Infrastruktur will | Desktop-App, `uvx`/`pip` oder Docker; standardmäßig SQLite |
+| LiteLLM-Proxy | Teams, die viele Konfigurationsmöglichkeiten und ein Python-SDK wollen | Selbst gehosteter Server; Postgres für das Ausgaben-Tracking |
+| OpenRouter | Ein API-Schlüssel für viele Modelle, abgerechnet über OpenRouter | Nur gehostet; Prompts laufen über deren Dienst |
+| Die eigene Gateway-Unterstützung von Claude Code | Unternehmen, die nur Claude nutzen | Richtet Claude Code auf ein Gateway aus, das Sie selbst betreiben; nur Claude-Modelle |
+
+## Als Server betreiben (60 Sekunden)
 
 Zwei Möglichkeiten, OrcaRouter zu nutzen:
 
@@ -119,21 +203,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 Öffnen Sie `http://localhost:8000/` für das Dashboard — Provider, Routing, Analytics, Schlüssel (nur Pfad A).
 
-## Warum?
-
-| | OrcaRouter Lite | LiteLLM-Bibliothek | OpenRouter | Ollama |
-|---|---|---|---|---|
-| Selbst gehosteter Server | ✓ | als Bibliothek | ✗ | ✓ |
-| OpenAI-kompatibel | ✓ | ✓ | ✓ | ✓ |
-| Multi-Provider (OpenAI/Anthropic/Google/…) | ✓ | ✓ | ✓ | ✗ |
-| Eingebautes Dashboard | ✓ | ✗ | ✓ | ✗ |
-| `model="auto"` (günstigstes geeignetes) | ✓ | ✗ | ✗ | n/a |
-| Streaming | ✓ | ✓ | ✓ | ✓ |
-| BYOK | ✓ | ✓ | ✗ | n/a |
-| Hosted als Fallback | ✓ | ✗ | n/a | ✗ |
-| Kein Postgres / kein Redis erforderlich | ✓ | n/a | n/a | ✓ |
-
-## `model="auto"` — das Hauptmerkmal
+## `model="auto"`
 
 Senden Sie `model="auto"`, und OrcaRouter wählt das **günstigste** Modell aus Ihren konfigurierten Providern, das die Anforderungsfähigkeiten der Anfrage erfüllt (Tools, Vision, JSON-Modus). Keine manuellen Routing-Regeln; keine Rate-Limit-Akrobatik; keine `if x: ...`-Kostenoptimierung in Ihrem Code.
 
@@ -212,17 +282,18 @@ Beim Start werden über 100 Chat-Modelle aus [LiteLLMs von der Community gepfleg
 
 ## Anderswo deployen
 
-| Plattform | One-Click |
+| Plattform | So geht's |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | Repo verbinden, Root-Verzeichnis = `.` |
-| Bare Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (Image folgt) |
+| Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (wird ab dem nächsten getaggten Release veröffentlicht; prüfen Sie es mit den Befehlen in [SECURITY.md](./SECURITY.md)) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): nutzt [`render.yaml`](./render.yaml), erzeugt die Secrets, legt die Datenbank auf einer Disk ab |
+| Fly.io | `fly launch --no-deploy`, dann die Schritte für das Volume und `fly secrets set` oben in [`fly.toml`](./fly.toml), dann `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, dann `railway up` (baut mit [`railway.json`](./railway.json)) |
 
 ## Was ist enthalten
 
 - `POST /v1/chat/completions` — Proxy + Streaming + `model="auto"` + provider-übergreifender Prompt-Cache
 - `POST /v1/messages` — **Anthropic-Messages-API-Ingress** (Claude Code / Anthropic-SDKs verbinden sich direkt; `+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI-Responses-API-Ingress** (Codex und Responses-SDK-Clients; Streaming, Function- und Custom-Tools)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini-API-Ingress** (google-genai-SDK verbindet sich direkt; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — auffindbarer Modellkatalog (100+ Modelle aus `litellm.model_cost`)
 - `GET/PUT/DELETE /v1/providers/{provider}` — verschlüsselte Provider-Schlüssel setzen / auflisten / widerrufen
@@ -230,6 +301,7 @@ Beim Start werden über 100 Chat-Modelle aus [LiteLLMs von der Community gepfleg
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — lokale Analytics, keine Telemetrie verlässt die Box
 - `GET  /v1/hosted` — Status des Hosted-Fallbacks (treibt die "Get $5 free credit"-Karte des Dashboards an)
 - `GET/POST/DELETE /v1/keys/...` — API-Schlüssel auflisten / rotieren / widerrufen
+- `/v1/app/*` — Agenten, Ausgabenübersicht und Budget für die Desktop-App (nur wenn mit `orca up` gestartet; siehe [SECURITY.md](./SECURITY.md))
 - Single-Page-Dashboard unter `/`
 - Standardmäßig SQLite; Postgres optional via `DATABASE_URL`; Redis optional
 
@@ -265,44 +337,18 @@ Dies ist die **Single-Workspace**-Edition. Per Design ohne:
 - Multi-Pod-Deployment / Kubernetes
 - E-Mail / Slack / Webhooks für Alerts
 
-Dafür siehe das gehostete Produkt oder die (kommende) Teams-Edition.
+Das sind Funktionen für Organisationen, und es gibt sie im [gehosteten OrcaRouter](https://www.orcarouter.ai); siehe [Frei und offen, für immer](#free-and-open-for-good).
 
 ## Testen
 
-Test-First entwickelt. Jedes hier ausgelieferte Verhalten hatte zuerst einen fehlschlagenden Test.
+Test-First entwickelt: Jedes hier ausgelieferte Verhalten hatte zuerst einen fehlschlagenden Test.
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest -v
-# 403 passed
+PYTHONPATH=. pytest                          # router, protocols, desktop API, CLI, supply-chain checks
+cd desktop && npm test                       # desktop view logic (node --test)
+cd desktop/src-tauri && cargo test --lib     # menu-bar title and notification rules
 ```
-
-| Slice | Tests | Was |
-|---|---|---|
-| 1. Config | 5 | env-Loading, Defaults, `env_provider_keys()` |
-| 2. Seed | 3 | Bootstrap-Workspace + API-Schlüssel + RoutingConfig, idempotent |
-| 3. Auth-Middleware | 4 | Bearer-Token-Validierung, 401 bei fehlend/ungültig |
-| 4. App-Factory | 3 | /health, Error-Envelope, /v1/*-Gating |
-| 5. Provider-Schlüssel CRUD | 5 | im Speicher verschlüsselt, Klartext geht nie hin und zurück |
-| 6. Router-Cache | 13 | env+DB+hosted Deployment-Assembly mit Präzedenz |
-| 7. Chat Completion | 5 | OpenAI-Format, RequestLog, Validierung |
-| 8. Analytics | 4 | recent / spend / latency p50/p99 |
-| 9. /v1/{models,keys,routing} | 8 | list/create/revoke + Strategie-Update |
-| 10. Streaming | 4 | SSE-Format, `[DONE]`-Sentinel, Log-Writeback |
-| 11. Katalog | 7 | 100+ Modelle, Capability-Flags, Pricing |
-| 12. `model="auto"` | 21 | Capability-Erkennung, günstigstes-mit-passenden-Anforderungen (Unit + Integration) |
-| 13. Kosteneinsparungen | 9 | Einsparungen vs. Always-GPT-4-Baseline + Hosted-Auto-Vergleich |
-| 14. Prompt-Cache | 15 | provider-übergreifender Exact-Match-Cache + Chat-Integration |
-| 15. Benchmark | 4 | summarize() + render_markdown()-Aggregation |
-| 16. Hosted-Status | 7 | `/v1/hosted` Config-Source + Signup-URL-Surface |
-| 17. Hosted-Auto-Einsparungen | 3 | `_hosted_auto_savings`-Edge-Cases auf synthetischen Katalogen |
-| 18. Unerreichbare Modelle | 7 | "Modelle, die du nicht erreichen kannst"-Kachel verschwindet, wenn Hosted aktiv ist |
-| 19. Multi-Protokoll-Auth | 6 | Scoping von x-api-key / x-goog-api-key / ?key=, /v1beta-Guard, 401-Envelopes pro Protokoll |
-| 20. Anthropic `/v1/messages` | 53 | Request-/Response-/Stream-Übersetzung + Ingress-Integration |
-| 21. Gemini `/v1beta` | 40 | Übersetzung inkl. Schema-Enum-Normalisierung + generateContent/Stream-Ingress |
-| **Gesamt** | **403** | |
-
-Die Slice-Zeilen zeigen die Tests, die beim Ausliefern des jeweiligen Slices hinzukamen; die Gesamtzahl ist die aktuelle vollständige Suite.
 
 ## Architektur
 
@@ -327,7 +373,13 @@ app/
     ├── hosted.py       /v1/hosted — hosted-fallback status for the dashboard
     └── health.py
 
+desktop/
+├── ui/                 Menu-bar panel + setup pages (served by the engine at /desktop/)
+├── src-tauri/          Native shell: tray title, notifications, starts the engine
+└── engine/             PyInstaller build of the bundled `orca-engine`
+
 packages/
+├── desktop/            Agent connectors (backup/restore) + desktop home folder
 ├── litellm_adapter/    Router wrapper + 100+ model catalog
 ├── auth/               hashing + AES-256-GCM
 └── db/                 models + engine + session
@@ -335,19 +387,22 @@ packages/
 
 ## Roadmap
 
-- [x] OpenAI-kompatible Chat-Completions
-- [x] Streaming (SSE)
-- [x] `model="auto"` günstigstes-geeignetes Routing
-- [x] Hosted-als-Upstream
-- [x] Verschlüsseltes BYOK im Speicher
-- [x] Lokales Analytics-Dashboard
-- [x] CI (GitHub Actions)
-- [x] Provider-übergreifendes Prompt-Caching
-- [x] Continue.dev / Aider / LangChain / Cursor / Vercel-AI-SDK-Integrationen
-- [x] Öffentlicher Benchmark + Einsparungs-Behauptung
-- [ ] Embeddings + Image-Gen-Proxy
+- [x] OpenAI-kompatible Chat-Completions, Streaming, `model="auto"`
+- [x] Native Anthropic- und Gemini-Endpunkte
+- [x] Hosted-als-Upstream-Fallback, verschlüsseltes BYOK, lokales Dashboard
+- [x] Provider-übergreifender Prompt-Cache
+- [x] Desktop-App: Ausgaben in der Menüleiste, Benachrichtigungen zum Tagesbudget, Agenten mit einem Klick verbinden
+- [x] Signierte Releases mit Provenance und SBOM; Abhängigkeiten per Hash gesperrt
+- [x] Tagesbudget, das warnt oder Coding-Agenten am Limit pausiert
+- [x] `orca login` / "Join my company's gateway": das Gateway eines Teams direkt aus der App nutzen
+- [x] `/v1/responses`, damit Codex sich verbindet; ebenso Gemini CLI, OpenCode, Command Code und Cline
+- [x] Verschlüsselungsschlüssel im Schlüsselbund des Betriebssystems; eine Update-Prüfung pro Tag
+- [ ] Budgets pro Entwickler, durchgesetzt auf einem gemeinsamen Team-Gateway
+- [ ] Embeddings, Ollama/vLLM-Provider, eigene Fallback-Ketten
 
 Siehe [DEMO.md](./DEMO.md) für die Failover-Demo.
+
+<a id="license"></a>
 
 ## Lizenz
 

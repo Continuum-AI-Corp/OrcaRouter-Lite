@@ -99,6 +99,22 @@ class Settings(BaseSettings):
     orcarouter_models_url: str = "https://www.orcarouter.ai/models"
 
 
+    # ── Desktop app (Orca app / `orca up`) ──
+    # Mounts /v1/app/*, which reads and edits coding-agent config files in
+    # the home directory of the user running the engine. Only `orca up` (and
+    # the desktop app, which runs it) turns this on, and it binds the server
+    # to 127.0.0.1. Never enable it on a shared or network-facing server.
+    orca_desktop_mode: bool = False
+    # Where the desktop engine keeps its database, secrets and agent backups.
+    # Empty means ~/.orcarouter-lite.
+    orca_home: str = ""
+    # The URL agents are told to use. Empty means http://127.0.0.1:<port>.
+    orca_public_base_url: str = ""
+    # Per-launch secret `orca up` generates and also writes to engine.json
+    # (0600). The app and CLI challenge /health/identity with it before they
+    # send the app key, so another program squatting the port gets nothing.
+    orca_instance_secret: str = ""
+
     # ── Quality scoring (Artificial Analysis) ──
     # API key from https://artificialanalysis.ai (free tier: 1000 req/day).
     # When set, model="auto" with strategy="quality" picks the model with

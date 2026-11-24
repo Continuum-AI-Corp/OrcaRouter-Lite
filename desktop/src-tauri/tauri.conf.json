@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OrcaRouter Lite",
+  "version": "0.1.0",
+  "identifier": "ai.orcarouter.lite",
+  "build": {
+    "frontendDist": "./splash"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "appimage",
+      "msi",
+      "nsis"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Put a budget on every coding agent",
+    "longDescription": "OrcaRouter Lite runs a local LLM router on your computer, connects your coding agents to it and shows what they spend.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "icons/tray.png": "tray.png"
+    },
+    "externalBin": [
+      "binaries/orca-engine"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  },
+  "plugins": {}
+}

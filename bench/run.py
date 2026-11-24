@@ -23,7 +23,7 @@ from pathlib import Path
 
 import httpx
 
-from bench.report import render_markdown, summarize
+from bench.report import render_markdown, should_publish, summarize
 
 
 def _env_or_skip(*keys: str) -> dict[str, str] | None:
@@ -109,6 +109,11 @@ def main() -> int:
                 print(f"  {marker} {model:<40} ${row['cost_usd']:.5f}  {row['latency_ms']}ms")
 
     summary = summarize(results)
+    publish, reason = should_publish(summary)
+    if not publish:
+        # Fail the job loudly instead of committing a report of failures.
+        print(f"\n✗ not writing {args.out}: {reason}", file=sys.stderr)
+        return 1
     md = render_markdown(summary, total_prompts=len(prompts))
     Path(args.out).write_text(md)
     print(f"\n✓ wrote {args.out}")

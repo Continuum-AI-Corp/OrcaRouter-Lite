@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-apply-start-at-login"
+description = "Enables the apply_start_at_login command without any pre-configured scope."
+commands.allow = ["apply_start_at_login"]
+
+[[permission]]
+identifier = "deny-apply-start-at-login"
+description = "Denies the apply_start_at_login command without any pre-configured scope."
+commands.deny = ["apply_start_at_login"]
