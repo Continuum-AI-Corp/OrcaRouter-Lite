@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   AGENT_COLORS,
+  agentLogo,
   gatewayLine,
   updateLine,
   agentNote,
@@ -115,6 +116,14 @@ test("every connectable agent has its own tile colour", () => {
   }
   const used = Object.values(AGENT_COLORS);
   assert.equal(new Set(used).size, used.length, "two agents share a colour");
+});
+
+test("agentLogo points at the bundled mark, and has no logo for unknown rows", () => {
+  assert.deepEqual(agentLogo("claude-code"), { src: "assets/agents/claude-code.svg", dark: false });
+  assert.deepEqual(agentLogo("omp"), { src: "assets/agents/omp.svg", dark: true });
+  assert.equal(agentLogo("other"), null);
+  assert.equal(agentLogo("something-new"), null);
+  assert.equal(agentLogo("../../etc/passwd"), null);
 });
 
 test("missingLine folds agents that aren't installed into one sentence", () => {

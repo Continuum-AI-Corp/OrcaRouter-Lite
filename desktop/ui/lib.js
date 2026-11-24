@@ -1,7 +1,7 @@
 // View logic for the Orca app. Pure functions only: no DOM, no network,
 // so they run under `node --test` (desktop/tests) and in the webview alike.
 
-// Tile colours for agent initials, darkened from each tool's brand colour
+// Tile colours for agents shown by initials (no bundled logo), darkened from each tool's brand colour
 // until white text reaches at least 4:1 (checked by the tests).
 export const AGENT_COLORS = {
   "claude-code": "#C2613F",
@@ -14,6 +14,21 @@ export const AGENT_COLORS = {
   "command-code": "#B4233C",
   other: "#64748B",
 };
+
+// Each agent's own mark, bundled in assets/agents/<id>.svg (licences in
+// assets/agents/NOTICE.md). Loaded with <img>, so an SVG can't run scripts.
+export const AGENT_LOGOS = new Set([
+  "aider", "claude-code", "cline", "codex", "command-code", "cursor", "deepseek-harness",
+  "gemini-cli", "goose", "hermes", "kilo", "kimi-code", "omp", "openclaw", "opencode", "openhands",
+  "pi", "zcode", "zed"
+]);
+// Marks drawn in white for dark backgrounds sit on a dark tile.
+const DARK_LOGOS = new Set(["omp"]);
+
+export function agentLogo(id) {
+  if (!AGENT_LOGOS.has(id)) return null;
+  return { src: `assets/agents/${id}.svg`, dark: DARK_LOGOS.has(id) };
+}
 
 // Rounds half-up to cents; the same vectors are tested in Python and Rust.
 export function money(microcents) {

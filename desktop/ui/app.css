@@ -158,3 +158,9 @@ button { font: inherit; }
   /* The confirm window is information, not decoration: keep it, without motion. */
   .btn.confirming::after { animation: none !important; transform: none; }
 }
+
+/* Agent logos: each mark on a white tile so its own colours read the same in
+   light and dark mode; marks drawn in white get a dark tile. */
+.ic.logo { background: #FFFFFF; box-shadow: inset 0 0 0 1px var(--border); }
+.ic.logo.dark { background: #111418; box-shadow: none; }
+.ic.logo img { width: 16px; height: 16px; display: block; pointer-events: none; user-select: none; }

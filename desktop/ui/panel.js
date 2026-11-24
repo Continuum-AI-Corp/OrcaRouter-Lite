@@ -2,6 +2,7 @@
 import { createEngine, native, toast } from "./api.js";
 import {
   AGENT_COLORS,
+  agentLogo,
   agentRows,
   budgetView,
   classifyError,
@@ -125,6 +126,12 @@ function actionButton(row) {
 }
 
 function tile(row) {
+  const logo = agentLogo(row.id);
+  if (logo) {
+    const ic = el("span", { class: logo.dark ? "ic logo dark" : "ic logo", "aria-hidden": "true" });
+    ic.append(el("img", { src: logo.src, alt: "", draggable: "false" }));
+    return ic;
+  }
   const ic = el("span", { class: "ic", style: `background:${AGENT_COLORS[row.id] || AGENT_COLORS.other}`, "aria-hidden": "true" });
   if (row.id === "other") ic.innerHTML = OTHER_GLYPH; // constant markup: "everything else"
   else ic.textContent = row.initials;

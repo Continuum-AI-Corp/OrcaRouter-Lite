@@ -1,7 +1,7 @@
 // First-run setup: pick agents, choose where requests go, set a daily alert.
 // Also reopened later from the menu, so it starts from the current settings.
 import { createEngine, native } from "./api.js";
-import { AGENT_COLORS, agentNote, agentRows } from "./lib.js";
+import { AGENT_COLORS, agentLogo, agentNote, agentRows } from "./lib.js";
 
 const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI", google: "Google", orcarouter: "OrcaRouter" };
 const TICK =
@@ -36,8 +36,19 @@ function agentItem(row, agent) {
 
   const ic = document.createElement("span");
   ic.className = "ic";
-  ic.style.background = AGENT_COLORS[row.id] || AGENT_COLORS.other;
-  ic.textContent = row.initials;
+  const logo = agentLogo(row.id);
+  if (logo) {
+    ic.classList.add("logo");
+    if (logo.dark) ic.classList.add("dark");
+    const img = document.createElement("img");
+    img.src = logo.src;
+    img.alt = "";
+    img.draggable = false;
+    ic.append(img);
+  } else {
+    ic.style.background = AGENT_COLORS[row.id] || AGENT_COLORS.other;
+    ic.textContent = row.initials;
+  }
   ic.setAttribute("aria-hidden", "true");
 
   const nm = document.createElement("label");
