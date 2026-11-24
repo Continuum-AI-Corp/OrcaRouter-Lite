@@ -69,7 +69,7 @@ def test_installer_points_at_the_release_asset_with_its_checksum(rendered):
     [inst] = doc["Installers"]
     assert inst["Architecture"] == "x64"
     assert inst["InstallerUrl"] == (
-        "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/download/v0.2.0/OrcaRouter%20Lite_0.2.0_x64-setup.exe"
+        "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/download/v0.2.0/OrcaRouter.Lite_0.2.0_x64-setup.exe"
     )
     assert inst["InstallerSha256"] == hashlib.sha256(b"windows-setup-bytes").hexdigest().upper()
     assert re.fullmatch(r"[0-9A-F]{64}", inst["InstallerSha256"])

@@ -308,7 +308,8 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" dist/* orcarouter-lite-formula.rb --clobber
 
       - name: publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned by commit: this job holds the PyPI publishing identity.
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           # Makes a re-run of a partially failed release a no-op here instead of
           # a hard "File already exists" abort. The tag/version gate above is

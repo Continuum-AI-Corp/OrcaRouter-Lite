@@ -116,8 +116,10 @@ export const native = {
   },
   // H1 (setup window only): clears the clipboard if it still holds exactly
   // the key that was saved (never another key or anything copied since).
+  // Resolves true only if it cleared the clipboard.
   async clearClipboard(key) {
     if (this.available()) return this.invoke("clear_clipboard", { key: String(key || "") });
+    return false;
   },
   // V2 (panel only): put a PNG (base64, or a canvas data: URL) on the clipboard.
   async copyPng(base64) {

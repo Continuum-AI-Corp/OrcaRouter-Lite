@@ -175,3 +175,12 @@ export function requestedStep(stored, hash, now = Date.now()) {
   const fromHash = new URLSearchParams(String(hash || "").replace(/^#/, "")).get("step");
   return STEP_ROUTES[fromHash] || null;
 }
+
+// ── setup: the line under a saved OrcaRouter key ──
+
+// Says the clipboard was cleared only when it was: it isn't if something
+// else was copied in the meantime, or outside the app (no native bridge).
+export function keySavedText({ checked, warn = null, cleared = false }) {
+  const first = checked ? "Checked with OrcaRouter and saved in your keychain." : warn || "Orca couldn't check it with OrcaRouter.";
+  return cleared ? `${first} The clipboard was cleared.` : first;
+}

@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 REPO = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite"
 
@@ -49,7 +49,9 @@ def render(version: str, folder: Path) -> dict:
             raise SystemExit(f"{name} has no signature ({sig.name}); refusing to publish an unsigned update.")
         platforms[match] = {
             "signature": sig.read_text().strip(),
-            "url": f"{REPO}/releases/download/v{version}/{quote(name)}",
+            # GitHub serves an uploaded file with spaces (and other special
+            # characters) replaced by dots; the %20 form is a 404.
+            "url": f"{REPO}/releases/download/v{version}/{re.sub(r'[^A-Za-z0-9._+-]', '.', name)}",
         }
     if not platforms:
         raise SystemExit(f"No updater files for {version} in {folder}.")

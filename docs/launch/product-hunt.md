@@ -1,6 +1,6 @@
 # Product Hunt draft
 
-**Name:** Orca Router Lite
+**Name:** OrcaRouter Lite
 
 **Tagline** (60 characters max):
 

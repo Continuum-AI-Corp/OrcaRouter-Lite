@@ -14,7 +14,7 @@ docs(custom-providers): add an OrcaRouter Lite example
 
 Adds a worked example of a custom OpenAI-engine provider whose key comes from a command, which the page doesn't show yet.
 
-[OrcaRouter Lite](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite) ("Orca") is an MIT-licensed menu-bar app and CLI that runs an OpenAI-, Anthropic- and Gemini-compatible router on `127.0.0.1:8765`. It tracks spend per coding agent, can stop agents at a daily budget, and falls back to another provider when one fails. It works with the user's own provider keys or with a hosted gateway; nothing is sent anywhere else.
+[OrcaRouter Lite](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite) ("Orca") is an MIT-licensed menu-bar app and CLI that runs an OpenAI-, Anthropic- and Gemini-compatible router on `127.0.0.1:8765`. It tracks spend per coding agent, can stop agents at a daily budget, and falls back to another provider when one fails. It works with the user's own provider keys or with a hosted gateway; apart from those requests and a once-a-day update check, nothing leaves the computer.
 
 The snippet below is exactly what `orca connect` writes (see the agent table in the [README](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite#the-desktop-app) and `packages/desktop/agents.py`), so readers can also set it up by hand. The key is a per-agent key Orca creates; `sk-orca-…` stands for it.
 
@@ -35,7 +35,7 @@ The snippet below is exactly what `orca connect` writes (see the agent table in 
   "models": [{ "name": "auto", "context_limit": 200000 }],
   "supports_streaming": true,
   "requires_auth": true,
-  "auth": { "command": "cat", "args": ["~/.orcarouter-lite/keys/goose.key"] },
+  "auth": { "command": "cat", "args": ["/Users/you/.orcarouter-lite/keys/goose.key"] },
   "dynamic_models": false
 }
 ```

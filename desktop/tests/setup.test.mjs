@@ -8,6 +8,7 @@ import {
   byokProviders,
   createClipboardOffers,
   isOrcaKey,
+  keySavedText,
   localChoice,
   localRuntime,
   requestedStep,
@@ -218,4 +219,15 @@ test("requestedStep ignores stale, unknown or broken requests", () => {
   assert.equal(requestedStep(JSON.stringify({ step: "evil", at: now }), "", now), null);
   assert.equal(requestedStep("{not json", "#step=nope", now), null);
   assert.equal(requestedStep(null, "", now), null);
+});
+
+
+// The "saved" line only says the clipboard was cleared when it was.
+test("keySavedText mentions the clipboard only when it was cleared", () => {
+  assert.equal(keySavedText({ checked: true, cleared: true }),
+    "Checked with OrcaRouter and saved in your keychain. The clipboard was cleared.");
+  assert.equal(keySavedText({ checked: true, cleared: false }), "Checked with OrcaRouter and saved in your keychain.");
+  assert.equal(keySavedText({ checked: false, warn: "OrcaRouter didn't answer.", cleared: true }),
+    "OrcaRouter didn't answer. The clipboard was cleared.");
+  assert.equal(keySavedText({ checked: false, cleared: false }), "Orca couldn't check it with OrcaRouter.");
 });

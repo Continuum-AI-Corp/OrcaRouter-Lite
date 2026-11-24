@@ -161,8 +161,6 @@ person on one computer:
   `.msi` uninstaller leaves them: delete the folder and its PATH entry by
   hand). It never replaces an `orca` that isn't Orca's, and if your PATH
   can't be read it changes nothing.
-- **Clipboard.** The key Orca offers from the clipboard is cleared after
-  saving only if the clipboard still holds that same key.
 - **The engine stops with the app.** The app holds a pipe to the engine; when
   the app exits for any reason, the engine exits too.
 - **No telemetry.** Prompts and request logs stay in

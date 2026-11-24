@@ -53,7 +53,7 @@ def test_every_platform_points_at_its_signed_download(release):
     for name, platform in FILES.items():
         entry = manifest["platforms"][platform]
         assert entry["signature"] == f"sig-for-{platform}"
-        assert entry["url"] == f"{BASE}/{name.replace(' ', '%20')}"
+        assert entry["url"] == f"{BASE}/{name.replace(' ', '.')}"
 
 
 def test_a_file_without_its_signature_is_refused(release):

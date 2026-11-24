@@ -34,7 +34,6 @@ struct AppState {
     panel_hidden_at: Mutex<Option<std::time::Instant>>,
     // Built with the updater's public key: updates install in place.
     updates_installable: bool,
-    // The last orca:// link, until the page it's for takes it.
     /// The last orca:// link and when it arrived (dropped after LINK_TTL_SECS).
     pending_link: Mutex<Option<(std::time::Instant, logic::OrcaLink)>>,
 }
@@ -227,14 +226,15 @@ fn clipboard_orca_key(window: WebviewWindow) -> Result<Option<String>, String> {
 /// H1: after the key is saved, clear it from the clipboard, but only if the
 /// clipboard still holds it (never something copied since).
 #[tauri::command]
-fn clear_clipboard(window: WebviewWindow, key: String) -> Result<(), String> {
+fn clear_clipboard(window: WebviewWindow, key: String) -> Result<bool, String> {
     guard_window(&window, "setup")?;
     let clipboard = window.app_handle().clipboard();
     let text = clipboard.read_text().unwrap_or_default();
     if logic::should_clear_clipboard(&text, &key) {
         clipboard.clear().map_err(|e| e.to_string())?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// V2: put the savings card (a PNG, base64) on the clipboard.

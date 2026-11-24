@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
 from datetime import date
 from pathlib import Path
-from urllib.parse import quote
 
 PACKAGE_ID = "OrcaRouter.Lite"
 SCHEMA = "1.6.0"
@@ -28,6 +28,13 @@ REPO = "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite"
 
 def _header(kind: str) -> str:
     return f"# yaml-language-server: $schema=https://aka.ms/winget-manifest.{kind}.{SCHEMA}.schema.json\n\n"
+
+
+def release_asset_name(name: str) -> str:
+    """The name GitHub gives an uploaded file: it replaces spaces (and other
+    special characters) with dots, so "OrcaRouter Lite_…" is served as
+    "OrcaRouter.Lite_…" and the %20 form is a 404."""
+    return re.sub(r"[^A-Za-z0-9._+-]", ".", name)
 
 
 def _sha256(path: Path) -> str:
@@ -39,7 +46,7 @@ def _sha256(path: Path) -> str:
 
 
 def render(version: str, installer: Path, release_date: str) -> dict[str, str]:
-    url = f"{REPO}/releases/download/v{version}/{quote(installer.name)}"
+    url = f"{REPO}/releases/download/v{version}/{release_asset_name(installer.name)}"
     common = f"PackageIdentifier: {PACKAGE_ID}\nPackageVersion: {version}\n"
     tail = lambda kind: f"ManifestType: {kind}\nManifestVersion: {SCHEMA}\n"  # noqa: E731
     return {

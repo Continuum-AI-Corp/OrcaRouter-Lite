@@ -74,3 +74,13 @@ def test_install_guide_documents_app_and_cli_paths():
     assert "brew install continuum-ai-corp/tap/orcarouter-lite" in text
     assert "winget install OrcaRouter.Lite" in text
 
+
+
+def test_only_intel_macs_build_cryptography_from_source(sdist):
+    # on_intel alone also matches Linux x86_64 (Linuxbrew), which has
+    # cryptography wheels and needs no Rust toolchain.
+    f = _run("--version", "0.2.0", "--sdist", str(sdist)).stdout
+    macos = f.index("on_macos do")
+    intel = f.index("on_intel do")
+    rust = f.index('depends_on "rust" => :build')
+    assert macos < intel < rust

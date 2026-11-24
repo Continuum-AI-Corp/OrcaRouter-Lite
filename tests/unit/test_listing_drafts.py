@@ -65,7 +65,10 @@ def test_each_draft_has_a_pr_title_description_and_snippet(agent_id):
 @pytest.mark.parametrize("agent_id", sorted(a for a in DRAFTS if ag.AGENTS[a].setup == "auto"))
 def test_snippet_matches_what_orca_writes(agent_id):
     text = _text(DRAFTS[agent_id])
-    key_file = Path(f"~/.orcarouter-lite/keys/{agent_id}.key") if agent_id in ag.KEY_FILE_AGENTS else None
+    # Goose runs its key command without a shell, so ~ wouldn't expand there:
+    # its draft shows the absolute path Orca writes (for a user "you").
+    home = "/Users/you" if agent_id == "goose" else "~"
+    key_file = Path(f"{home}/.orcarouter-lite/keys/{agent_id}.key") if agent_id in ag.KEY_FILE_AGENTS else None
     files = ag._desired_values(agent_id, BASE, KEY, key_file=key_file, current={})
     for rel, values in files.items():
         assert rel.split("/")[-1] in text, f"{agent_id}: name the file {rel}"

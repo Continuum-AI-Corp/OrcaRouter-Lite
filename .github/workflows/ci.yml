@@ -11,6 +11,11 @@ on:
       - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
+      - "site/**"
+      - "packaging/**"
+      - "docs/**"
+      - "desktop/ui/**"
+      - "*.md"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -21,6 +26,11 @@ on:
       - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
+      - "site/**"
+      - "packaging/**"
+      - "docs/**"
+      - "desktop/ui/**"
+      - "*.md"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 

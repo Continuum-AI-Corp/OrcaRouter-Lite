@@ -20,9 +20,11 @@ function stubNativeBridge() {
             return /^sk-orca-[A-Za-z0-9_-]{16,200}$/.test(t) ? t : null;
           }
           case "clear_clipboard":
+            // Like the app: clears only the key that was saved, says if it did.
+            if (window.__clip == null || window.__clip.trim() !== String(args?.key || "").trim()) return false;
             window.__native.cleared += 1;
             window.__clip = null;
-            return null;
+            return true;
           case "open_external":
             window.__native.opened.push(args.url);
             return null;

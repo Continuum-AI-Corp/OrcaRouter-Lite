@@ -28,10 +28,12 @@ FORMULA = """class OrcarouterLite < Formula
 
   depends_on "python@3.12"
 
-  on_intel do
-    # cryptography ships no Intel macOS wheels, so pip builds it from source.
-    depends_on "openssl@3"
-    depends_on "rust" => :build
+  on_macos do
+    on_intel do
+      # cryptography ships no Intel macOS wheels, so pip builds it from source.
+      depends_on "openssl@3"
+      depends_on "rust" => :build
+    end
   end
 
   def install

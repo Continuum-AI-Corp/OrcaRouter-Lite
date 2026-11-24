@@ -257,8 +257,8 @@ pub struct Notified {
     pub backup_week: Option<String>,
     /// Agents announced as changed and still changed.
     pub changed_agents: Vec<String>,
-    /// The current out-of-credit episode was announced.
-    pub out_of_credit: bool,
+    /// The day ("2026-11-24") OrcaRouter's out of credit was last announced.
+    pub out_of_credit_day: Option<String>,
 }
 
 /// Display names for provider ids, as the app shows them.
@@ -340,7 +340,8 @@ pub fn parse_watch(v: &Value) -> Watch {
 
 /// The notifications due on this poll and the state to remember afterwards.
 /// D5: once each time an agent becomes "changed". H2: at most once per ISO
-/// week. H4: once per out-of-credit episode.
+/// week. H4: at most once a day (the engine's flag lapses after ten minutes
+/// and returns on the next refusal, so an "episode" can't be told apart).
 pub fn notices(today: chrono::NaiveDate, prev: &Notified, w: &Watch) -> (Notified, Vec<Alert>) {
     use chrono::Datelike;
     let mut alerts = Vec::new();
@@ -361,17 +362,20 @@ pub fn notices(today: chrono::NaiveDate, prev: &Notified, w: &Watch) -> (Notifie
         }
     }
 
-    if w.out_of_credit && !prev.out_of_credit {
+    let today_s = today.format("%Y-%m-%d").to_string();
+    let mut out_of_credit_day = prev.out_of_credit_day.clone();
+    if w.out_of_credit && out_of_credit_day.as_deref() != Some(today_s.as_str()) {
         alerts.push(Alert::OutOfCredit);
+        out_of_credit_day = Some(today_s);
     }
-    (Notified { backup_week, changed_agents, out_of_credit: w.out_of_credit }, alerts)
+    (Notified { backup_week, changed_agents, out_of_credit_day }, alerts)
 }
 
 pub fn notified_to_json(n: &Notified) -> String {
     serde_json::json!({
         "backup_week": n.backup_week,
         "changed_agents": n.changed_agents,
-        "out_of_credit": n.out_of_credit,
+        "out_of_credit_day": n.out_of_credit_day,
     })
     .to_string()
 }
@@ -386,7 +390,7 @@ pub fn notified_from_json(text: &str) -> Notified {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default(),
-        out_of_credit: v.get("out_of_credit").and_then(Value::as_bool).unwrap_or(false),
+        out_of_credit_day: v.get("out_of_credit_day").and_then(Value::as_str).map(str::to_string),
     }
 }
 
@@ -1291,18 +1295,19 @@ mod tests {
     }
 
     #[test]
-    fn out_of_credit_notifies_once_per_episode() {
+    fn out_of_credit_notifies_at_most_once_a_day() {
+        // The engine's out-of-credit flag lapses after ten minutes and comes
+        // back on the next 402, so flicker within a day must stay quiet.
         let out = Watch { out_of_credit: true, ..Watch::default() };
         let (state, alerts) = notices(day(2026, 11, 24), &Notified::default(), &out);
         assert_eq!(alerts, vec![Alert::OutOfCredit]);
-        assert!(state.out_of_credit);
-        let (state, alerts) = notices(day(2026, 11, 24), &state, &out);
-        assert!(alerts.is_empty(), "same episode");
+        assert_eq!(state.out_of_credit_day.as_deref(), Some("2026-11-24"));
         let (state, alerts) = notices(day(2026, 11, 24), &state, &Watch::default());
         assert!(alerts.is_empty());
-        assert!(!state.out_of_credit, "credit was added: the episode ended");
-        let (_, alerts) = notices(day(2026, 11, 24), &state, &out);
-        assert_eq!(alerts, vec![Alert::OutOfCredit], "a new episode");
+        let (state, alerts) = notices(day(2026, 11, 24), &state, &out);
+        assert!(alerts.is_empty(), "the flag came back the same day");
+        let (_, alerts) = notices(day(2026, 11, 25), &state, &out);
+        assert_eq!(alerts, vec![Alert::OutOfCredit], "still out of credit the next day");
     }
 
     #[test]
@@ -1310,13 +1315,16 @@ mod tests {
         let state = Notified {
             backup_week: Some("2026-W48".into()),
             changed_agents: vec!["codex".into()],
-            out_of_credit: true,
+            out_of_credit_day: Some("2026-11-24".into()),
         };
         let text = notified_to_json(&state);
         assert_eq!(notified_from_json(&text), state);
         assert_eq!(notified_from_json("{}"), Notified::default());
         assert_eq!(notified_from_json("not json"), Notified::default());
-        assert!(notified_from_json(r#"{"backup_week": 7, "out_of_credit": true}"#).out_of_credit);
+        assert_eq!(
+            notified_from_json(r#"{"backup_week": 7, "out_of_credit_day": "2026-11-24"}"#).out_of_credit_day.as_deref(),
+            Some("2026-11-24")
+        );
     }
 
     // ── orca:// links ──

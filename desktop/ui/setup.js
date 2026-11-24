@@ -14,6 +14,7 @@ import {
   BADGE_MARKDOWN,
   byokProviders,
   createClipboardOffers,
+  keySavedText,
   localChoice,
   localRuntime,
   maskOrcaKey,
@@ -486,7 +487,7 @@ $("clip-use").addEventListener("click", async () => {
     setStatus(err.message, true);
     return;
   }
-  await native.clearClipboard(key).catch(() => {});
+  const cleared = (await native.clearClipboard(key).catch(() => false)) === true;
   offered = null;
   state.hostedSaved = true;
   if (!state.providers.includes("orcarouter")) state.providers.push("orcarouter");
@@ -496,9 +497,7 @@ $("clip-use").addEventListener("click", async () => {
   $("hosted-key").hidden = true;
   const checked = result?.status === "valid";
   $("key-saved").querySelector("b").textContent = checked ? "Key works." : "Key saved.";
-  $("key-saved-text").textContent = checked
-    ? "Checked with OrcaRouter and saved in your keychain. The clipboard was cleared."
-    : `${outcome.warn || "Orca couldn't check it with OrcaRouter."} The clipboard was cleared.`;
+  $("key-saved-text").textContent = keySavedText({ checked, warn: outcome.warn, cleared });
   $("key-saved").hidden = false;
   $("key-live").textContent = $("key-saved").textContent;
   setStatus("");

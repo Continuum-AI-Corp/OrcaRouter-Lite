@@ -22,7 +22,7 @@ CASK = """cask "orcarouter-lite" do
   sha256 arm:   "{arm}",
          intel: "{intel}"
 
-  url "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/download/v#{{version}}/OrcaRouter%20Lite_#{{version}}_#{{arch}}.dmg"
+  url "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/download/v#{{version}}/OrcaRouter.Lite_#{{version}}_#{{arch}}.dmg"
   name "OrcaRouter Lite"
   desc "Put a budget on every coding agent"
   homepage "https://github.com/Continuum-AI-Corp/OrcaRouter-Lite"

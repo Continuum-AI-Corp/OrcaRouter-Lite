@@ -7,7 +7,7 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
 
 ## 1. Download
 
-- **Releases** (from the first tagged version): the
+- **Releases** (from the next release): the
   [latest release](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest)
   has `.dmg` (Apple silicon and Intel), `.msi`/`.exe` (Windows) and
   `.deb`/`.AppImage` (Linux).
@@ -17,7 +17,7 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
   `orcarouter-lite-<runner>` artifact for your system: `macos-15` (Apple
   silicon), `macos-15-intel`, `windows-2022` or `ubuntu-22.04`. Ignore the
   `-updater-` artifacts; those are update bundles.
-- **Package managers** (from the first tagged version):
+- **Package managers** (from the next release):
 
   ```bash
   brew install --cask continuum-ai-corp/tap/orcarouter-lite   # macOS app
@@ -135,8 +135,10 @@ pipx install orcarouter-lite                         # any OS with Python 3.11+
 Then `orca up` starts the router, `orca connect claude-code` connects an
 agent and `orca status` shows today's spend. The formula installs the
 dependencies from the release's hash-locked `requirements.lock`. It doesn't
-include the app, and the cask doesn't put `orca` on your PATH by itself;
-install both if you want both.
+include the app, and the cask doesn't put `orca` on your PATH by itself:
+use the formula, or the app's **Install command-line tool…** menu item, not
+both. (On Intel Macs both want `/usr/local/bin/orca`; the app's item then
+falls back to `~/.local/bin/orca`, which Homebrew's copy shadows.)
 
 ## Run from source instead
 
