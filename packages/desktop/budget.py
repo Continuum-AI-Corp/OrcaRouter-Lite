@@ -89,5 +89,10 @@ async def stop_reason(session: AsyncSession, workspace_id: str) -> str | None:
 
 
 def note_settings_changed() -> None:
-    """Settings changed: forget cached limits so the change applies at once."""
+    """Settings changed: forget cached limits and routing preferences so the
+    change applies at once. (The router itself is rebuilt lazily when the
+    preferences it was built with differ; see app/router_cache.py.)"""
+    from packages.desktop import prefs
+
     reset_cache()
+    prefs.note_settings_changed()

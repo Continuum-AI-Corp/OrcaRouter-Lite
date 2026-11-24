@@ -11,6 +11,7 @@ instantiating litellm.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING
 
@@ -175,32 +176,67 @@ def _decrypt_stored_key(row: "ProviderKey", *, log_failures: bool) -> str | None
 # ── Cached router instance ────────────────────────────────────────────────
 
 _cached_client: object | None = None
+_cached_inputs: tuple | None = None
 _cache_lock = asyncio.Lock()
 
 
+@dataclass(frozen=True)
+class RouterInputs:
+    """What the router is built from besides provider keys and routing config.
+
+    In desktop mode these come from the app's stored settings (and later,
+    locally discovered models), which change without a restart: the cached
+    router is rebuilt whenever they differ from what it was built with.
+    Environment variables win over stored router knobs, so a server's
+    `.env` keeps meaning what it says.
+    """
+
+    num_retries: int
+    cooldown_seconds: float
+
+
+async def router_inputs(session, settings) -> RouterInputs:
+    num_retries = settings.router_num_retries_default
+    cooldown = float(settings.router_cooldown_seconds)
+    if settings.orca_desktop_mode:
+        from app.seed import DEFAULT_WORKSPACE_ID
+        from packages.desktop import prefs
+
+        p = await prefs.load(session, DEFAULT_WORKSPACE_ID)
+        explicit = settings.model_fields_set
+        if p.router_num_retries is not None and "router_num_retries_default" not in explicit:
+            num_retries = p.router_num_retries
+        if p.router_cooldown_seconds is not None and "router_cooldown_seconds" not in explicit:
+            cooldown = float(p.router_cooldown_seconds)
+    return RouterInputs(num_retries=num_retries, cooldown_seconds=cooldown)
+
+
 async def get_router(session) -> object:
-    """Return the cached OrcaLiteLLMClient, building it on first call.
+    """Return the cached OrcaLiteLLMClient, building it on first call and
+    rebuilding it when its `RouterInputs` changed.
 
     Imports `OrcaLiteLLMClient` lazily so unit tests of `build_deployments`
     don't drag in litellm.
     """
-    global _cached_client
-    if _cached_client is not None:
+    global _cached_client, _cached_inputs
+    from app.config import get_settings
+
+    settings = get_settings()
+    inputs = await router_inputs(session, settings)
+    if _cached_client is not None and _cached_inputs == inputs:
         return _cached_client
     async with _cache_lock:
-        if _cached_client is not None:
+        if _cached_client is not None and _cached_inputs == inputs:
             return _cached_client
 
         from sqlalchemy import select
 
         from app.auto_routing import litellm_routing_strategy
-        from app.config import get_settings
         from app.seed import DEFAULT_WORKSPACE_ID
         from packages.db.models.provider_key import ProviderKey
         from packages.db.models.routing_config import RoutingConfig
-        from packages.litellm_adapter.client import OrcaLiteLLMClient
+        from packages.litellm_adapter import client as client_mod
 
-        settings = get_settings()
         rows = (
             await session.execute(
                 select(ProviderKey).where(ProviderKey.is_deleted == 0)
@@ -225,7 +261,7 @@ async def get_router(session) -> object:
             list(routing_row.preferred_models or []) if routing_row else []
         )
 
-        _cached_client = OrcaLiteLLMClient(
+        _cached_client = client_mod.OrcaLiteLLMClient(
             deployments=deployments,
             strategy=strategy,
             preferred_models=preferred_models,
@@ -233,15 +269,17 @@ async def get_router(session) -> object:
             # Wire LiteLLM Router built-ins from settings so a deployment
             # that 404s once stays cooled down (no immediate re-pick), and
             # the cascade engine has policy for which errors fail fast.
-            cooldown_time=float(settings.router_cooldown_seconds),
+            cooldown_time=inputs.cooldown_seconds,
             allowed_fails=settings.router_allowed_fails,
             enable_pre_call_checks=settings.router_pre_call_checks,
-            num_retries=settings.router_num_retries_default,
+            num_retries=inputs.num_retries,
         )
+        _cached_inputs = inputs
         return _cached_client
 
 
 def invalidate_router() -> None:
     """Drop the cached router so the next request rebuilds it."""
-    global _cached_client
+    global _cached_client, _cached_inputs
     _cached_client = None
+    _cached_inputs = None
