@@ -44,6 +44,8 @@ OrcaRouter Lite — это open-source-редакция [OrcaRouter](https://www
 
 **Установка.** Установщики (`.dmg`, `.deb`, `.AppImage`, `.msi`) собираются в [`desktop.yml`](./.github/workflows/desktop.yml) и прикладываются к каждому релизу, начиная со следующей версии с тегом. А пока тот же движок и CLI доступны одной командой:
 
+**Нужно только приложение:** в нём свой движок и локальный файл SQLite — ни сервер, ни база данных не нужны. Загрузка, первый запуск, автозапуск при входе и удаление: [INSTALL.md](./INSTALL.md) (на английском).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

@@ -49,6 +49,8 @@ Orca アプリはメニューバーに常駐します。ルーターを `127.0.0
 [`desktop.yml`](./.github/workflows/desktop.yml) でビルドされ、次のタグ付きバージョン以降の各リリースに
 添付されます。それまでは、同じエンジンと CLI をコマンド 1 つで使えます:
 
+**必要なのはアプリだけ:** エンジンとローカルの SQLite ファイルを内蔵しているので、サーバーやデータベースの用意は不要です。ダウンロード、初回起動、ログイン時の起動、アンインストールは [INSTALL.md](./INSTALL.md)（英語）を参照してください。
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

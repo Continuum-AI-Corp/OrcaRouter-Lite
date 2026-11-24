@@ -49,6 +49,8 @@ di coding e mostra quanto spendono.
 [`desktop.yml`](./.github/workflows/desktop.yml) e allegati a ogni release, a partire dalla
 prossima versione taggata. Fino ad allora, lo stesso motore e la stessa CLI sono a un comando di distanza:
 
+**Basta l'app:** include il proprio motore e un file SQLite locale; nessun server né database da configurare. Download, primo avvio, avvio all'accesso e disinstallazione: [INSTALL.md](./INSTALL.md) (in inglese).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

@@ -114,6 +114,23 @@ person on one computer:
   key can only call models (see above) and stops working when you disconnect.
   For the one-paste-step agents (Cline, Cursor, Zed, OpenHands, DeepSeek
   Harness, ZCode) nothing is written; you paste the key into the agent.
+- **Keys are checked only with their own provider.** Before setup saves a
+  provider key it asks that provider to list its models (no tokens spent),
+  sending the key only to that provider's own API. Only the desktop app's key
+  can run a check, so a key read out of an agent's config can't probe others.
+- **Start at login.** On by default, so connected agents keep working after a
+  restart. It adds one login item (a macOS LaunchAgent, a Windows `Run`
+  registry entry, or `~/.config/autostart/OrcaRouter Lite.desktop` on Linux)
+  that starts the app in the tray with `--background`; turning the setting off
+  removes it.
+- **Uninstalling restores your agents.** "Disconnect all" in the panel (or
+  `orca disconnect --all`) restores every agent and revokes its key; the
+  Windows uninstaller runs it itself (but not during an update).
+- **Agents get an answer, not an error.** If a desktop agent asks for a model
+  none of your keys covers, the engine serves it with the best model your keys
+  do cover and names both in the `x-orca-requested-model` and
+  `x-orca-resolved-model` headers. Dashboard and server keys keep strict
+  pinned models.
 - **Agent logos are bundled.** The app shows each agent's logo from files it
   ships with, loaded as images, so showing them never contacts anyone.
 - **Team gateways only over https.** `orca login` and "Join my company's

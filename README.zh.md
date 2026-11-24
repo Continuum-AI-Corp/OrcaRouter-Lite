@@ -49,6 +49,8 @@ Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你�
 [`desktop.yml`](./.github/workflows/desktop.yml) 构建，并从下一个打标签的版本开始附加到每个 release。
 在那之前，同样的引擎和 CLI 只需一条命令即可使用：
 
+**只需安装应用：** 它自带引擎和本地 SQLite 文件，无需搭建服务器或数据库。下载、首次运行、登录时自动启动和卸载，请看 [INSTALL.md](./INSTALL.md)（英文）。
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

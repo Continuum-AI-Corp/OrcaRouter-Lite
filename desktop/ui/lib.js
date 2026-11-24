@@ -300,5 +300,5 @@ export const NO_AGENTS_TEXT =
 export function disconnectAllLabel(rows) {
   const n = (rows || []).filter((r) => r.state === "connected").length;
   if (n === 0) return null;
-  return n === 1 ? "Disconnect all" : `Disconnect all ${n}`;
+  return n === 1 ? "Disconnect all" : `Disconnect all ${n} agents`;
 }

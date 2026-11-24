@@ -536,7 +536,7 @@ def test_10d_disconnect_all_from_the_panel(stack):
     assert r.returncode == 0, r.stderr[-1500:]
     report = json.loads(r.stdout.strip().splitlines()[-1])
     assert report["errors"] == []
-    assert report["label"] == "Disconnect all 2" and "again" in report["armed"]
+    assert report["label"] == "Disconnect all 2 agents" and "again" in report["armed"]
     assert "Claude Code" in report["toast"] and "OpenCode" in report["toast"]
     agents = _app(stack, "GET", "/v1/app/agents").json()["agents"]
     assert not any(a["connected"] for a in agents)

@@ -49,6 +49,8 @@ của bạn vào đó và cho bạn thấy chúng tiêu bao nhiêu.
 [`desktop.yml`](./.github/workflows/desktop.yml) và đính kèm vào mỗi bản phát hành, bắt đầu từ
 phiên bản được gắn tag tiếp theo. Cho đến lúc đó, cùng engine và CLI ấy chỉ cách bạn một lệnh:
 
+**Chỉ cần ứng dụng:** ứng dụng có sẵn engine và một tệp SQLite cục bộ, không cần dựng máy chủ hay cơ sở dữ liệu. Tải về, chạy lần đầu, tự khởi động khi đăng nhập và gỡ cài đặt: [INSTALL.md](./INSTALL.md) (tiếng Anh).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

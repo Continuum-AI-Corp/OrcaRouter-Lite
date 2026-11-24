@@ -49,6 +49,8 @@ Coding-Agenten damit und zeigt, was sie ausgeben.
 [`desktop.yml`](./.github/workflows/desktop.yml) gebaut und ab der nächsten getaggten Version an
 jedes Release angehängt. Bis dahin sind dieselbe Engine und CLI nur einen Befehl entfernt:
 
+**Nur die App nötig:** Sie bringt ihre eigene Engine und eine lokale SQLite-Datei mit – kein Server, keine Datenbank. Download, erster Start, Start bei der Anmeldung und Deinstallation: [INSTALL.md](./INSTALL.md) (Englisch).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

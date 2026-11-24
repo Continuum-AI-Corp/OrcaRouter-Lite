@@ -49,6 +49,8 @@ vos agents de code et affiche ce qu'ils dépensent.
 [`desktop.yml`](./.github/workflows/desktop.yml) et joints à chaque release, à partir de la
 prochaine version taguée. En attendant, le même moteur et la même CLI sont à une commande près :
 
+**L'app suffit :** elle embarque son propre moteur et un fichier SQLite local ; aucun serveur ni base de données à installer. Téléchargement, premier lancement, démarrage à l'ouverture de session et désinstallation : [INSTALL.md](./INSTALL.md) (en anglais).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

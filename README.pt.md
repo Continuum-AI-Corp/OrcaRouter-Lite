@@ -44,6 +44,8 @@ O app Orca fica na sua barra de menus. Ele roda o roteador em `127.0.0.1`, conec
 
 **Instalação.** Os instaladores (`.dmg`, `.deb`, `.AppImage`, `.msi`) são gerados pelo [`desktop.yml`](./.github/workflows/desktop.yml) e anexados a cada release, a partir da próxima versão com tag. Até lá, o mesmo engine e a mesma CLI estão a um comando de distância:
 
+**Só precisa do app:** ele traz o próprio motor e um arquivo SQLite local; não há servidor nem banco de dados para configurar. Download, primeira execução, iniciar com o sistema e desinstalação: [INSTALL.md](./INSTALL.md) (em inglês).
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```

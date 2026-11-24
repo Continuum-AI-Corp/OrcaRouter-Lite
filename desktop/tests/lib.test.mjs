@@ -284,5 +284,5 @@ test("the no-agents message names more than two agents", () => {
 test("disconnect all is offered only when an agent is connected", () => {
   assert.equal(disconnectAllLabel([{ state: "available" }, { state: "missing" }]), null);
   assert.equal(disconnectAllLabel([{ state: "connected" }, { state: "available" }]), "Disconnect all");
-  assert.equal(disconnectAllLabel([{ state: "connected" }, { state: "connected" }, { state: "other" }]), "Disconnect all 2");
+  assert.equal(disconnectAllLabel([{ state: "connected" }, { state: "connected" }, { state: "other" }]), "Disconnect all 2 agents");
 });

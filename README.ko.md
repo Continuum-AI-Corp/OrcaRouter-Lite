@@ -49,6 +49,8 @@ Orca 앱은 메뉴 바에 상주합니다. `127.0.0.1`에서 라우터를 실행
 [`desktop.yml`](./.github/workflows/desktop.yml)로 빌드되며, 다음 태그 버전부터 각 릴리스에
 첨부됩니다. 그때까지는 같은 엔진과 CLI를 명령 한 줄로 사용할 수 있습니다.
 
+**앱만 있으면 됩니다:** 자체 엔진과 로컬 SQLite 파일을 포함하므로 서버나 데이터베이스를 설정할 필요가 없습니다. 다운로드, 첫 실행, 로그인 시 시작, 제거 방법은 [INSTALL.md](./INSTALL.md)(영문)를 참고하세요.
+
 ```bash
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
 ```
