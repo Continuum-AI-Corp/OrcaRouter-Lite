@@ -13,7 +13,11 @@ import {
   clockTime,
   costShort,
   fitFontSize,
+  errorMessage,
   guessHome,
+  offerAddAction,
+  paidModelsSwitch,
+  rowAmount,
   hostedProviderDetail,
   linkSheet,
   listNames,
@@ -139,9 +143,11 @@ test("providerName covers every provider id the engine reports", () => {
 // ── H0: free first ──
 
 test("todayFreeLine splits free from paid requests", () => {
-  assert.equal(todayFreeLine({ requests: 64, free_requests: 64 }), "64 requests on OrcaRouter's free models");
+  assert.equal(todayFreeLine({ requests: 64, free_requests: 64, paid_spend_microcents: 0 }), "64 requests on OrcaRouter's free models");
   assert.equal(todayFreeLine({ requests: 1, free_requests: 1 }), "1 request on OrcaRouter's free models");
-  assert.equal(todayFreeLine({ requests: 70, free_requests: 64 }), "64 requests on OrcaRouter's free models · 6 paid");
+  // Local and failed requests aren't paid: only what OrcaRouter's paid models cost counts.
+  assert.equal(todayFreeLine({ requests: 90, free_requests: 64, paid_spend_microcents: 0 }), "64 requests on OrcaRouter's free models");
+  assert.equal(todayFreeLine({ requests: 70, free_requests: 64, paid_spend_microcents: 1_230_000 }), "64 requests on OrcaRouter's free models · $1.23 paid");
   assert.equal(todayFreeLine({ requests: 5, free_requests: 0 }), "");
   assert.equal(todayFreeLine(undefined), "");
 });
@@ -152,10 +158,49 @@ test("paidModelPrompt appears only while OrcaRouter is on free models", () => {
   const plain = paidModelPrompt({ configured: true, models: "free", needs_paid_today: 0 });
   assert.equal(plain.text, "Agents use OrcaRouter's free models.");
   assert.equal(plain.action, "Use a paid model");
-  assert.match(plain.confirm, /provider's price/);
+  assert.equal(plain.confirm,
+    "Free models and your own keys still come first; requests they can't handle go to OrcaRouter's paid models, at the provider's price. This applies to all agents.");
   assert.doesNotMatch(plain.confirm, /\$5/);
   assert.equal(paidModelPrompt({ configured: true, models: "free", needs_paid_today: 3 }).text, "3 requests needed a paid model today.");
   assert.equal(paidModelPrompt({ configured: true, models: "free", needs_paid_today: 1 }).text, "1 request needed a paid model today.");
+});
+
+test("paidModelsSwitch shows the state and what On means", () => {
+  const on = paidModelsSwitch({ configured: true, models: "all" });
+  assert.deepEqual(on, {
+    on: true, enabled: true, state: "On", label: "Paid models on OrcaRouter",
+    text: "Requests free models and your own keys can't handle go to OrcaRouter's paid models, at the provider's price.",
+  });
+  const off = paidModelsSwitch({ configured: true, models: "free" });
+  assert.equal(off.on, false);
+  assert.equal(off.state, "Off");
+  assert.equal(off.text, "Only OrcaRouter's free models. Requests they and your own keys can't handle fail.");
+  const nokey = paidModelsSwitch({ configured: false, models: "free" });
+  assert.equal(nokey.enabled, false);
+  assert.equal(nokey.text, "Add an OrcaRouter key in Setup first.");
+});
+
+test("offerAddAction: open setup to add a key, or confirm when one exists", () => {
+  assert.deepEqual(offerAddAction({ configured: false }), { kind: "setup", step: "orcarouter", then: "paid" });
+  assert.deepEqual(offerAddAction({ configured: true, models: "free" }), { kind: "confirm" });
+  assert.deepEqual(offerAddAction({ configured: true, models: "all" }), { kind: "none" });
+});
+
+test("errorMessage reads FastAPI's validation list and plain details", () => {
+  assert.equal(errorMessage({ detail: [{ loc: ["body", "x"], msg: "Input should be less than or equal to 5", type: "x" }] }, 422),
+    "Input should be less than or equal to 5");
+  assert.equal(errorMessage({ detail: "Workspace not found" }, 404), "Workspace not found");
+  assert.equal(errorMessage({ error: { message: "Out of credit" } }, 402), "Out of credit");
+  assert.equal(errorMessage({ detail: { odd: 1 } }, 500), '{"odd":1}');
+  assert.equal(errorMessage(null, 503), "Request failed (503)");
+  assert.equal(errorMessage({ detail: [] }, 422), "Request failed (422)");
+});
+
+test("rowAmount keeps big amounts inside the column", () => {
+  assert.equal(rowAmount(2_600_000), "$2.60");
+  assert.equal(rowAmount(999_990_000), "$999.99");
+  assert.equal(rowAmount(1_234_560_000), "$1,235");
+  assert.equal(rowAmount(123_456_780_000), "$123K");
 });
 
 // ── H2: backup offer ──
@@ -163,14 +208,14 @@ test("paidModelPrompt appears only while OrcaRouter is on free models", () => {
 test("backupOfferView says what failed and what OrcaRouter would take", () => {
   const v = backupOfferView({ id: "backup", failed_today: 3, provider: "anthropic", agent: "claude-code", models: ["claude-sonnet-4-6"] });
   assert.equal(v.lead, "3 requests failed today.");
-  assert.equal(v.rest, "Anthropic was overloaded and none of your other keys has Claude.");
+  assert.equal(v.rest, "Anthropic didn't answer and none of your other keys has Claude.");
   assert.equal(
     v.body,
     "Add OrcaRouter's gateway as a backup and Orca sends only requests like these to it. You pay per request at the provider's price; nothing else changes.",
   );
   const one = backupOfferView({ failed_today: 1, provider: "openai", models: [] });
   assert.equal(one.lead, "1 request failed today.");
-  assert.equal(one.rest, "OpenAI was overloaded and none of your other keys could take it.");
+  assert.equal(one.rest, "OpenAI didn't answer and none of your other keys could take it.");
   assert.equal(backupOfferView(null), null);
   assert.equal(backupOfferView({ failed_today: 0, provider: "openai" }), null);
 });
@@ -222,6 +267,10 @@ test("panelAgentRows marks changed agents and adds hints", () => {
   assert.equal(rows.find((r) => r.id === "opencode").opens, false);
   const paused = panelAgentRows(agents.slice(1, 2), [{ ...spend[1], paused: true, budget_cents: 500, substitutions: [] }]);
   assert.equal(paused[0].subtitle, "Paused at its $5.00 daily budget");
+  assert.equal(paused[0].paused, true);
+  assert.equal(codex.today, "$2.60");
+  const big = panelAgentRows(agents.slice(1, 2), [{ ...spend[1], today_microcents: 1_234_560_000 }]);
+  assert.equal(big[0].today, "$1,235");
 });
 
 test("changedText names the file and the likely cause", () => {
@@ -361,6 +410,17 @@ test("requestRows formats the log and explains rescues and substitutions", () =>
 
 // ── D4: test results ──
 
+test("requestRows explains a run of the same substitution once", () => {
+  const sub = (at) => ({ at, model_requested: "claude-sonnet-4-6", model: "gpt-4.1", provider: "openai",
+    input_tokens: 10, output_tokens: 5, cost_microcents: 100, status: 200, rescued: false, note: "substituted" });
+  const rows = requestRows([sub("2026-11-24T14:13:30Z"), sub("2026-11-24T14:13:20Z"),
+    { ...sub("2026-11-24T14:12:00Z"), note: null }, sub("2026-11-24T14:11:00Z")], { tzOffsetMinutes: 0 });
+  assert.match(rows[0].note, /^Asked for claude-sonnet-4-6 at 14:13/);
+  assert.equal(rows[1].note, "");
+  assert.equal(rows[2].note, "");
+  assert.match(rows[3].note, /^Asked for claude-sonnet-4-6 at 14:11/); // a new run after a plain row
+});
+
 test("requestRows explains a run of the same failure once", () => {
   const fail = (at) => ({ at, model_requested: "claude-sonnet-4-6", model: "claude-sonnet-4-6", provider: "anthropic",
     input_tokens: 0, output_tokens: 0, cost_microcents: 0, status: 529, rescued: false, note: "no_fallback" });
@@ -485,7 +545,10 @@ test("shareCardText matches the mockup and shows totals only", () => {
   assert.equal(t.kicker, "This week, across Claude Code and Codex");
   assert.equal(t.headline, "Orca saved me $38.40");
   assert.equal(t.sub, "and rescued 6 requests");
-  assert.equal(t.footer, "github.io/OrcaRouter-Lite");
+  assert.equal(t.footer, "continuum-ai-corp.github.io/OrcaRouter-Lite");
+  assert.equal(t.alt, "This week, across Claude Code and Codex: Orca saved me $38.40 and rescued 6 requests.");
+  assert.equal(shareCardText({ ...card, week_saved_microcents: 0, rescued: 1, agents: [], local_requests: 212 }).alt,
+    "This week, with my coding agents: Orca answered 212 requests on my computer and rescued 1 request.");
   assert.equal(t.post, "This week Orca saved me $38.40 and rescued 6 requests across Claude Code and Codex.");
   assert.equal(shareCardText({ ...card, rescued: 1 }).sub, "and rescued 1 request");
   const nothing = shareCardText({ ...card, week_saved_microcents: 0, rescued: 0, agents: [], local_requests: 0 });
@@ -577,4 +640,8 @@ test("setupHash asks setup to open at a step and keeps the key", () => {
   assert.equal(setupHash("#key=abc&step=gateway", "orcarouter"), "#key=abc&step=orcarouter");
   assert.equal(setupHash("", "gateway"), "#step=gateway");
   assert.throws(() => setupHash("", "evil"));
+  // "Add OrcaRouter backup" asks setup to turn paid models on after the key is saved.
+  assert.equal(setupHash("#key=abc", "orcarouter", "paid"), "#key=abc&step=orcarouter&then=paid");
+  assert.equal(setupHash("#key=abc&then=paid", "gateway"), "#key=abc&step=gateway");
+  assert.throws(() => setupHash("", "orcarouter", "everything"));
 });

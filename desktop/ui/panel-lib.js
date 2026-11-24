@@ -2,7 +2,9 @@
 // sheet, model picker, local models, settings, team, sharing, orca:// links).
 // Pure functions only, like lib.js: no DOM, no network. Tests:
 // desktop/tests/panel.test.mjs.
-import { agentRows, money, withRef } from "./lib.js";
+import { agentRows, errorMessage, money, withRef } from "./lib.js";
+
+export { errorMessage };
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -126,12 +128,36 @@ export const providerName = (id) => PROVIDERS[id] || String(id || "");
 
 // ── H0: free models first ──
 
+// What OrcaRouter's paid models cost today is the "paid" part; local,
+// own-key and failed requests are neither.
 export function todayFreeLine(today) {
   const free = Number(today?.free_requests) || 0;
   if (!free) return "";
-  const paid = Math.max(0, (Number(today.requests) || 0) - free);
+  const paid = Number(today.paid_spend_microcents) || 0;
   const base = `${plural(free, "request")} on OrcaRouter's free models`;
-  return paid ? `${base} · ${paid} paid` : base;
+  return paid > 0 ? `${base} · ${money(paid)} paid` : base;
+}
+
+// Auto always tries OrcaRouter's free models, then the user's own keys;
+// paid OrcaRouter models only come last, and only when this is on.
+export const PAID_CONFIRM =
+  "Free models and your own keys still come first; requests they can't handle go to OrcaRouter's paid models, at the provider's price. This applies to all agents.";
+
+export function paidModelsSwitch(hosted) {
+  const on = hosted?.models === "all";
+  const enabled = Boolean(hosted?.configured);
+  let text = on
+    ? "Requests free models and your own keys can't handle go to OrcaRouter's paid models, at the provider's price."
+    : "Only OrcaRouter's free models. Requests they and your own keys can't handle fail.";
+  if (!enabled) text = "Add an OrcaRouter key in Setup first.";
+  return { on, enabled, state: on ? "On" : "Off", label: "Paid models on OrcaRouter", text };
+}
+
+// "Add OrcaRouter backup": paid models are turned on only once a key exists
+// (setup does it after saving one, when asked with then: "paid").
+export function offerAddAction(hosted) {
+  if (!hosted?.configured) return { kind: "setup", step: "orcarouter", then: "paid" };
+  return hosted.models === "all" ? { kind: "none" } : { kind: "confirm" };
 }
 
 export function paidModelPrompt(hosted) {
@@ -140,7 +166,7 @@ export function paidModelPrompt(hosted) {
   return {
     text: n ? `${plural(n, "request")} needed a paid model today.` : "Agents use OrcaRouter's free models.",
     action: "Use a paid model",
-    confirm: "Paid models cost the provider's price per request. Free models still come first.",
+    confirm: PAID_CONFIRM,
     confirmAction: "Use paid models",
     urgent: n > 0,
   };
@@ -155,7 +181,7 @@ export function backupOfferView(offer) {
   const tail = family ? `none of your other keys has ${family}.` : `none of your other keys could take ${n === 1 ? "it" : "them"}.`;
   return {
     lead: `${plural(n, "request")} failed today.`,
-    rest: `${providerName(offer.provider)} was overloaded and ${tail}`,
+    rest: `${providerName(offer.provider)} didn't answer and ${tail}`,
     body: "Add OrcaRouter's gateway as a backup and Orca sends only requests like these to it. You pay per request at the provider's price; nothing else changes.",
   };
 }
@@ -190,13 +216,24 @@ export function substitutionNote(agentName, sub, hosted = {}) {
 
 // ── agent rows: D5 "changed", H3 hint, D3 paused ──
 
+// An agent row's amount: cents until $1,000, then whole dollars, then
+// thousands, so it fits its column.
+export function rowAmount(microcents) {
+  const m = Math.max(0, Number(microcents) || 0);
+  if (m < 1_000_000_000 - 5_000) return money(m);
+  const dollars = Math.round(m / 1_000_000);
+  if (dollars < 100_000) return `$${dollars.toLocaleString("en-US")}`;
+  return `$${Math.round(dollars / 1000).toLocaleString("en-US")}K`;
+}
+
 export function panelAgentRows(agents, spend = [], opts = { includeOther: true }) {
   const byId = Object.fromEntries((spend || []).map((s) => [s.id, s]));
   const raw = Object.fromEntries((agents || []).map((a) => [a.id, a]));
   return agentRows(agents, spend, opts).map((row) => {
     const a = raw[row.id] || {};
     const s = byId[row.id] || {};
-    const out = { ...row, hint: false, opens: false, configPath: a.config_path || null };
+    const out = { ...row, hint: false, opens: false, paused: false, configPath: a.config_path || null };
+    if (s.today_microcents !== undefined) out.today = rowAmount(s.today_microcents);
     if (row.state !== "connected") return out;
     out.opens = true;
     if (a.changed || s.state === "changed") {
@@ -360,7 +397,8 @@ export function requestRows(requests, { tzOffsetMinutes = localOffsetMinutes() }
   return (requests || []).map((r) => {
     const time = clockTime(r.at, tzOffsetMinutes);
     const failed = Number(r.status) >= 400;
-    const kind = failed ? `${r.status}|${r.note}|${r.provider}|${r.model_requested}` : null;
+    const note = requestNote(r, time);
+    const kind = note ? `${failed}|${r.status}|${r.note}|${r.rescued}|${r.provider}|${r.model_requested}|${r.model}` : null;
     const repeat = kind !== null && kind === previous;
     previous = kind;
     return {
@@ -370,7 +408,7 @@ export function requestRows(requests, { tzOffsetMinutes = localOffsetMinutes() }
       tokens: tokenFlow(r.input_tokens, r.output_tokens),
       cost: costShort(r.cost_microcents),
       tag: failed ? "failed" : r.rescued ? "rescued" : null,
-      note: repeat ? "" : requestNote(r, time),
+      note: repeat ? "" : note,
     };
   });
 }
@@ -517,10 +555,10 @@ export function shareCardText(card) {
     headline,
     sub,
     brand: "Orca Router",
-    footer: "github.io/OrcaRouter-Lite",
+    footer: "continuum-ai-corp.github.io/OrcaRouter-Lite",
     post,
     shareable: saved > 0 || rescued > 0 || local > 0,
-    alt: [agents ? `This week, across ${agents}` : "This week", headline, sub].filter(Boolean).join(". "),
+    alt: `${agents ? `This week, across ${agents}` : "This week, with my coding agents"}: ${headline}${sub ? ` ${sub}` : ""}.`,
   };
 }
 
@@ -636,9 +674,14 @@ export function linkSheet(link, agents) {
 // Setup reads `step` from its URL fragment to open at that step.
 export const SETUP_STEPS = ["orcarouter", "gateway"];
 
-export function setupHash(hash, step) {
+// `then`: what setup does once the step is done ("paid": turn on paid
+// OrcaRouter models after an OrcaRouter key is saved).
+export function setupHash(hash, step, then = null) {
   if (!SETUP_STEPS.includes(step)) throw new Error(`unknown setup step: ${step}`);
+  if (then !== null && then !== "paid") throw new Error(`unknown follow-up: ${then}`);
   const params = new URLSearchParams(String(hash || "").replace(/^#/, ""));
   params.set("step", step);
+  params.delete("then");
+  if (then) params.set("then", then);
   return `#${params.toString()}`;
 }

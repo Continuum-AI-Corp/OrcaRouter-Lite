@@ -1,6 +1,6 @@
 // Engine client for the Orca app. Same-origin: the engine serves these
 // pages at /desktop/, so requests go to location.origin with the app key.
-import { engineConfig, tzOffsetMinutes } from "./lib.js";
+import { engineConfig, errorMessage, tzOffsetMinutes } from "./lib.js";
 
 const TIMEOUT_MS = 8_000;
 
@@ -40,8 +40,7 @@ export function createEngine(win = window) {
       data = null;
     }
     if (!resp.ok) {
-      const msg = data?.error?.message || data?.detail || `Request failed (${resp.status})`;
-      throw new EngineError(typeof msg === "string" ? msg : JSON.stringify(msg), resp.status);
+      throw new EngineError(errorMessage(data, resp.status), resp.status);
     }
     return data;
   }
@@ -231,8 +230,7 @@ async function panelCall(engine, method, path, body, timeoutMs = TIMEOUT_MS) {
     data = null;
   }
   if (!resp.ok) {
-    const msg = data?.error?.message || data?.detail || `Request failed (${resp.status})`;
-    throw new EngineError(typeof msg === "string" ? msg : JSON.stringify(msg), resp.status);
+    throw new EngineError(errorMessage(data, resp.status), resp.status);
   }
   return data;
 }
@@ -263,9 +261,10 @@ export function panelEngine(engine) {
 // takes no arguments, so the step also waits in localStorage (same origin as
 // setup) under "orca-setup-step" as {step, at}; setup reads it once. In a
 // plain browser the step rides in setup's URL fragment.
-native.openSetupAt = async function openSetupAt(engine, step, hash) {
+// `extra` rides along ({then: "paid"}: turn on paid models once a key is saved).
+native.openSetupAt = async function openSetupAt(engine, step, hash, extra = {}) {
   try {
-    localStorage.setItem("orca-setup-step", JSON.stringify({ step, at: Date.now() }));
+    localStorage.setItem("orca-setup-step", JSON.stringify({ step, at: Date.now(), ...extra }));
   } catch {
     /* storage can be unavailable; setup then opens at its first step */
   }

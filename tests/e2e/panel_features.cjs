@@ -91,9 +91,54 @@ const scenarios = {
     report.needsKey = (await page.locator(".picker:not([hidden]) .pick-note").textContent()).trim();
     await page.keyboard.press("Escape");
 
+    await page.locator('[data-act="sub-keep"]').focus();
+    await page.keyboard.press("Enter");
+    await page.locator(".as-state .note.info").waitFor({ state: "detached", ...T });
+    report.focusAfterKeep = await page.evaluate(() => document.activeElement?.id);
+
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.locator("#agents").waitFor(T);
     report.backOnHome = await page.locator("#home").isVisible();
+  },
+
+  // D4: a failed Test reads as words (never "null"); Disconnect from the
+  // sheet leaves focus on the agent list.
+  async testfail(page, report) {
+    await page.locator('li[data-id="opencode"] .nm-btn').click();
+    await page.locator(".as-head").waitFor(T);
+    await page.getByRole("button", { name: "Test", exact: true }).click();
+    await page.locator(".as-test-result:not([hidden])").waitFor(T);
+    report.test = (await page.locator(".as-test-result").textContent()).trim();
+    report.testTone = await page.locator(".as-test-result").getAttribute("class");
+    const btn = page.locator('[data-act="sheet-disconnect"]');
+    await btn.click();
+    await page.waitForTimeout(500); // past the double-click guard
+    await btn.click();
+    await page.locator("#home").waitFor({ state: "visible", ...T });
+    await page.waitForTimeout(300);
+    report.focusAfterDisconnect = await page.evaluate(() => document.activeElement?.id);
+  },
+
+  // H0: the paid-models switch under OrcaRouter and in Settings.
+  async paid(page, report) {
+    const sw = page.locator('#providers [role="switch"]');
+    await sw.waitFor(T);
+    report.before = { checked: await sw.getAttribute("aria-checked"), text: (await sw.textContent()).trim() };
+    await sw.click();
+    report.confirm = (await page.locator("#providers .confirm-box p").textContent()).trim();
+    report.focusOnConfirm = await page.evaluate(() => document.activeElement?.textContent);
+    await page.locator("#providers .confirm-box").getByRole("button", { name: "Use paid models" }).click();
+    await page.locator('#providers [role="switch"][aria-checked="true"]').waitFor(T);
+    report.afterOn = (await appFetch(page, "GET", "/v1/app/settings")).hosted_models;
+    await page.locator("#open-settings").click();
+    const set = page.locator('.view-body [role="switch"]');
+    await set.waitFor(T);
+    report.settingsState = (await set.textContent()).trim();
+    report.settingsText = (await page.locator(".view-body .paid-switch .fine").textContent()).trim();
+    await set.click(); // off needs no confirmation
+    await page.locator('.view-body [role="switch"][aria-checked="false"]').waitFor(T);
+    report.afterOff = (await appFetch(page, "GET", "/v1/app/settings")).hosted_models;
+    report.retriesLabel = await page.locator('label[for="set-retries"]').textContent();
   },
 
   // H2: the backup offer after failures with no fallback, and Not now.
@@ -102,6 +147,13 @@ const scenarios = {
     report.lead = await page.locator("#offer-lead").textContent();
     report.rest = await page.locator("#offer-rest").textContent();
     report.body = await page.locator("#offer-body").textContent();
+    await page.getByRole("button", { name: "Add OrcaRouter backup" }).click();
+    await page.waitForURL(/setup\.html/, T);
+    report.setupUrlHash = new URL(page.url()).hash;
+    report.stepRequest = JSON.parse(await page.evaluate(() => localStorage.getItem("orca-setup-step")));
+    report.hostedModelsAfterAdd = (await appFetch(page, "GET", "/v1/app/settings")).hosted_models;
+    await page.goto(`${base}/desktop/panel.html#key=${key}`);
+    await page.locator("#offer").waitFor({ state: "visible", ...T });
     await page.getByRole("button", { name: "Not now" }).click();
     await page.locator("#offer").waitFor({ state: "hidden", ...T });
     await page.waitForTimeout(800); // the save and the refresh after it
@@ -176,8 +228,15 @@ const scenarios = {
     await page.locator("#link-modal").waitFor({ state: "visible", ...T });
     report.connectTitle = await page.locator("#link-title").textContent();
     report.focusOnCancel = await page.evaluate(() => document.activeElement?.id);
+    await sendLink(page, { action: "join", gateway: "https://gw.example.dev" }); // waits its turn
+    await page.waitForTimeout(200);
+    report.titleWhileQueued = await page.locator("#link-title").textContent();
     await page.getByRole("button", { name: "Cancel" }).click();
+    await page.locator("#link-title", { hasText: "Join a team gateway" }).waitFor(T);
+    report.queuedHost = await page.locator("#link-host").textContent();
+    await page.keyboard.press("Escape");
     await page.locator("#link-modal").waitFor({ state: "hidden", ...T });
+    report.focusAfterSheets = await page.evaluate(() => document.activeElement?.tagName);
     await page.waitForTimeout(300);
     report.connectedAfterCancel = (await appFetch(page, "GET", "/v1/app/agents")).agents.find((a) => a.id === "gemini-cli").connected;
 
@@ -229,6 +288,21 @@ const scenarios = {
     await page.locator("#aa-clear").click();
     await page.locator("#aa-key").waitFor(T);
     report.keyAfterRemove = await appFetch(page, "GET", "/v1/app/benchmark-key");
+    report.focusAfterRemove = await page.evaluate(() => document.activeElement?.id);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    report.panelCollapsed = await page.evaluate(() => getComputedStyle(document.getElementById("budget-input")).visibility);
+    await page.locator("#budget-edit").click();
+    await page.waitForTimeout(400);
+    report.panelOpened = await page.evaluate(() => getComputedStyle(document.getElementById("budget-input")).visibility);
+    await page.goto(`${base}/desktop/setup.html#key=${key}`);
+    await page.locator(".collapse").first().waitFor({ state: "attached", ...T });
+    await page.waitForTimeout(500);
+    report.setupCollapses = await page.evaluate(() =>
+      [...document.querySelectorAll(".collapse")].map((c) => ({
+        open: getComputedStyle(c).gridTemplateRows !== "0px",
+        visibility: getComputedStyle(c).visibility,
+      })),
+    );
   },
 };
 

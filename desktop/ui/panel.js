@@ -19,6 +19,7 @@ import {
 } from "./lib.js";
 import {
   OUT_OF_CREDIT,
+  PAID_CONFIRM,
   agentBudgetView,
   backupOfferView,
   benchmarkKeyView,
@@ -27,7 +28,9 @@ import {
   linkSheet,
   localDate,
   localView,
+  offerAddAction,
   paidModelPrompt,
+  paidModelsSwitch,
   panelAgentRows,
   panelProviderRows,
   requestRows,
@@ -96,8 +99,89 @@ function el(tag, attrs = {}, ...children) {
 
 const spinner = () => el("span", { class: "spinner", "aria-hidden": "true" });
 
-function openSetupAt(step) {
-  native.openSetupAt(engine, step, setupHash(window.location.hash, step)).catch(() => {});
+// `then: "paid"` asks setup to turn on paid models once an OrcaRouter key
+// is saved (and not before).
+function openSetupAt(step, then = null) {
+  native.openSetupAt(engine, step, setupHash(window.location.hash, step, then), then ? { then } : {}).catch(() => {});
+}
+
+// An inline "are you sure" with the paid-models wording. Returns the box;
+// focus moves to its confirm button.
+function confirmBox(text, yesLabel, onYes, onNo) {
+  const yes = el("button", { class: "btn btn-primary btn-sm", type: "button", "data-focus": "confirm-yes" }, yesLabel);
+  const no = el("button", { class: "btn btn-ghost btn-sm", type: "button" }, "Not now");
+  yes.addEventListener("click", async () => {
+    yes.disabled = true;
+    try {
+      await onYes();
+    } finally {
+      yes.disabled = false;
+    }
+  });
+  no.addEventListener("click", onNo);
+  const box = el("div", { class: "confirm-box", role: "group", "aria-label": "Confirm" }, el("p", {}, text), el("div", { class: "actions" }, no, yes));
+  setTimeout(() => yes.isConnected && yes.focus(), 0);
+  return box;
+}
+
+// Re-render `host`'s children, keeping focus on the control with the same
+// data-focus key when focus was inside.
+function keepFocus(host, render) {
+  const key = host.contains(document.activeElement) ? document.activeElement.dataset?.focus : null;
+  render();
+  if (key) host.querySelector(`[data-focus="${CSS.escape(key)}"]`)?.focus();
+}
+
+// ── paid models on OrcaRouter: one switch, in Providers and in Settings ──
+
+let paidConfirmIn = null; // where the "turn on" confirmation is open
+
+async function setPaidModels(on) {
+  try {
+    await engine.saveSettings({ hosted_models: on ? "all" : "free" });
+    if (on) toast("ok", "Paid models are on", "Free models and your own keys still come first, for all agents.");
+    else toast("ok", "Paid models are off", "OrcaRouter answers with its free models only.");
+    paidConfirmIn = null;
+    await refresh();
+    return true;
+  } catch (err) {
+    toast("err", on ? "Couldn't turn on paid models" : "Couldn't turn off paid models", err.message);
+    return false;
+  }
+}
+
+function paidSwitch(where, { withText = false, rerender }) {
+  const v = paidModelsSwitch(lastSummary?.hosted);
+  const sw = el(
+    "button",
+    { class: `switch${v.on ? " on" : ""}`, type: "button", role: "switch", "aria-checked": String(v.on), "aria-label": v.label, "data-focus": `paid-${where}`, disabled: !v.enabled },
+    el("span", { class: "track", "aria-hidden": "true" }, el("span", { class: "knob" })),
+    el("span", { class: "sw-state" }, v.state),
+  );
+  sw.addEventListener("click", async () => {
+    if (v.on) {
+      await setPaidModels(false);
+      rerender();
+    } else {
+      paidConfirmIn = paidConfirmIn === where ? null : where;
+      rerender();
+    }
+  });
+  const box = el("div", { class: "paid-switch" }, el("div", { class: "sw-row" }, el("span", { class: "sw-label" }, withText ? v.label : "Paid models"), sw));
+  if (withText) box.append(el("p", { class: "fine" }, v.text));
+  if (paidConfirmIn === where && !v.on) {
+    box.append(
+      confirmBox(PAID_CONFIRM, "Use paid models", async () => {
+        await setPaidModels(true);
+        rerender();
+      }, () => {
+        paidConfirmIn = null;
+        rerender();
+        document.querySelector(`[data-focus="paid-${where}"]`)?.focus();
+      }),
+    );
+  }
+  return box;
 }
 
 function openLink(url) {
@@ -181,7 +265,7 @@ function openPaid(open) {
 
 async function usePaidModels() {
   await engine.saveSettings({ hosted_models: "all" });
-  toast("ok", "Paid models are on", "OrcaRouter can now answer with paid models, at the provider's price per request.");
+  toast("ok", "Paid models are on", "Free models and your own keys still come first, for all agents.");
 }
 
 $("paid-open").addEventListener("click", () => openPaid(!$("paid-collapse").classList.contains("open")));
@@ -221,6 +305,7 @@ function renderOffers(s) {
 
 $("offer-dismiss").addEventListener("click", async () => {
   $("offer").hidden = true;
+  $("agents-h").focus();
   fitWindow();
   try {
     await patchSettings((cur) => ({ dismissed_offers: { ...(cur.dismissed_offers || {}), backup: localDate() } }));
@@ -229,16 +314,23 @@ $("offer-dismiss").addEventListener("click", async () => {
   }
   await refresh();
 });
-$("offer-add").addEventListener("click", async () => {
-  // The user asked for a backup that pays per request; paid models must be
-  // allowed for OrcaRouter to take requests like these.
-  try {
-    await engine.saveSettings({ hosted_models: "all" });
-  } catch (err) {
-    toast("err", "Couldn't set up the backup", err.message);
-    return;
-  }
-  openSetupAt("orcarouter");
+$("offer-add").addEventListener("click", () => {
+  const next = offerAddAction(lastSummary?.hosted);
+  if (next.kind === "setup") {
+    // Paid models come on only after a key is saved, in setup.
+    openSetupAt(next.step, next.then);
+  } else if (next.kind === "confirm") {
+    const host = $("offer-confirm");
+    host.replaceChildren(
+      confirmBox(PAID_CONFIRM, "Use paid models", async () => {
+        if (await setPaidModels(true)) host.replaceChildren();
+      }, () => {
+        host.replaceChildren();
+        $("offer-add").focus();
+      }),
+    );
+    fitWindow();
+  } else toast("info", "OrcaRouter is already your backup", "Requests your keys can't take go to it.");
 });
 $("credit-add").addEventListener("click", () => openLink(withRef(lastSummary?.hosted?.billing_url, "lite-panel")));
 
@@ -347,6 +439,10 @@ $("agents").addEventListener("click", (e) => {
 // ── providers (H4) ──
 
 function renderProviders(s) {
+  keepFocus($("providers"), () => renderProviderRows(s));
+}
+
+function renderProviderRows(s) {
   const rows = panelProviderRows(s);
   const list = $("providers");
   if (!rows.length) {
@@ -357,7 +453,7 @@ function renderProviders(s) {
     ...rows.map((p) => {
       let right;
       if (p.link && !p.status) {
-        right = el("button", { class: "btn btn-link btn-sm", type: "button", "data-url": p.link.url, "aria-label": `${p.link.text} on OrcaRouter (opens in your browser)` }, `${p.link.text} `, el("span", { "aria-hidden": "true" }, "↗"));
+        right = el("button", { class: "btn btn-link btn-sm", type: "button", "data-url": p.link.url, "data-focus": "balance", "aria-label": `${p.link.text} on OrcaRouter (opens in your browser)` }, `${p.link.text} `, el("span", { "aria-hidden": "true" }, "↗"));
       } else right = el("span", { class: `pill ${p.tone}` }, p.status);
       return el(
         "li",
@@ -365,6 +461,7 @@ function renderProviders(s) {
         el("span", { class: `ic tile ${p.id === "orcarouter" ? "brand" : ""}`, "aria-hidden": "true" }, p.initials || p.name.slice(0, 2).toUpperCase()),
         el("span", { class: "nm" }, el("b", {}, p.name), p.detail ? el("small", {}, p.detail) : null),
         right,
+        p.id === "orcarouter" ? el("div", { class: "prov-extra" }, paidSwitch("providers", { rerender: () => renderProviders(lastSummary) })) : null,
       );
     }),
   );
@@ -566,7 +663,7 @@ function closeView({ restoreFocus = true } = {}) {
   $("view-body").replaceChildren();
   fitWindow();
   if (restoreFocus && opener?.isConnected) opener.focus();
-  else if (restoreFocus) $("agents-h").scrollIntoView({ block: "nearest" });
+  else if (restoreFocus) $("agents-h").focus();
 }
 
 $("view-back").addEventListener("click", () => closeView());
@@ -614,13 +711,24 @@ async function openAgentSheet(id, opener) {
   function renderHead() {
     const r = rowOf();
     const s = spendOf();
-    const pill = r.state === "changed" ? el("span", { class: "pill warn" }, "Settings changed") : el("span", { class: "pill ok" }, "Connected");
+    const pill =
+      r.state === "changed"
+        ? el("span", { class: "pill warn" }, "Settings changed")
+        : r.paused
+          ? el("span", { class: "pill warn" }, "Paused")
+          : el("span", { class: "pill ok" }, "Connected");
     head.replaceChildren(tile(r), el("span", { class: "nm" }, el("b", {}, r.name), pill), el("span", { class: "as-today" }, `${money(s.today_microcents)} today`));
   }
 
+  let stateKey = null;
+  let subConfirm = false;
   function renderState() {
-    if (state.contains(document.activeElement)) return;
     const r = rowOf();
+    const sub0 = (spendOf().substitutions || [])[0] || null;
+    const key = JSON.stringify([r.state, r.name, r.configPath, sub0, lastSummary?.hosted?.configured, lastSummary?.hosted?.models, subConfirm]);
+    if (key === stateKey) return; // unchanged: leave focus and inputs alone
+    stateKey = key;
+    const hadFocus = state.contains(document.activeElement);
     const items = [];
     if (r.state === "changed") {
       items.push(
@@ -643,17 +751,33 @@ async function openAgentSheet(id, opener) {
             el("button", { class: "btn btn-primary btn-sm", type: "button", "data-act": `sub-${n.action}`, "aria-label": n.offerTitle }, "Add"),
           )
         : null;
+      const confirm =
+        n.action === "paid" && subConfirm
+          ? confirmBox(PAID_CONFIRM, "Use paid models", async () => {
+              subConfirm = false;
+              await setPaidModels(true);
+              if (view === v) renderState();
+            }, () => {
+              subConfirm = false;
+              renderState();
+              state.querySelector('[data-act="sub-paid"]')?.focus();
+            })
+          : null;
       items.push(
         el(
           "div",
           { class: "note info" },
           el("p", {}, n.text),
           offer,
+          confirm,
           el("button", { class: "btn btn-link btn-sm", type: "button", "data-act": "sub-keep", "data-model": sub.requested }, n.keep),
         ),
       );
     }
     state.replaceChildren(...items);
+    // What had focus is gone (the note was kept or resolved): land on the sheet's title.
+    if (hadFocus && !state.contains(document.activeElement) && !subConfirm) $("view-title").focus();
+    fitWindow();
   }
 
   function renderTest() {
@@ -662,7 +786,8 @@ async function openAgentSheet(id, opener) {
     testLine.hidden = !t;
     if (!t) return;
     testLine.className = `as-test-result note ${t.tone}`;
-    testLine.append(t.lead ? el("b", {}, `${t.lead} `) : null, t.text);
+    if (t.lead) testLine.append(el("b", {}, `${t.lead} `));
+    testLine.append(t.text);
   }
 
   // D3: per-agent daily budget.
@@ -874,13 +999,8 @@ async function openAgentSheet(id, opener) {
     } else if (act === "sub-setup") {
       openSetupAt("orcarouter");
     } else if (act === "sub-paid") {
-      btn.disabled = true;
-      try {
-        await usePaidModels();
-      } catch (err) {
-        toast("err", "Couldn't turn on paid models", err.message);
-      }
-      await refresh();
+      subConfirm = true;
+      renderState();
     } else if (act === "sub-keep") {
       const model = btn.dataset.model;
       try {
@@ -890,6 +1010,7 @@ async function openAgentSheet(id, opener) {
         toast("err", "Couldn't save", err.message);
       }
       await refresh();
+      if (view === v) renderState();
     } else if (act === "sheet-disconnect") {
       const now = performance.now();
       if (!sheetArmed) {
@@ -916,7 +1037,7 @@ async function openAgentSheet(id, opener) {
         const res = await engine.disconnect(id);
         toast("ok", `${res.name} disconnected`, "Its original settings are restored.");
         closeView({ restoreFocus: false });
-        $("agents-h").focus?.();
+        $("agents-h").focus();
       } catch (err) {
         toast("err", `Couldn't disconnect ${r.name}`, err.message, 6000);
         btn.disabled = false;
@@ -963,14 +1084,15 @@ async function openSettings(opener) {
   const keyBox = el("div", { class: "aa" }, el("p", { class: "fine" }, "Loading…"));
   const retries = el("input", { id: "set-retries", type: "number", min: "0", max: "5", step: "1", inputmode: "numeric", placeholder: "Default" });
   const cooldown = el("input", { id: "set-cooldown", type: "number", min: "0", max: "3600", step: "1", inputmode: "numeric", placeholder: "Default" });
-  const routerStatus = el("p", { class: "fine", "aria-live": "polite" }, "Takes effect immediately. No restart.");
+  const routerStatus = el("p", { class: "fine", "aria-live": "polite" }, "Auto moves on to the next model right away; retries apply to models you pin. Takes effect immediately. No restart.");
+  const routerSave = el("button", { class: "btn btn-primary btn-sm", type: "submit", disabled: true }, "Save");
   const routerForm = el(
     "form",
     { class: "router-form", novalidate: true },
     el(
       "div",
       { class: "two-fields" },
-      el("div", { class: "field" }, el("label", { class: "field-label", for: "set-retries" }, "Retries"), el("span", { class: "unit-input" }, retries)),
+      el("div", { class: "field" }, el("label", { class: "field-label", for: "set-retries" }, "Retries (pinned models)"), el("span", { class: "unit-input" }, retries)),
       el(
         "div",
         { class: "field" },
@@ -978,10 +1100,14 @@ async function openSettings(opener) {
         el("span", { class: "unit-input" }, cooldown, el("span", { "aria-hidden": "true" }, "s")),
       ),
     ),
-    el("div", { class: "actions" }, el("button", { class: "btn btn-primary btn-sm", type: "submit" }, "Save")),
+    el("div", { class: "actions" }, routerSave),
     routerStatus,
   );
+  const paidHost = el("div", {});
+  const renderPaid = () => keepFocus(paidHost, () => paidHost.replaceChildren(paidSwitch("settings", { withText: true, rerender: renderPaid })));
+  renderPaid();
   body.append(
+    section("OrcaRouter", paidHost),
     section("Benchmark scores", el("p", { class: "field-label" }, "Artificial Analysis key"), keyBox,
       el("p", { class: "fine" }, "Used by the Quality and Balanced strategies. Free tier is plenty; scores refresh hourly.")),
     section("When a provider fails", routerForm),
@@ -1002,6 +1128,7 @@ async function openSettings(opener) {
         try {
           renderKey(await api.saveBenchmarkKey(value));
           announce("Key saved");
+          (keyBox.querySelector("#aa-clear") || keyBox.querySelector("code"))?.focus();
         } catch (err) {
           toast("err", "Couldn't save the key", err.message);
         }
@@ -1010,13 +1137,14 @@ async function openSettings(opener) {
       return;
     }
     const pill = el("span", { class: `pill ${k.mode === "env" ? "muted" : "ok"}` }, k.mode === "env" ? "Environment" : "Saved");
-    const shown = el("div", { class: "aa-shown" }, el("code", { class: "mono" }, k.hint), pill);
+    const shown = el("div", { class: "aa-shown" }, el("code", { class: "mono", tabindex: "-1" }, k.hint), pill);
     const actions = k.mode === "saved" ? el("button", { class: "btn btn-link btn-sm", type: "button", id: "aa-clear" }, "Remove") : null;
     keyBox.replaceChildren(shown, el("p", { class: "fine aa-note" }, k.text, " ", actions));
     actions?.addEventListener("click", async () => {
       try {
         renderKey(await api.saveBenchmarkKey(null));
         announce("Key removed");
+        keyBox.querySelector("#aa-key")?.focus();
       } catch (err) {
         toast("err", "Couldn't remove the key", err.message);
       }
@@ -1025,6 +1153,7 @@ async function openSettings(opener) {
 
   routerForm.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (routerSave.disabled) return; // never save blanks over values that didn't load
     const parsed = routerSettingsInput(retries.value, cooldown.value);
     if (parsed.error) {
       routerStatus.textContent = parsed.error.message;
@@ -1039,15 +1168,23 @@ async function openSettings(opener) {
     }
   });
 
-  try {
-    const [key, s] = await Promise.all([api.benchmarkKey(), engine.settings()]);
-    if (view !== v) return;
-    renderKey(key);
-    retries.value = s.router_num_retries ?? "";
-    cooldown.value = s.router_cooldown_seconds ?? "";
-  } catch (err) {
-    keyBox.replaceChildren(el("p", { class: "fine" }, `Couldn't load settings: ${err.message}`));
-  }
+  // Loaded separately: one failing must not blank (and then save over) the other.
+  const keyLoad = api.benchmarkKey().then(
+    (key) => view === v && renderKey(key),
+    (err) => view === v && keyBox.replaceChildren(el("p", { class: "fine" }, `Couldn't load the key: ${err.message}`)),
+  );
+  const settingsLoad = engine.settings().then(
+    (s) => {
+      if (view !== v) return;
+      retries.value = s.router_num_retries ?? "";
+      cooldown.value = s.router_cooldown_seconds ?? "";
+      routerSave.disabled = false;
+    },
+    (err) => {
+      if (view === v) routerStatus.textContent = `Couldn't load these settings, so they can't be saved now: ${err.message}`;
+    },
+  );
+  await Promise.all([keyLoad, settingsLoad]);
   fitWindow();
 }
 
@@ -1098,10 +1235,15 @@ $("share-open").addEventListener("click", (e) => openShare(e.currentTarget));
 
 let pendingSheet = null;
 let modalOpener = null;
+const waitingSheets = []; // links that arrived while a sheet was open
 
 function showLinkSheet(sheet) {
+  if (pendingSheet) {
+    if (waitingSheets.length < 3) waitingSheets.push(sheet);
+    return;
+  }
   pendingSheet = sheet;
-  modalOpener = document.activeElement;
+  if (!modalOpener) modalOpener = document.activeElement;
   const isJoin = sheet.kind === "join";
   const row = isJoin ? null : currentRows().find((r) => r.id === sheet.agentId);
   const t = $("link-tile");
@@ -1127,9 +1269,17 @@ function showLinkSheet(sheet) {
 
 function closeLinkSheet() {
   pendingSheet = null;
+  if (waitingSheets.length) {
+    showLinkSheet(waitingSheets.shift());
+    return;
+  }
   $("link-modal").hidden = true;
   $("panel").inert = false;
-  if (modalOpener?.isConnected) modalOpener.focus();
+  // Back where the user was; a link that arrived with nothing focused
+  // leaves focus at the top of what's showing.
+  if (modalOpener?.isConnected && modalOpener !== document.body) modalOpener.focus();
+  else $(view ? "view-title" : "today-h").focus();
+  modalOpener = null;
   fitWindow();
 }
 
@@ -1449,6 +1599,7 @@ $("retry").addEventListener("click", async () => {
   await refresh();
   $("retry").textContent = "Try again";
   $("retry").disabled = false;
+  if (!$("panel").hidden) $("today-h").focus();
 });
 if (native.available()) {
   native

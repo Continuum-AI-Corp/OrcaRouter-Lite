@@ -34,14 +34,14 @@ body { background: var(--surface); }
 .block ~ .block { border-top: 1px solid var(--border); margin-top: 8px; }
 .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 /* Fixed columns so every amount and button lines up across rows. */
-.row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 56px 92px; align-items: center; gap: 10px; min-height: 38px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-sm); transition: background var(--d-fast) var(--ease); }
+.row { display: grid; grid-template-columns: 24px minmax(0, 1fr) minmax(56px, max-content) 92px; align-items: center; gap: 10px; min-height: 38px; padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-sm); transition: background var(--d-fast) var(--ease); }
 .row.enter { animation: rise var(--d) var(--ease) both; }
 .row:hover { background: var(--surface-2); }
 .row .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--tile-fg); letter-spacing: 0.02em; }
 .row .nm { min-width: 0; display: flex; flex-direction: column; }
 .row .nm b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .nm small { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row .amt { font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+.row .amt { white-space: nowrap; font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
 .row .act { display: flex; justify-content: flex-end; }
 .row .act .btn { min-width: 86px; }
 .row.dim .nm b { color: var(--ink-2); }
@@ -114,6 +114,22 @@ body { background: var(--surface); }
 .ic.tile.brand { background: var(--brand-soft); color: var(--brand-deep); box-shadow: none; }
 .row.prov .btn-link { white-space: nowrap; }
 .row .nm small.mono { font-size: 11px; }
+
+/* Paid models on OrcaRouter: a switch under its provider row and in Settings */
+.prov-extra { grid-column: 2 / -1; padding: 0 0 4px; }
+.paid-switch { display: flex; flex-direction: column; gap: 6px; }
+.sw-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sw-label { font-size: 12px; color: var(--ink-2); }
+.switch { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 2px 0; color: var(--ink-2); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; border-radius: 999px; }
+.switch:disabled { cursor: not-allowed; opacity: 0.55; }
+.switch .track { position: relative; width: 28px; height: 16px; border-radius: 999px; background: var(--border-strong); transition: background var(--d-fast) var(--ease); }
+.switch .knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25); transition: transform var(--d-fast) var(--ease); }
+.switch.on { color: var(--ink); }
+.switch.on .track { background: var(--btn-bg); }
+.switch.on .knob { transform: translateX(12px); }
+.sw-state { min-width: 22px; text-align: left; }
+.paid-switch .confirm-box, #offer-confirm .confirm-box, .note .confirm-box { margin-top: 2px; }
+#offer-confirm:empty { display: none; }
 
 /* P2 · D1: models on this computer */
 .rt + .rt { margin-top: 2px; }

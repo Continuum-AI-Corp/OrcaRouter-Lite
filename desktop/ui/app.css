@@ -133,9 +133,12 @@ button { font: inherit; }
 .toast span { color: var(--ink-2); }
 
 /* ── height reveal (no layout jump) ── */
-.collapse { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--d) var(--ease), opacity var(--d) var(--ease); }
+/* Closed, its controls leave the tab order and the accessibility tree
+   (visibility flips after the closing transition, at once when opening).
+   A page that opens one another way (setup: a checked choice) sets visibility the same way. */
+.collapse { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows var(--d) var(--ease), opacity var(--d) var(--ease), visibility 0s linear var(--d); }
 .collapse > .inner { overflow: hidden; min-height: 0; }
-.collapse.open { grid-template-rows: 1fr; opacity: 1; }
+.collapse.open { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows var(--d) var(--ease), opacity var(--d) var(--ease), visibility 0s; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
