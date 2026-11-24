@@ -37,6 +37,8 @@ async def chat(request: Request):
     body = await request.json()
     CALLS.append({"model": body.get("model"), "stream": bool(body.get("stream")),
                   "auth": request.headers.get("authorization", "")})
+    if STATE["openai"] == "down":  # a stopped provider (the Test button's e2e)
+        return JSONResponse({"error": {"message": "Service unavailable", "type": "server_error"}}, status_code=503)
     base = {"id": "chatcmpl-e2e", "created": int(time.time()), "model": body.get("model", "gpt-4o-mini")}
     messages = body.get("messages") or []
     if body.get("tools") and messages and messages[-1].get("role") == "user":
@@ -89,7 +91,7 @@ def _tool_call(body, base):
 # provider's base-URL variable (ORCAROUTER_BASE_URL, ANTHROPIC_BASE_URL,
 # MOONSHOT_API_BASE). POST /_state switches how they behave.
 
-STATE = {"anthropic": "ok", "orca": "ok"}
+STATE = {"anthropic": "ok", "orca": "ok", "openai": "ok"}
 KEYS = {"orca": "Bearer sk-orca-e2e-key", "moonshot": "Bearer sk-moonshot-e2e"}
 HOSTED_COST_USD = "0.0123"
 

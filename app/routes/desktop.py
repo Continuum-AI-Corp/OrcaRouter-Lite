@@ -938,3 +938,86 @@ async def agent_requests(
         }
         for r in rows
     ]}
+
+
+# ── test an agent (D4) ──────────────────────────────────────────────────
+
+
+def get_agent_test_transport():
+    """How the test request travels: the network, to the engine's own port
+    (tests deliver it in-process)."""
+    return None
+
+
+async def _failed_test_row(db: AsyncSession, workspace_id: str, agent_id: str, since: datetime):
+    from packages.desktop import agent_test
+
+    key_ids = select(ApiKey.id).where(ApiKey.workspace_id == workspace_id,
+                                      ApiKey.name == f"{AGENT_KEY_PREFIX}{agent_id}")
+    row = (
+        await db.execute(
+            select(RequestLog.provider, RequestLog.error_type, RequestLog.status_code)
+            .where(
+                RequestLog.workspace_id == workspace_id,
+                RequestLog.api_key_id.in_(key_ids),
+                RequestLog.status_code >= 400,
+                RequestLog.created_at >= since,
+            )
+            .order_by(RequestLog.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    return agent_test.FailedRow(row.provider, row.error_type, row.status_code) if row else None
+
+
+@router.post("/agents/{agent_id}/test")
+async def test_agent(
+    agent_id: str,
+    kc: KeyContext = Depends(require_app_caller),
+    ctx: DesktopContext = Depends(get_desktop_context),
+    db: AsyncSession = Depends(get_db),
+    transport=Depends(get_agent_test_transport),
+) -> dict:
+    """Send one tiny request the way the agent would, and say how it went."""
+    from packages.desktop import agent_test
+
+    spec = ag.AGENTS.get(agent_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_id}")
+    out: dict = {"ok": False, "model": None, "seconds": None, "config_path": None, "error": None}
+
+    def done(**kw) -> dict:
+        out.update(kw)
+        agent_test.remember(agent_id, out["ok"], out["error"])
+        return out
+
+    if spec.setup != "auto":
+        return done(ok=None, error=f"Paste the key into {spec.name}, then test from the agent.")
+    status = next(s for s in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)
+                  if s.id == agent_id)
+    path = agent_test.display_path(ctx.home / spec.config_file, ctx.home) if spec.config_file else None
+    out["config_path"] = path
+    if not status.connected:
+        return done(error=f"{spec.name} isn't connected to Orca. Connect it, then test.")
+    if status.changed:
+        return done(error=f"Something replaced Orca's settings in {path}, probably {spec.name}'s last update. "
+                          f"Reconnect {spec.name}, then test again.")
+    try:
+        ep = await asyncio.to_thread(agent_test.read_endpoint, agent_id, home=ctx.home, state_dir=ctx.state_dir)
+    except agent_test.ConfigError as exc:
+        return done(error=str(exc))
+
+    # Logged rows carry second-precision timestamps on SQLite.
+    started = datetime.now(timezone.utc) - timedelta(seconds=2)
+    result = await agent_test.send(ep, transport=transport)
+    failed = None
+    if not result.ok and result.status is not None:
+        failed = await _failed_test_row(db, kc.workspace_id, agent_id, started)
+    shown_base = ep.base_url.rstrip("/").removesuffix("/v1")
+    return done(
+        ok=result.ok,
+        model=result.model,
+        seconds=result.seconds,
+        config_path=agent_test.display_path(ep.config_path, ctx.home),
+        error=agent_test.explain(result, agent_name=spec.name, base_url=shown_base, failed=failed),
+    )

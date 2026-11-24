@@ -27,13 +27,13 @@ import socket
 import subprocess
 import sys
 import time
-import tomllib
 from pathlib import Path
 
 import httpx
 import pytest
 import yaml
 
+from packages.desktop import agent_test
 from packages.desktop.agents import _GOOSE_DIR, _HERMES_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -155,96 +155,60 @@ def _app(stack, method, path, **kw):
 # ── each agent's own view of its config ─────────────────────────────────
 
 
+def _read(home, agent_id):
+    """The agent's base URL, key and model, read the way the agent reads its
+    config (packages/desktop/agent_test.py, which the app's Test button uses)."""
+    return agent_test.read_endpoint(agent_id, home=home, state_dir=home / ".orcarouter-lite" / "agents")
+
+
 def _claude(home):
-    env = json.loads((home / ".claude/settings.json").read_text())["env"]
-    return env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_AUTH_TOKEN"]
+    ep = _read(home, "claude-code")
+    return ep.base_url, ep.key
 
 
 def _codex(home):
-    cfg = tomllib.loads((home / ".codex/config.toml").read_text())
-    p = cfg["model_providers"][cfg["model_provider"]]
-    return p["base_url"], p["experimental_bearer_token"], cfg["model"]
+    ep = _read(home, "codex")
+    return ep.base_url, ep.key, ep.model
 
 
 def _gemini(home):
-    env = {}
-    for line in (home / ".gemini/.env").read_text().splitlines():
-        k, _, v = line.partition("=")
-        env[k] = v
-    return env["GOOGLE_GEMINI_BASE_URL"], env["GEMINI_API_KEY"]
+    ep = _read(home, "gemini-cli")
+    return ep.base_url, ep.key
 
 
-def _opencode(home):
-    cfg = json.loads((home / ".config/opencode/opencode.json").read_text())
-    provider_id, model = cfg["model"].split("/", 1)
-    opts = cfg["provider"][provider_id]["options"]
-    ref = opts["apiKey"]
-    assert ref.startswith("{file:") and ref.endswith("}")
-    return opts["baseURL"], Path(ref[len("{file:"):-1]).read_text().strip(), model
+def _chat_reader(agent_id):
+    def read(home):
+        ep = _read(home, agent_id)
+        return ep.base_url, ep.key, ep.model
+    return read
 
 
 def _command_code(home):
-    p = json.loads((home / ".commandcode/providers.json").read_text())["provider"]["orca"]
-    cmd = p["apiKey"]
+    base, key, model = _chat_reader("command-code")(home)
+    cmd = json.loads((home / ".commandcode/providers.json").read_text())["provider"]["orca"]["apiKey"]
     assert cmd.startswith("!")
-    key = subprocess.run(cmd[1:], shell=True, capture_output=True, text=True, check=True).stdout.strip()  # what Command Code runs
-    return p["baseURL"], key, next(iter(p["models"]))
-
-
-def _aider(home):
-    cfg = yaml.safe_load((home / ".aider.conf.yml").read_text())
-    return cfg["openai-api-base"], cfg["openai-api-key"], cfg["model"].removeprefix("openai/")
-
-
-def _hermes(home):
-    cfg = yaml.safe_load((home / _HERMES_DIR / "config.yaml").read_text())
-    kind, _, name = cfg["model"]["provider"].partition(":")
-    assert kind == "custom"
-    p = cfg["providers"][name]
-    return p["api"], p["api_key"], cfg["model"]["default"]
-
-
-def _pi(home):
-    settings = json.loads((home / ".pi/agent/settings.json").read_text())
-    p = json.loads((home / ".pi/agent/models.json").read_text())["providers"][settings["defaultProvider"]]
-    assert p["api"] == "openai-completions"
-    return p["baseUrl"], p["apiKey"], settings["defaultModel"]
-
-
-def _omp(home):
-    provider_id, model = yaml.safe_load((home / ".omp/agent/config.yml").read_text())["modelRoles"]["default"].split("/", 1)
-    p = yaml.safe_load((home / ".omp/agent/models.yml").read_text())["providers"][provider_id]
-    return p["baseUrl"], p["apiKey"], model
-
-
-def _kilo(home):
-    cfg = json.loads((home / ".config/kilo/kilo.json").read_text())
-    provider_id, model = cfg["model"].split("/", 1)
-    opts = cfg["provider"][provider_id]["options"]
-    return opts["baseURL"], Path(opts["apiKey"][len("{file:"):-1]).read_text().strip(), model
-
-
-def _openclaw(home):
-    cfg = json.loads((home / ".openclaw/openclaw.json").read_text())
-    provider_id, model = cfg["agents"]["defaults"]["model"]["primary"].split("/", 1)
-    p = cfg["models"]["providers"][provider_id]
-    return p["baseUrl"], p["apiKey"], model
-
-
-def _kimi(home):
-    cfg = tomllib.loads((home / ".kimi-code/config.toml").read_text())
-    m = cfg["models"][cfg["default_model"]]
-    p = cfg["providers"][m["provider"]]
-    assert p["type"] == "openai"
-    return p["base_url"], p["api_key"], m["model"]
+    ran = subprocess.run(cmd[1:], shell=True, capture_output=True, text=True, check=True).stdout.strip()  # what Command Code runs
+    assert ran == key
+    return base, key, model
 
 
 def _goose(home):
+    base, key, model = _chat_reader("goose")(home)
     cfg = yaml.safe_load((home / _GOOSE_DIR / "config.yaml").read_text())
-    p = json.loads((home / _GOOSE_DIR / "custom_providers" / f"{cfg['GOOSE_PROVIDER']}.json").read_text())
-    auth = p["auth"]  # Goose runs this command (no shell) for the key
-    key = subprocess.run([auth["command"], *auth["args"]], capture_output=True, text=True, check=True).stdout.strip()
-    return p["base_url"], key, cfg["GOOSE_MODEL"]
+    auth = json.loads((home / _GOOSE_DIR / "custom_providers" / f"{cfg['GOOSE_PROVIDER']}.json").read_text())["auth"]
+    ran = subprocess.run([auth["command"], *auth["args"]], capture_output=True, text=True, check=True).stdout.strip()
+    assert ran == key  # Goose runs this command (no shell) for the key
+    return base, key, model
+
+
+_opencode = _chat_reader("opencode")
+_aider = _chat_reader("aider")
+_hermes = _chat_reader("hermes")
+_pi = _chat_reader("pi")
+_omp = _chat_reader("omp")
+_kilo = _chat_reader("kilo")
+_openclaw = _chat_reader("openclaw")
+_kimi = _chat_reader("kimi-code")
 
 
 def _browser(script: str, *args: str) -> dict:
@@ -433,6 +397,57 @@ def test_6_every_request_reached_the_provider_and_spend_is_per_agent(stack):
     by_agent = {a["id"]: a for a in summary["agents"]}
     for agent in AUTO_AGENTS:
         assert by_agent[agent]["today_microcents"] > 0, f"no spend recorded for {agent}"
+
+
+def test_6b_the_test_button_works_for_every_agent(stack):
+    # D4: the engine reads each agent's config the way the agent does and
+    # sends one tiny request back to its own port with the agent's key.
+    for agent in AUTO_AGENTS:
+        r = _app(stack, "POST", f"/v1/app/agents/{agent}/test")
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["ok"] is True, f"{agent}: {result}"
+        assert result["model"] and result["seconds"] is not None and result["error"] is None
+        assert result["config_path"].startswith("~/"), result
+    assert stack["app_key"] not in r.text
+    for agent, _hint in MANUAL_AGENTS.items():
+        result = _app(stack, "POST", f"/v1/app/agents/{agent}/test").json()
+        assert result["ok"] is None and "Paste the key" in result["error"]
+
+
+def test_6c_the_test_button_explains_a_broken_key(stack):
+    # The config still holds the key Orca wrote, but the engine no longer
+    # accepts it (as when the Orca folder was reset).
+    import sqlite3
+
+    db_path = stack["orca_home"] / "orca.db"
+    with sqlite3.connect(db_path) as db:
+        (key_id,) = db.execute("SELECT id FROM api_keys WHERE name = 'agent:claude-code' AND revoked_at IS NULL").fetchone()
+
+    def set_revoked(revoked: bool) -> None:
+        with sqlite3.connect(db_path) as db:
+            db.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ?",
+                       ("2026-01-01 00:00:00" if revoked else None, key_id))
+
+    set_revoked(True)
+    try:
+        result = _app(stack, "POST", "/v1/app/agents/claude-code/test").json()
+    finally:
+        set_revoked(False)
+    assert result["ok"] is False
+    assert result["error"] == "Orca didn't accept Claude Code's key. Connect Claude Code again, then test."
+    assert _app(stack, "POST", "/v1/app/agents/claude-code/test").json()["ok"] is True
+
+
+def test_6d_the_test_button_explains_a_stopped_provider(stack):
+    httpx.post(f"{stack['upstream']}/_state", json={"openai": "down"}, timeout=10)
+    try:
+        r = _app(stack, "POST", "/v1/app/agents/opencode/test")
+    finally:
+        httpx.post(f"{stack['upstream']}/_state", json={"openai": "ok"}, timeout=10)
+    result = r.json()
+    assert result["ok"] is False, result
+    assert result["error"].startswith("OpenAI isn't answering right now"), result
 
 
 def test_7_agent_keys_cannot_reach_the_app_api(stack):
