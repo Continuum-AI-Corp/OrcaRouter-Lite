@@ -286,7 +286,9 @@ async def send(ep: Endpoint, *, transport: httpx.AsyncBaseTransport | None = Non
     url, headers, body = _request(ep)
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
+        # trust_env=False: this request carries the agent's key to this
+        # computer, never through HTTP_PROXY.
+        async with httpx.AsyncClient(transport=transport, timeout=timeout, trust_env=False) as client:
             resp = await client.post(url, headers=headers, json=body)
     except httpx.TimeoutException:
         return TestResult(ok=False, timed_out=True)
@@ -325,7 +327,7 @@ def explain(result: TestResult, *, agent_name: str, base_url: str, failed: Faile
         who = display_name(failed.provider)
         status = failed.status or result.status
         if failed.error_type == "upstream_auth_error":
-            return f"{who} rejected the key (401). Replace it in Providers, then test again."
+            return f"{who} rejected the key (401). Replace it in Setup, then test again."
         if failed.error_type in _BUSY:
             return f"{who} is limiting requests right now (429). Try again in a minute, or add another provider."
         if failed.error_type in _DOWN:

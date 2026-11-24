@@ -600,24 +600,34 @@ async def execute_chat(
         # the top-N truncation. Without this, an allowed model ranked at
         # position 6+ would be silently dropped by top_n=5 and the user
         # would see a false 403 even though they have a valid candidate.
-        candidates, _scoring = choose_auto_model(
-            needs=needs,
-            deployable=deployable,
-            candidates=desktop_routing.candidates(ctx),
-            strategy=strategy,
-            preferred_models=preferred_models,
-            allowlist=kc.model_allowlist,
-            quality_scores=quality_scores,
-            tps_scores=tps_scores,
-            ttft_scores=ttft_scores,
-            # Free models first in the desktop app whatever the paid-models
-            # setting; paid OrcaRouter models only after every own key.
-            free_first=ctx.desktop,
-            allow_free_hosted=ctx.desktop,
-            hosted_last=desktop_routing.paid_hosted_only(ctx),
-            context_limits=desktop_routing.context_limits(ctx),
-            prompt_tokens=prompt_tokens,
-        )
+        def _rank(pool: set[str]) -> tuple[list[str], dict]:
+            return choose_auto_model(
+                needs=needs,
+                deployable=pool,
+                candidates=desktop_routing.candidates(ctx),
+                strategy=strategy,
+                preferred_models=preferred_models,
+                allowlist=kc.model_allowlist,
+                quality_scores=quality_scores,
+                tps_scores=tps_scores,
+                ttft_scores=ttft_scores,
+                # Free models first in the desktop app whatever the paid-models
+                # setting; paid OrcaRouter models only after every own key.
+                free_first=ctx.desktop,
+                allow_free_hosted=ctx.desktop,
+                hosted_last=desktop_routing.paid_hosted_only(ctx),
+                context_limits=desktop_routing.context_limits(ctx),
+                prompt_tokens=prompt_tokens,
+            )
+
+        candidates, _scoring = _rank(deployable)
+        if not candidates and deployable != set(ctx.deployable):
+            # OrcaRouter was left out for being out of credit, and nothing
+            # else can take this request: try it anyway. It either answers
+            # (credit was added, which clears the state) or says it's still
+            # out of credit, instead of a misleading "no deployable model".
+            deployable = set(ctx.deployable)
+            candidates, _scoring = _rank(deployable)
         if not candidates:
             # Empty result has two distinct causes — distinguish them so the
             # operator can debug the right thing:

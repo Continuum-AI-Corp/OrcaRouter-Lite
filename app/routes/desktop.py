@@ -572,16 +572,18 @@ async def _agent_key_ids(db: AsyncSession, workspace_id: str) -> dict[str, str]:
 
 async def _hosted_configured(db: AsyncSession) -> bool:
     from app.config import get_settings
-    from app.router_cache import HOSTED_PROVIDER_NAME
+    from app.router_cache import HOSTED_PROVIDER_NAME, usable_providers_from_db
 
     if get_settings().orcarouter_api_key:
         return True
-    row = (
+    # Only a key the router can use: a row that no longer decrypts (after an
+    # encryption-key change) deploys nothing.
+    rows = (
         await db.execute(
-            select(ProviderKey.id).where(ProviderKey.provider == HOSTED_PROVIDER_NAME, ProviderKey.is_deleted == 0)
+            select(ProviderKey).where(ProviderKey.provider == HOSTED_PROVIDER_NAME, ProviderKey.is_deleted == 0)
         )
-    ).first()
-    return row is not None
+    ).scalars().all()
+    return HOSTED_PROVIDER_NAME in usable_providers_from_db(list(rows))
 
 
 async def _hosted_month(db: AsyncSession, workspace_id: str, since: datetime) -> tuple[int, int, int]:

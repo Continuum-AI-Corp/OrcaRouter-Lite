@@ -120,7 +120,8 @@ async def discover(
             return list(_cache[1])
         env = env if env is not None else os.environ
         own = client is None
-        http = client or httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS)
+        # Runtimes are on this computer: never through HTTP_PROXY.
+        http = client or httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS, trust_env=False)
         try:
             runtimes = await asyncio.gather(
                 *(_probe(http, rid, name, _base_url(env.get(var), default)) for rid, name, var, default in RUNTIMES)

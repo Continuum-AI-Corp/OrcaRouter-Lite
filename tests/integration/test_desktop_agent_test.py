@@ -75,7 +75,7 @@ async def test_a_provider_rejecting_its_key(app_engine):
     await _call(app_engine, "POST", "/v1/app/agents/claude-code/connect")
     result = await _call(app_engine, "POST", "/v1/app/agents/claude-code/test")
     assert result["ok"] is False
-    assert result["error"] == "OpenAI rejected the key (401). Replace it in Providers, then test again."
+    assert result["error"] == "OpenAI rejected the key (401). Replace it in Setup, then test again."
 
 
 async def test_a_provider_that_is_down(app_engine):

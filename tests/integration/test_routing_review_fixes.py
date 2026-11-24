@@ -87,3 +87,20 @@ async def test_with_paid_models_on_auto_still_goes_free_then_own_keys_then_paid_
     ])
     await engine.chat(engine.root_key, PING)
     assert _chain(engine.router.calls[-1]) == ["deepseek/deepseek-v4-pro-free", "gpt-4.1", "kimi-k2.6"]
+
+
+async def test_out_of_credit_with_nothing_else_able_to_serve_says_so(engine):
+    # A local model is deployed but auto doesn't pick it (not local_first),
+    # so OrcaRouter is the only route: the user must get OrcaRouter's own
+    # out-of-credit answer (which also lets added credit clear the state),
+    # not ten minutes of "no deployable model".
+    from tests.integration.routing_harness import local
+
+    await engine.settings(hosted_models="all")
+    engine.router = FakeRouter([*hosted("gpt-5"), *local("ollama/qwen3-coder:30b")])
+    engine.router.failing["orcarouter"] = UpstreamProviderError(
+        "Insufficient credit", http_status=402, error_type="out_of_credit")
+    hosted_state.mark_out_of_credit()
+    r = await engine.chat(engine.root_key, PING)
+    assert r.status_code == 402
+    assert r.headers["x-orca-error-type"] == "out_of_credit"

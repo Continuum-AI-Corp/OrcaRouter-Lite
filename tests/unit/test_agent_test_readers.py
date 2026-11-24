@@ -127,7 +127,7 @@ async def test_unreachable_engine():
 
 
 @pytest.mark.parametrize("status,error_type,provider,expected", [
-    (500, "upstream_auth_error", "google", "Google Gemini rejected the key (401). Replace it in Providers, then test again."),
+    (500, "upstream_auth_error", "google", "Google Gemini rejected the key (401). Replace it in Setup, then test again."),
     (503, "upstream_error", "openai", "OpenAI isn't answering right now (503). Try again in a minute, or add another provider."),
     (429, "rate_limit_error", "anthropic", "Anthropic is limiting requests right now (429). Try again in a minute, or add another provider."),
 ])

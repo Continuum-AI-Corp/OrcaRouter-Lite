@@ -372,3 +372,18 @@ async def test_a_substitution_answered_by_a_free_or_local_model_is_shown(desktop
         {"requested": "claude-sonnet-4-6", "served": "deepseek/deepseek-v4-pro-free", "count": 1},
         {"requested": "claude-sonnet-4-6", "served": "ollama/qwen3-coder:30b", "count": 1},
     ]
+
+
+async def test_an_orcarouter_key_that_no_longer_decrypts_is_not_configured(desktop_app, seeded, db_session):
+    # The router skips a row it can't decrypt (after an encryption-key
+    # change); the summary must agree, or the backup offer would hide and the
+    # picker would call OrcaRouter's models available while none are deployed.
+    from packages.db.models.provider_key import ProviderKey
+
+    root, _ = seeded
+    db_session.add(ProviderKey(provider="orcarouter", encrypted_key=b"not-a-real-ciphertext", is_enabled=True,
+                               key_prefix="sk-orca"))
+    await db_session.commit()
+    async with _client(desktop_app) as c:
+        s = await _summary(c, root)
+    assert s["hosted"]["configured"] is False

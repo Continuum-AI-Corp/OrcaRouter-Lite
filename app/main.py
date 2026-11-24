@@ -182,10 +182,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _bypass_proxy_for_loopback() -> None:
+    """Desktop mode talks to this computer (local models, the agent Test):
+    keep those requests off HTTP_PROXY, which LiteLLM and httpx honour, by
+    adding the loopback addresses to NO_PROXY (keeping the user's entries)."""
+    import os
+
+    hosts: list[str] = []
+    for var in ("NO_PROXY", "no_proxy"):  # tools read one or the other
+        for h in os.environ.get(var, "").split(","):
+            if h.strip() and h.strip() not in hosts:
+                hosts.append(h.strip())
+    hosts += [h for h in _LOOPBACK if h not in hosts]
+    for var in ("NO_PROXY", "no_proxy"):
+        os.environ[var] = ",".join(hosts)
+
+
 def create_app() -> FastAPI:
     from app.config import get_settings
 
     desktop = get_settings().orca_desktop_mode
+    if desktop:
+        _bypass_proxy_for_loopback()
     # The desktop engine serves pages that hold the app key, so it loads no
     # third-party scripts: the interactive docs (CDN assets) are off.
     docs = {} if not desktop else {"docs_url": None, "redoc_url": None, "openapi_url": None}
