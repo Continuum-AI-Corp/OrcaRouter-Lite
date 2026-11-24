@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 APP_JS = (ROOT / "design" / "app.js").read_text(encoding="utf-8")
 INDEX = (ROOT / "design" / "index.html").read_text(encoding="utf-8")
 
-HOSTED_KEYS = ("hosted.title", "hosted.sub", "hosted.register", "hosted.providers_sub")
+HOSTED_KEYS = ("hosted.title", "hosted.sub", "hosted.register", "hosted.providers_sub", "hosted.ready_desktop")
 
 
 def _locales() -> dict[str, dict[str, str]]:

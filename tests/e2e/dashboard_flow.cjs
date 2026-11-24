@@ -39,10 +39,20 @@ const [base, key] = process.argv.slice(2);
   await page.waitForFunction(() => document.querySelector("#hosted-signup-btn").getAttribute("href") !== "#");
   report.hostedLinks = await page.locator("#hosted-signup-btn, #hosted-register-link, #providers-hosted-signup")
     .evaluateAll((els) => els.map((a) => a.href));
+  // With OrcaRouter's key saved (the setup tests did), the card says what's ready.
+  const hostedActive = async () => {
+    await page.locator("#hosted-active").waitFor({ state: "visible", timeout: 15000 });
+    await page.waitForFunction(() => !document.querySelector("#hosted-active-meta").hidden || !document.querySelector("#hosted-ready-desktop").hidden);
+    return page.locator("#hosted-active").innerText();
+  };
+  report.hostedActive = await hostedActive();
+  await shots(page, "h0-dashboard-hosted-active", page.locator("#hosted-card"));
 
   // A server's engine has no /v1/app: the same tab keeps its .env steps.
   await page.route("**/v1/app/benchmark-key", (route) => route.fulfill({ status: 404, body: "{}" }));
   report.serverSteps = await qualitySteps("?server"); // a fresh page load
+  await page.goto(`${base}/?server2#overview`);
+  report.serverHostedActive = await hostedActive();
   process.stdout.write(JSON.stringify(report) + "\n");
   await browser.close();
 })().catch((e) => { process.stderr.write(String((e && e.stack) || e)); process.exit(1); });
