@@ -22,23 +22,24 @@ const I18N = {
   ar: { "auth.tagline":"مفتوح المصدر. مستأجر واحد.","auth.welcome":"مرحبًا بعودتك","auth.subtitle":"ألصق مفتاح sk-orca-* المطبوع في سجلات الخادم عند التشغيل الأول. يُخزَّن فقط في هذا المتصفح عبر localStorage.","auth.api_key":"مفتاح API","auth.continue":"متابعة","nav.search":"بحث","nav.overview":"نظرة عامة","nav.providers":"المزوّدون","nav.routing":"توجيه الطلبات","nav.analytics":"التحليلات","nav.api_keys":"مفاتيح API","nav.help_docs":"المساعدة والوثائق","nav.sign_out":"تسجيل الخروج","status.connected":"متصل","status.disconnected":"غير متصل","auth.checking":"جارٍ التحقق…","auth.welcome_aboard":"مرحبًا بك.","auth.key_invalid":"هذا المفتاح لم يعمل. تحقّق من البادئة sk-orca-…","tab.overview.title":"نظرة عامة","tab.overview.sub":"موجّه LLM أحادي المستأجر بنظرة سريعة.","tab.providers.title":"مفاتيح المزوّدين","tab.providers.sub":"BYOK — مشفّرة أثناء التخزين وتُستخدم لاستدعاء نماذج LLM الخارجية.","tab.routing.title":"التوجيه","tab.routing.sub":"كيف يختار model='auto' النموذج المناسب لكل طلب.","tab.analytics.title":"التحليلات","tab.analytics.sub":"الإنفاق والزمن والسجل المحلي للطلبات فقط.","tab.keys.title":"مفاتيح API","tab.keys.sub":"رموز مصادقة العملاء في مساحة Lite هذه.","hosted.title":"بوابة OrcaRouter","hosted.sub":"مفتاح واحد لكل النماذج، مع تحويل تلقائي بين المزوّدين. نماذج مجانية للبدء؛ والنماذج المدفوعة تُحتسب لكل طلب.","hosted.register":"ليس لديك حساب بعد؟ سجّل وابدأ بالنماذج المجانية","hosted.providers_sub":"كل النماذج دون التسجيل لدى كل مزوّد. نماذج مجانية للبدء؛ والنماذج المدفوعة تُحتسب لكل طلب." },
   ko: { "auth.tagline":"오픈 소스. 단일 테넌트.","auth.welcome":"다시 오신 것을 환영합니다","auth.subtitle":"첫 실행 시 서버 로그에 출력된 sk-orca-* 키를 붙여넣으세요. 이 브라우저의 localStorage에만 저장됩니다.","auth.api_key":"API 키","auth.continue":"계속","nav.search":"검색","nav.overview":"개요","nav.providers":"공급자","nav.routing":"경로 지정","nav.analytics":"분석","nav.api_keys":"API 키","nav.help_docs":"도움말 및 문서","nav.sign_out":"로그아웃","status.connected":"연결됨","status.disconnected":"연결 끊김","auth.checking":"확인 중…","auth.welcome_aboard":"환영합니다.","auth.key_invalid":"키가 올바르지 않습니다. sk-orca- 접두사를 확인하세요…","tab.overview.title":"개요","tab.overview.sub":"싱글 테넌트 LLM 라우터를 한눈에 확인하세요.","tab.providers.title":"공급자 키","tab.providers.sub":"BYOK — 저장 시 암호화되며 상위 LLM 호출에 사용됩니다.","tab.routing.title":"라우팅","tab.routing.sub":"model='auto'가 요청별로 적절한 모델을 고르는 방식입니다.","tab.analytics.title":"분석","tab.analytics.sub":"로컬 전용 비용, 지연 시간, 요청 기록.","tab.keys.title":"API 키","tab.keys.sub":"Lite 워크스페이스에서 클라이언트를 인증하는 토큰.","hosted.title":"OrcaRouter 게이트웨이","hosted.sub":"키 하나로 모든 모델을 쓰고, 공급자 간 장애 조치를 지원합니다. 무료 모델로 시작하고, 유료 모델은 요청당 청구됩니다.","hosted.register":"아직 계정이 없나요? 가입하고 무료 모델로 시작하세요","hosted.providers_sub":"공급자마다 가입하지 않아도 모든 모델을 쓸 수 있습니다. 무료 모델로 시작하고, 유료 모델은 요청당 청구됩니다." },
 };
-// Provider ids must match catalog provider ids (packages/litellm_adapter/catalog.py
-// `_PROVIDER_BY_LITELLM_KEY`) and Settings env-key fields (app/config.py
-// `_PROVIDERS_FROM_ENV`). Labels follow the provider's own brand spelling so
-// operators recognize them without ambiguity — "xAI" with the lowercase x is
-// deliberate (Grok's parent company), distinct from "Groq" the inference
-// hardware company.
-const PROVIDERS_KNOWN = [
-  { id: "openai",      label: "OpenAI"      },
-  { id: "anthropic",   label: "Anthropic"   },
-  { id: "google",      label: "Google"      },
-  { id: "xai",         label: "xAI (Grok)"  },
-  { id: "deepseek",    label: "DeepSeek"    },
-  { id: "groq",        label: "Groq"        },
-  { id: "together",    label: "Together"    },
-  { id: "fireworks",   label: "Fireworks"   },
-  { id: "orcarouter",  label: "OrcaRouter (hosted)" },
-];
+// Providers come from the engine's one list (GET /v1/providers/supported),
+// shared with the desktop app's setup so the two can't drift.
+
+// ── dashboard: outgoing links (H8) ──
+// Links to orcarouter.ai from the dashboard say where they came from, and
+// nothing else: a fixed source name, never anything about the user.
+function dashboardRef(url) {
+  if (!url) return url;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return url;
+    u.searchParams.delete("ref");
+    u.searchParams.append("ref", "lite-dashboard");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 const TAB_META = {
   overview:  { title: "tab.overview.title",  sub: "tab.overview.sub" },
   providers: { title: "tab.providers.title", sub: "tab.providers.sub" },
@@ -59,6 +60,11 @@ const state = {
   savings: { saved_microcents: 0, savings_percent: 0, hosted_auto: null },
   models: [],
   hosted: { configured: false, source: null, signup_url: "https://www.orcarouter.ai/register", token_url: "https://www.orcarouter.ai/console/token", provider_name: "orcarouter" },
+  // The engine's provider list, in display order (see loadSupportedProviders).
+  supported: [],
+  // Running inside the Orca desktop app (its engine serves /v1/app), where
+  // settings live in the app, not in a .env. null until known.
+  desktop: null,
   unreachable: { hosted_configured: false, unreachable: [] },
   // Quality scoring (Artificial Analysis Intelligence Index + manual overrides)
   quality: { aa_index: { configured: false, source: "missing-key", matched_count: 0 }, models: [], override_count: 0 },
@@ -275,7 +281,7 @@ function setTab(tab) {
     });
   }
   if (tab === "quality") {
-    Promise.all([loadQuality(), loadQualityPreview()]).then(() => {
+    Promise.all([loadQuality(), loadQualityPreview(), detectDesktop()]).then(() => {
       renderQuality();
       renderQualityPreview();
     });
@@ -304,11 +310,39 @@ function bindTabs() {
    ========================================================================== */
 async function loadProviders() {
   try {
-    const data = await api("/v1/providers");
+    const [data] = await Promise.all([api("/v1/providers"), state.supported.length ? null : loadSupportedProviders()]);
     state.providers = data.providers || [];
   } catch (e) {
     toast(`Couldn't load providers: ${e.message}`, "err");
   }
+}
+
+async function loadSupportedProviders() {
+  try {
+    state.supported = (await api("/v1/providers/supported")).providers || [];
+  } catch (e) {
+    state.supported = [];
+    toast(`Couldn't load the provider list: ${e.message}`, "err");
+  }
+  renderProviderSelect();
+}
+
+// The Provider select, from the engine's list. Placeholders show each key's shape.
+function renderProviderSelect() {
+  const sel = $("#provider-name");
+  if (!sel || !state.supported.length) return;
+  const current = sel.value;
+  sel.innerHTML = state.supported
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}${p.new ? " (new)" : ""}</option>`)
+    .join("");
+  if (state.supported.some((p) => p.id === current)) sel.value = current;
+  syncProviderPlaceholder();
+}
+
+function syncProviderPlaceholder() {
+  const p = state.supported.find((x) => x.id === $("#provider-name").value);
+  const input = $("#provider-key");
+  if (p && input) input.placeholder = p.key_hint || "API key";
 }
 
 function renderProviders() {
@@ -409,11 +443,11 @@ function renderQuickAdd() {
     state.providers.filter((p) => p.source === "env").map((p) => p.provider)
   );
   wrap.innerHTML = `<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Quick-add:</span>` +
-    PROVIDERS_KNOWN.map((p) => {
+    state.supported.map((x) => ({ id: x.id, label: x.name, isNew: Boolean(x.new) })).map((p) => {
       const isDb = dbConfigured.has(p.id);
       const isBroken = brokenDb.has(p.id);
       const isEnv = envConfigured.has(p.id);
-      const cls = isDb ? "configured" : (isBroken ? "needs-resave" : (isEnv ? "env-override" : ""));
+      const cls = (isDb ? "configured" : (isBroken ? "needs-resave" : (isEnv ? "env-override" : ""))) + (p.isNew ? " new" : "");
       const disabled = isDb ? "disabled" : "";
       const title = isBroken
         ? `${p.label} is stored but cannot be decrypted. Click to re-enter the key.`
@@ -423,20 +457,23 @@ function renderQuickAdd() {
       const suffix = isBroken
         ? " <span class=\"small muted\">(re-enter)</span>"
         : (isEnv ? " <span class=\"small muted\">(env, override)</span>" : "");
-      return `<button class="chip ${cls}" data-prov-pick="${p.id}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
-        ${escapeHtml(p.label)}${suffix}
+      const newTag = p.isNew ? ' <span class="chip-new">New</span>' : "";
+      return `<button class="chip ${cls}" data-prov-pick="${escapeHtml(p.id)}" ${disabled} ${title ? `title="${escapeHtml(title)}"` : ""}>
+        ${escapeHtml(p.label)}${newTag}${suffix}
       </button>`;
     }).join("");
   $$("[data-prov-pick]").forEach((b) =>
     b.addEventListener("click", () => {
       const sel = $("#provider-name");
       sel.value = b.dataset.provPick;
+      syncProviderPlaceholder();
       $("#provider-key").focus();
     })
   );
 }
 
 function bindProviderForm() {
+  $("#provider-name").addEventListener("change", syncProviderPlaceholder);
   $("#provider-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const provider = $("#provider-name").value;
@@ -580,8 +617,8 @@ function renderHostedCard() {
   // Primary CTA goes to the token console — that's the page with the
   // copyable sk-orca-* key. The secondary link is for users who don't
   // have an account yet.
-  const tokenUrl = state.hosted.token_url || "https://www.orcarouter.ai/console/token";
-  const signupUrl = state.hosted.signup_url || "https://www.orcarouter.ai/register";
+  const tokenUrl = dashboardRef(state.hosted.token_url || "https://www.orcarouter.ai/console/token");
+  const signupUrl = dashboardRef(state.hosted.signup_url || "https://www.orcarouter.ai/register");
   if (signupBtn) signupBtn.href = tokenUrl;
   if (providersSignup) providersSignup.href = tokenUrl;
   const registerLink = $("#hosted-register-link");
@@ -927,6 +964,19 @@ async function loadQuality() {
   }
 }
 
+// In the Orca desktop app the engine serves /v1/app (a server doesn't), and
+// settings such as the Artificial Analysis key live in the app's Settings.
+async function detectDesktop() {
+  if (state.desktop !== null) return state.desktop;
+  try {
+    const r = await fetch("/v1/app/benchmark-key", { headers: state.apiKey ? { Authorization: `Bearer ${state.apiKey}` } : {} });
+    state.desktop = r.status !== 404;
+  } catch {
+    state.desktop = false;
+  }
+  return state.desktop;
+}
+
 async function loadQualityPreview() {
   try {
     state.qualityPreview = await api("/v1/quality/auto-preview");
@@ -946,6 +996,10 @@ function renderQuality() {
   // (which surfaces AA freshness) is only meaningful when AA is wired up.
   const isConfigured = aa.source !== "missing-key";
   setupCard.hidden = isConfigured;
+  // The app has no .env: its setup steps point to Orca's Settings instead.
+  $$("#quality-setup-card [data-mode]").forEach((el) => {
+    el.hidden = el.dataset.mode !== (state.desktop ? "desktop" : "server");
+  });
   statusCard.hidden = !isConfigured;
   tableCard.hidden = false;
 
@@ -1368,8 +1422,8 @@ function paletteCommands() {
     { id: "copy-snip",    title: "Copy quickstart snippet", meta: "Action", hint: "", do: () => copyToClipboard($("#quickstart-code").textContent) },
     { id: "open-help",    title: "Open help & docs",     meta: "Help", hint: "?",  do: () => openHelp() },
     { id: "open-docs",    title: "Open docs.orcarouter.ai", meta: "Link", hint: "↗", do: () => window.open("https://docs.orcarouter.ai/introduction", "_blank") },
-    { id: "open-site",    title: "Open orcarouter.ai",   meta: "Link", hint: "↗",  do: () => window.open("https://www.orcarouter.ai", "_blank") },
-    { id: "get-hosted-key", title: "Get hosted API key (orcarouter.ai/console/token)", meta: "Link", hint: "↗", do: () => window.open(state.hosted.token_url || "https://www.orcarouter.ai/console/token", "_blank") },
+    { id: "open-site",    title: "Open orcarouter.ai",   meta: "Link", hint: "↗",  do: () => window.open(dashboardRef("https://www.orcarouter.ai/"), "_blank") },
+    { id: "get-hosted-key", title: "Get hosted API key (orcarouter.ai/console/token)", meta: "Link", hint: "↗", do: () => window.open(dashboardRef(state.hosted.token_url || "https://www.orcarouter.ai/console/token"), "_blank") },
     { id: "logout",       title: "Sign out (forget API key)", meta: "Action", hint: "", do: () => logout() },
   ];
 }

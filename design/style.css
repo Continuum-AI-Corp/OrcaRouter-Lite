@@ -906,6 +906,19 @@ tbody tr.row-in { animation: row-in 320ms var(--ease) both; }
   content: "✓";
   font-weight: 700;
 }
+/* Providers added with own keys in P1, highlighted like setup does. */
+.chip.new:not(.configured) {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-deep);
+}
+.chip-new {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--brand-deep);
+}
 
 /* ==========================================================================
    STRATEGY CARDS
