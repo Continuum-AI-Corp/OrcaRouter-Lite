@@ -508,3 +508,26 @@ def test_only_real_warnings_are_flagged_as_warnings(home, state_dir):
     # The others just say which model they'll use.
     flagged = {s.id for s in ag.detect_agents(home=home, state_dir=state_dir, which=lambda _n: None) if s.warn}
     assert flagged == {"claude-code"}
+
+
+@pytest.mark.parametrize("agent_id", ["gemini-cli", "opencode"])
+def test_a_failed_state_save_puts_every_file_back(home, state_dir, monkeypatch, agent_id):
+    # connections.json lives in another folder than the agent's config; if
+    # recording the backup fails, the agent must not be left pointing at a
+    # key the engine is about to delete, with no record to restore from.
+    (home / ".gemini").mkdir()
+    (home / ".gemini" / "settings.json").write_text('{"ui": {"theme": "GitHub"}}\n')
+    (home / ".config" / "opencode").mkdir(parents=True)
+    (home / ".config" / "opencode" / "opencode.json").write_text('{"theme": "tokyonight"}\n')
+    before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+
+    def disk_full(*_a, **_kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ag, "_save_state", disk_full)
+    with pytest.raises(ag.AgentConfigError, match="No space left"):
+        _connect(agent_id, home, state_dir)
+
+    assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
+    keys = state_dir / "keys"
+    assert not keys.exists() or list(keys.iterdir()) == []

@@ -1050,6 +1050,7 @@ def connect_agent(
 
         old_key: bytes | None = None
         done: list[tuple[Path, bytes | None]] = []
+        writing: Path = key_file or plan[0][0]
         try:
             if key_file is not None:
                 key_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1058,8 +1059,17 @@ def connect_agent(
                 _write_atomic(key_file, api_key.encode(), 0o600)
                 done.append((key_file, old_key))
             for path, raw, written, _fentry in plan:
+                writing = path
                 _write_atomic(path, written)
                 done.append((path, raw))
+            # Record the backup last, inside the rollback: if it can't be saved,
+            # nothing could restore these files later, so put them back now.
+            writing = Path(state_dir) / STATE_FILE
+            state[agent_id] = {
+                "files": [{**fentry, "written_sha256": _sha(written)} for _p, _r, written, fentry in plan],
+                "key_file": str(key_file) if key_file else None,
+            }
+            _save_state(state_dir, state)
         except OSError as exc:
             for path, raw in reversed(done):  # put back what we already changed
                 with contextlib.suppress(OSError):
@@ -1067,13 +1077,8 @@ def connect_agent(
                         _target(path).unlink()
                     else:
                         _write_atomic(path, raw)
-            raise AgentConfigError(f"Can't write {path}: {exc.strerror or exc}") from exc
+            raise AgentConfigError(f"Can't write {writing}: {exc.strerror or exc}") from exc
 
-        state[agent_id] = {
-            "files": [{**fentry, "written_sha256": _sha(written)} for _p, _r, written, fentry in plan],
-            "key_file": str(key_file) if key_file else None,
-        }
-        _save_state(state_dir, state)
         primary = plan[0][0]
         return ConnectResult(agent_id, False, str(primary), base_url, api_key)
 
