@@ -368,3 +368,27 @@ jobs:
           python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" --x64 "$x64" > orcarouter-lite.rb
           cat orcarouter-lite.rb
           gh release upload "$GITHUB_REF_NAME" orcarouter-lite.rb --clobber
+
+  winget-manifest:
+    name: winget manifest
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: orcarouter-lite-windows-2022
+          path: windows
+      - name: render and attach the winget manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          exe=$(ls windows/nsis/*_"$v"_x64-setup.exe 2>/dev/null || ls windows/*_"$v"_x64-setup.exe)
+          python packaging/winget/render_manifest.py --version "$v" --installer "$exe" --out winget
+          dir="winget/manifests/o/OrcaRouter/Lite/$v"
+          cat "$dir"/*.yaml
+          gh release upload "$GITHUB_REF_NAME" "$dir"/*.yaml --clobber

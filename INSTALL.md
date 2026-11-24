@@ -17,6 +17,18 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
   `orcarouter-lite-<runner>` artifact for your system: `macos-15` (Apple
   silicon), `macos-15-intel`, `windows-2022` or `ubuntu-22.04`. Ignore the
   `-updater-` artifacts; those are update bundles.
+- **Package managers** (from the first tagged version):
+
+  ```bash
+  brew install --cask continuum-ai-corp/tap/orcarouter-lite   # macOS app
+  ```
+
+  ```powershell
+  winget install OrcaRouter.Lite                              # Windows app
+  ```
+
+  The landing page, <https://continuum-ai-corp.github.io/OrcaRouter-Lite/>,
+  picks the right download for your system.
 
 ## 2. Install and open it
 
@@ -105,6 +117,26 @@ Then remove the app:
 To remove your data too, delete `~/.orcarouter-lite`. On macOS and Windows the
 encryption key is also in the Keychain / Credential Manager under
 "OrcaRouter Lite".
+
+## Just the command-line tool
+
+For a server, a headless machine, or if you'd rather not run a menu-bar app,
+install the `orca` CLI and engine on their own (from the first tagged
+version):
+
+```bash
+brew install continuum-ai-corp/tap/orcarouter-lite   # macOS and Linux (Homebrew formula)
+```
+
+```bash
+pipx install orcarouter-lite                         # any OS with Python 3.11+
+```
+
+Then `orca up` starts the router, `orca connect claude-code` connects an
+agent and `orca status` shows today's spend. The formula installs the
+dependencies from the release's hash-locked `requirements.lock`. It doesn't
+include the app, and the cask doesn't put `orca` on your PATH by itself;
+install both if you want both.
 
 ## Run from source instead
 

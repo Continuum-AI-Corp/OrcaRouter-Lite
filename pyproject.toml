@@ -94,7 +94,7 @@ packages = ["app", "packages"]
 "desktop/ui" = "app/desktop_ui"
 
 [tool.hatch.build.targets.sdist]
-include = ["app", "packages", "design", "desktop/ui", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml"]
+include = ["app", "packages", "design", "desktop/ui", "scripts", "tests", "README.md", "LICENSE", "pyproject.toml", "requirements.lock"]
 exclude = ["**/__pycache__", "**/*.pyc", "design/test_i18n_unittest.py"]
 
 [tool.pytest.ini_options]
