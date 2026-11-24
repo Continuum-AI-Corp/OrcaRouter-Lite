@@ -23,6 +23,7 @@ import json
 import os
 import stat
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -531,3 +532,38 @@ def test_a_failed_state_save_puts_every_file_back(home, state_dir, monkeypatch, 
     assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
     keys = state_dir / "keys"
     assert not keys.exists() or list(keys.iterdir()) == []
+
+
+class _Crash(BaseException):
+    """The process dying mid-connect: not an OSError, so no rollback runs."""
+
+
+@pytest.mark.parametrize("written_before_crash", [0, 1])
+def test_a_crash_mid_connect_still_leaves_a_restorable_backup(home, state_dir, monkeypatch, written_before_crash):
+    # Gemini CLI writes two files. Kill the connect while writing the first
+    # or the second; disconnect afterwards must put both back exactly.
+    (home / ".gemini").mkdir()
+    settings = home / ".gemini" / "settings.json"
+    env = home / ".gemini" / ".env"
+    settings.write_text('{"ui": {"theme": "GitHub"}}\n')
+    env.write_text("SOME_OTHER=1\n")
+    before = {p: p.read_bytes() for p in (settings, env)}
+
+    real = ag._write_atomic
+    writes = {"n": 0}
+
+    def dying(path, data, mode=None):
+        if Path(path).name in (".env", "settings.json"):
+            writes["n"] += 1
+            if writes["n"] == written_before_crash + 1:
+                raise _Crash()
+        return real(path, data, mode)
+
+    monkeypatch.setattr(ag, "_write_atomic", dying)
+    with pytest.raises(_Crash):
+        _connect("gemini-cli", home, state_dir)
+    monkeypatch.setattr(ag, "_write_atomic", real)
+
+    assert _status(home, state_dir, "gemini-cli").connected  # the backup was recorded first
+    _disconnect("gemini-cli", home, state_dir)
+    assert {p: p.read_bytes() for p in (settings, env)} == before

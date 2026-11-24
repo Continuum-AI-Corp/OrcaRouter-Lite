@@ -1050,9 +1050,21 @@ def connect_agent(
 
         old_key: bytes | None = None
         done: list[tuple[Path, bytes | None]] = []
-        writing: Path = key_file or plan[0][0]
+        previous_entry = state.get(agent_id)
+        # Record the backup (each file's original bytes and the hash of what
+        # we're about to write) before touching any agent file. If the process
+        # dies part way, disconnect can still restore every file: one we wrote
+        # matches its hash and gets its original bytes back; one we didn't
+        # write doesn't hold our settings and is left as it is.
+        state[agent_id] = {
+            "files": [{**fentry, "written_sha256": _sha(written)} for _p, _r, written, fentry in plan],
+            "key_file": str(key_file) if key_file else None,
+        }
+        writing: Path = Path(state_dir) / STATE_FILE
         try:
+            _save_state(state_dir, state)
             if key_file is not None:
+                writing = key_file
                 key_file.parent.mkdir(parents=True, exist_ok=True)
                 os.chmod(key_file.parent, 0o700)
                 old_key = _read(key_file)
@@ -1062,14 +1074,6 @@ def connect_agent(
                 writing = path
                 _write_atomic(path, written)
                 done.append((path, raw))
-            # Record the backup last, inside the rollback: if it can't be saved,
-            # nothing could restore these files later, so put them back now.
-            writing = Path(state_dir) / STATE_FILE
-            state[agent_id] = {
-                "files": [{**fentry, "written_sha256": _sha(written)} for _p, _r, written, fentry in plan],
-                "key_file": str(key_file) if key_file else None,
-            }
-            _save_state(state_dir, state)
         except OSError as exc:
             for path, raw in reversed(done):  # put back what we already changed
                 with contextlib.suppress(OSError):
@@ -1077,6 +1081,12 @@ def connect_agent(
                         _target(path).unlink()
                     else:
                         _write_atomic(path, raw)
+            if previous_entry is None:
+                state.pop(agent_id, None)
+            else:
+                state[agent_id] = previous_entry
+            with contextlib.suppress(OSError):
+                _save_state(state_dir, state)
             raise AgentConfigError(f"Can't write {writing}: {exc.strerror or exc}") from exc
 
         primary = plan[0][0]
