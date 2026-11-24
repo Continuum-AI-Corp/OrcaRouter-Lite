@@ -20,10 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 CACHE_SECONDS = 2.0
 _cache: dict[str, tuple[float, int, int | None, str]] = {}
+_agent_cache: dict[str, tuple[float, int]] = {}
 
 
 def reset_cache() -> None:
     _cache.clear()
+    _agent_cache.clear()
 
 
 def is_generation(path: str) -> bool:
@@ -75,17 +77,65 @@ async def _state(session: AsyncSession, workspace_id: str) -> tuple[int, int | N
     return spent, limit, mode
 
 
-async def stop_reason(session: AsyncSession, workspace_id: str) -> str | None:
-    """A user-facing reason to refuse an agent's request, or None to allow it."""
+async def stop_reason(session: AsyncSession, workspace_id: str, *, key_name: str | None = None) -> str | None:
+    """A user-facing reason to refuse an agent's request, or None to allow it.
+
+    Two gates: the workspace's daily budget in "stop" mode pauses every
+    agent; an agent's own daily cap (D3, `agent_budgets` in the desktop
+    settings) pauses that agent only, whatever the budget mode.
+    """
     spent, limit, mode = await _state(session, workspace_id)
-    if mode != "stop" or limit is None:
+    if mode == "stop" and limit is not None and spent >= limit * 10_000:
+        return (
+            f"Today's daily budget of {_money(limit * 10_000)} is used up ({_money(spent)} spent), "
+            "so Orca paused your coding agents. Raise the budget in Orca, or switch it to alert-only."
+        )
+    return await _agent_stop_reason(session, workspace_id, key_name)
+
+
+async def _agent_stop_reason(session: AsyncSession, workspace_id: str, key_name: str | None) -> str | None:
+    from packages.desktop import prefs
+
+    agent = prefs.agent_of(key_name)
+    if agent is None:
         return None
-    if spent < limit * 10_000:
+    cap = (await prefs.load(session, workspace_id)).agent_budgets.get(agent)
+    if cap is None:
         return None
-    return (
-        f"Today's daily budget of {_money(limit * 10_000)} is used up ({_money(spent)} spent), "
-        "so Orca paused your coding agents. Raise the budget in Orca, or switch it to alert-only."
+    if await _agent_spent_today(session, workspace_id, key_name) < cap * 10_000:
+        return None
+    from packages.desktop.agents import AGENTS
+
+    name = AGENTS[agent].name if agent in AGENTS else agent
+    return f"Today's budget for {name} ({_money(cap * 10_000)}) is used up, so Orca paused it. Raise it in Orca."
+
+
+async def _agent_spent_today(session: AsyncSession, workspace_id: str, key_name: str) -> int:
+    """Today's spend through every key the agent has had (reconnecting mints
+    a new one), cached like the workspace total."""
+    from packages.db.models.api_key import ApiKey
+    from packages.db.models.request_log import RequestLog
+
+    cache_key = f"{workspace_id}\x00{key_name}"
+    hit = _agent_cache.get(cache_key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    key_ids = select(ApiKey.id).where(ApiKey.workspace_id == workspace_id, ApiKey.name == key_name)
+    spent = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(RequestLog.cost_microcents), 0)).where(
+                    RequestLog.workspace_id == workspace_id,
+                    RequestLog.api_key_id.in_(key_ids),
+                    RequestLog.is_deleted == 0,
+                    RequestLog.status_code < 400,
+                    RequestLog.created_at >= _local_midnight_utc(),
+                )
+            )
+        ).scalar_one()
     )
+    _agent_cache[cache_key] = (time.monotonic() + CACHE_SECONDS, spent)
+    return spent
 
 
 def note_settings_changed() -> None:
