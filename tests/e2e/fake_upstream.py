@@ -38,6 +38,11 @@ async def chat(request: Request):
     CALLS.append({"model": body.get("model"), "stream": bool(body.get("stream")),
                   "auth": request.headers.get("authorization", "")})
     base = {"id": "chatcmpl-e2e", "created": int(time.time()), "model": body.get("model", "gpt-4o-mini")}
+    messages = body.get("messages") or []
+    if body.get("tools") and messages and messages[-1].get("role") == "user":
+        return _tool_call(body, base)
+    if messages and messages[-1].get("role") == "tool":
+        return _answer(body, base, f"done: {messages[-1].get('content')}")
     if body.get("stream"):
         async def frames():
             chunk = {**base, "object": "chat.completion.chunk"}
@@ -49,3 +54,47 @@ async def chat(request: Request):
         return StreamingResponse(frames(), media_type="text/event-stream")
     return {**base, "object": "chat.completion", "usage": USAGE,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"}, "finish_reason": "stop"}]}
+
+
+# Like a real model offered tools: first call one (its arguments arrive in
+# pieces when streaming), then answer once the tool's result comes back.
+TOOL_ARGS = json.dumps({"path": "README.md"})
+
+
+def _tool_call(body, base):
+    name = body["tools"][0]["function"]["name"]
+    call = {"id": "call_e2e", "type": "function", "function": {"name": name, "arguments": TOOL_ARGS}}
+    if not body.get("stream"):
+        return {**base, "object": "chat.completion", "usage": USAGE,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "tool_calls": [call]},
+                             "finish_reason": "tool_calls"}]}
+
+    async def frames():
+        chunk = {**base, "object": "chat.completion.chunk"}
+        first = {"index": 0, "id": "call_e2e", "type": "function", "function": {"name": name, "arguments": ""}}
+        yield f"data: {json.dumps({**chunk, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'tool_calls': [first]}, 'finish_reason': None}]})}\n\n"
+        for piece in (TOOL_ARGS[:6], TOOL_ARGS[6:]):
+            delta = {"tool_calls": [{"index": 0, "function": {"arguments": piece}}]}
+            yield f"data: {json.dumps({**chunk, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
+        yield f"data: {json.dumps({**chunk, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]})}\n\n"
+        if (body.get("stream_options") or {}).get("include_usage"):
+            yield f"data: {json.dumps({**chunk, 'choices': [], 'usage': USAGE})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(frames(), media_type="text/event-stream")
+
+
+def _answer(body, base, text):
+    if not body.get("stream"):
+        return {**base, "object": "chat.completion", "usage": USAGE,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
+
+    async def frames():
+        chunk = {**base, "object": "chat.completion.chunk"}
+        yield f"data: {json.dumps({**chunk, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': text}, 'finish_reason': None}]})}\n\n"
+        yield f"data: {json.dumps({**chunk, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+        if (body.get("stream_options") or {}).get("include_usage"):
+            yield f"data: {json.dumps({**chunk, 'choices': [], 'usage': USAGE})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(frames(), media_type="text/event-stream")

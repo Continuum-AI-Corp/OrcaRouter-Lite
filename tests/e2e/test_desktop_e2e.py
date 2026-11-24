@@ -346,6 +346,71 @@ def test_5c_setup_checks_a_provider_key_before_saving_it(stack):
     assert r.status_code == 403
 
 
+def _sse(r):
+    events, kind = [], None
+    for line in r.iter_lines():
+        if line.startswith("event: "):
+            kind = line[len("event: "):]
+        elif line.startswith("data: ") and line != "data: [DONE]":
+            events.append((kind, json.loads(line[len("data: "):])))
+    return events
+
+
+def test_5d_claude_code_tool_use_round_trip_streaming(stack):
+    base, token = _claude(stack["home"])
+    headers = {"Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01"}
+    tools = [{"name": "read_file", "description": "Read a file",
+              "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}]
+    ask = {"role": "user", "content": "What's in the README?"}
+    with httpx.stream("POST", f"{base}/v1/messages", headers=headers, timeout=60,
+                      json={"model": "claude-sonnet-4-6", "max_tokens": 256, "stream": True, "tools": tools,
+                            "messages": [ask]}) as r:
+        assert r.status_code == 200, r.read()
+        events = _sse(r)
+    starts = [d["content_block"] for k, d in events if k == "content_block_start"]
+    tool = next(b for b in starts if b["type"] == "tool_use")
+    assert tool["name"] == "read_file"
+    args = "".join(d["delta"]["partial_json"] for k, d in events
+                   if k == "content_block_delta" and d["delta"]["type"] == "input_json_delta")
+    assert json.loads(args) == {"path": "README.md"}
+    assert any(k == "message_delta" and d["delta"]["stop_reason"] == "tool_use" for k, d in events)
+    # Send the tool's result back, as Claude Code does.
+    r = httpx.post(f"{base}/v1/messages", headers=headers, timeout=60, json={
+        "model": "claude-sonnet-4-6", "max_tokens": 256, "tools": tools, "messages": [
+            ask,
+            {"role": "assistant", "content": [{"type": "tool_use", "id": tool["id"], "name": "read_file",
+                                                "input": {"path": "README.md"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool["id"], "content": "# Orca"}]},
+        ]})
+    assert r.status_code == 200, r.text
+    assert r.json()["content"][0]["text"] == "done: # Orca"
+
+
+def test_5e_gemini_cli_function_call(stack):
+    base, key = _gemini(stack["home"])
+    r = httpx.post(f"{base}/v1beta/models/gemini-2.5-pro:generateContent", headers={"x-goog-api-key": key}, timeout=60,
+                   json={"contents": [{"role": "user", "parts": [{"text": "What's in the README?"}]}],
+                         "tools": [{"functionDeclarations": [{"name": "read_file", "description": "Read a file",
+                                    "parameters": {"type": "OBJECT", "properties": {"path": {"type": "STRING"}}}}]}]})
+    assert r.status_code == 200, r.text
+    call = r.json()["candidates"][0]["content"]["parts"][0]["functionCall"]
+    assert call == {"name": "read_file", "args": {"path": "README.md"}}
+
+
+def test_5f_codex_function_call_streaming(stack):
+    base, token, model = _codex(stack["home"])
+    with httpx.stream("POST", f"{base}/responses", headers={"Authorization": f"Bearer {token}"}, timeout=60,
+                      json={"model": model, "stream": True, "store": False, "input": "What's in the README?",
+                            "tools": [{"type": "function", "name": "read_file", "description": "Read a file",
+                                       "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]}) as r:
+        assert r.status_code == 200, r.read()
+        events = _sse(r)
+    done = [d["item"] for k, d in events if k == "response.output_item.done"]
+    call = next(i for i in done if i["type"] == "function_call")
+    assert call["name"] == "read_file" and json.loads(call["arguments"]) == {"path": "README.md"}
+    assert events[-1][0] == "response.completed"
+
+
 def test_6_every_request_reached_the_provider_and_spend_is_per_agent(stack):
     calls = httpx.get(f"{stack['upstream']}/_calls").json()["calls"]
     assert len(calls) >= len(AUTO_AGENTS)
