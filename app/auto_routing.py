@@ -20,11 +20,13 @@ Adapted from `apps/api/routes/chat.py:_required_capabilities` /
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from packages.litellm_adapter.catalog import CatalogModel
+from packages.litellm_adapter.hosted_catalog import FREE_HOSTED_MODELS, is_free_hosted
 
 # Suffix shapes that mark a model id as a more-specific *version* of a base
 # model rather than a different model. Matched against the substring AFTER
@@ -252,6 +254,9 @@ def choose_auto_model(
     tps_scores: dict[str, float] | None = None,
     ttft_scores: dict[str, float] | None = None,
     top_n: int = 5,
+    free_first: bool = False,
+    context_limits: dict[str, int] | None = None,
+    prompt_tokens: int = 0,
 ) -> tuple[list[str], dict[str, ScoringDetail]]:
     """Return up to `top_n` deployable models matching all `needs`, best first,
     plus a per-model scoring breakdown for the survivors.
@@ -299,13 +304,21 @@ def choose_auto_model(
 
     Excludes models with zero blended cost — those are unpriced entries in
     litellm's catalogue, not actually free, and routing to them would skew
-    the savings calculation.
+    the savings calculation — except OrcaRouter's free models
+    (FREE_HOSTED_MODELS), which really are free.
+
+    `free_first` (the desktop app's "free" hosted mode) puts the free models
+    first, ahead of the strategy's ranking of everything else; those don't
+    count toward `top_n`. `context_limits` + `prompt_tokens` rule out a
+    model whose usable context (in tokens) the prompt would exceed.
     """
+    limits = context_limits or {}
     eligible = [
         m for m in candidates
         if m.id in deployable
         and _model_meets(m, needs)
-        and _blended_cost(m) > 0
+        and (_blended_cost(m) > 0 or is_free_hosted(m.id))
+        and not (prompt_tokens and m.id in limits and prompt_tokens > limits[m.id])
     ]
     if preferred_models:
         preferred_set = set(preferred_models)
@@ -323,6 +336,19 @@ def choose_auto_model(
         eligible = [m for m in eligible if m.id in allow_set]
     if not eligible:
         return [], {}
+
+    # Free first (the desktop app's "free" mode): OrcaRouter's free models
+    # lead in their fixed order, whatever the strategy (they have no
+    # benchmark scores, so balanced/fastest would otherwise drop them), and
+    # the strategy ranks everything else behind them as fallbacks.
+    free_lead: list[CatalogModel] = []
+    if free_first:
+        free_lead = sorted(
+            (m for m in eligible if is_free_hosted(m.id)), key=lambda m: _free_rank(m.id)
+        )
+        eligible = [m for m in eligible if not is_free_hosted(m.id)]
+        if not eligible:
+            return [m.id for m in free_lead], {m.id: _cheapest_breakdown(m) for m in free_lead}
 
     # Per-strategy: sort `eligible` (which may shrink under strict-coverage)
     # AND build a per-model `scoring_per_model` dict keyed by id. Dedupe +
@@ -473,4 +499,41 @@ def choose_auto_model(
     final_ids = [m.id for m in final]
     # Filter scoring to survivors only — sibling-deduped models drop out.
     scoring = {mid: scoring_per_model[mid] for mid in final_ids if mid in scoring_per_model}
+    if free_lead:
+        scoring.update({m.id: _cheapest_breakdown(m) for m in free_lead})
+        final_ids = [m.id for m in free_lead] + final_ids
     return final_ids, scoring
+
+
+def _free_rank(model_id: str) -> int:
+    bare = model_id.split("/", 1)[-1]
+    for i, free in enumerate(FREE_HOSTED_MODELS):
+        if model_id == free or bare == free.split("/", 1)[-1]:
+            return i
+    return len(FREE_HOSTED_MODELS)
+
+
+def estimate_prompt_tokens(body: dict) -> int:
+    """A rough prompt size (about 4 characters a token) for deciding whether
+    a request fits a model's context window before sending it anywhere.
+
+    Counts message text (string content and text parts), tool definitions
+    and tool-call arguments; images count nothing here (they are a
+    capability question, not a size one).
+    """
+    chars = 0
+    for m in body.get("messages") or []:
+        content = m.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chars += len(part["text"])
+        for call in m.get("tool_calls") or []:
+            args = ((call or {}).get("function") or {}).get("arguments")
+            if isinstance(args, str):
+                chars += len(args)
+    if body.get("tools"):
+        chars += len(json.dumps(body["tools"], separators=(",", ":")))
+    return chars // 4

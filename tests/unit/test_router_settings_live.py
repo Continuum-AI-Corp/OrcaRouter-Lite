@@ -19,7 +19,7 @@ def built(monkeypatch, isolated_env):
 
     class _Recorder:
         def __init__(self, deployments, **kw):
-            calls.append(kw)
+            calls.append({**kw, "deployments": deployments})
             self._deployments = deployments
             self.strategy = kw.get("strategy")
             self.preferred_models = kw.get("preferred_models")
@@ -83,3 +83,15 @@ async def test_servers_never_read_desktop_settings(built, db_session, monkeypatc
     await router_cache.get_router(db_session)
     s = config.get_settings()
     assert built[-1]["num_retries"] == s.router_num_retries_default
+
+
+async def test_switching_hosted_models_rebuilds_with_paid_models(built, db_session, monkeypatch):
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-x")
+    config.get_settings.cache_clear()
+    await _save(db_session)  # default: free
+    await router_cache.get_router(db_session)
+    assert "claude-sonnet-4.6" not in {d.model_name for d in built[-1]["deployments"]}
+    assert "orcarouter/free" in {d.model_name for d in built[-1]["deployments"]}
+    await _save(db_session, hosted_models="all")
+    await router_cache.get_router(db_session)
+    assert "claude-sonnet-4.6" in {d.model_name for d in built[-1]["deployments"]}

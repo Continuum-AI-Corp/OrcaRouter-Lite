@@ -19,12 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import prompt_cache, router_cache
+from app import desktop_routing, prompt_cache, route_notes, router_cache
 from app.agent_model_fallback import fallback_preferences, is_agent_key
 from app.auto_routing import (
     _VERSION_SUFFIX_RE,
     canonical_model_base,
     choose_auto_model,
+    estimate_prompt_tokens,
     required_capabilities,
 )
 from app.config import get_settings
@@ -34,6 +35,7 @@ from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
+from packages.desktop import hosted_state, prefs
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_fallback import (
     hidden_params_of,
@@ -164,6 +166,34 @@ def _orca_response_headers(
     return headers
 
 
+HOSTED_COST_HEADER = "llm_provider-x-orcarouter-beta-usd"
+
+
+def _hosted_cost_usd(hidden: dict) -> float | None:
+    """The exact cost OrcaRouter reported for a request (its
+    X-OrcaRouter-beta-usd response header, which LiteLLM keeps with the
+    response's other headers), or None when it didn't report one."""
+    raw = ((hidden or {}).get("additional_headers") or {}).get(HOSTED_COST_HEADER)
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_of(ctx, model: str | None) -> str | None:
+    """The provider that serves `model` first: an own key or local model
+    before OrcaRouter, as the router reaches them."""
+    providers = [d.provider for d in ctx.deployments if d.model_name == model]
+    own = [p for p in providers if p != desktop_routing.HOSTED_PROVIDER]
+    return (own or providers or [None])[0]
+
+
+def _note_hosted_success(provider: str | None) -> None:
+    """Any answer from OrcaRouter means it has credit again (H4)."""
+    if provider == desktop_routing.HOSTED_PROVIDER:
+        hosted_state.note_success()
+
+
 def _meta_hosted_fallback(response: dict | None) -> bool:
     if not isinstance(response, dict):
         return False
@@ -197,6 +227,9 @@ async def _build_log_row(
     strategy: str,
     requested_model: str,
     actual_resolved: str | None = None,
+    route_note: str | None = None,
+    price_model: str | None = None,
+    default_provider: str | None = None,
 ) -> RequestLog:
     """Persist what the client asked for vs. what actually served the request.
 
@@ -205,35 +238,49 @@ async def _build_log_row(
     user intent. `actual_resolved` is the model that ultimately served the
     response, which may differ from the auto-resolved primary if LiteLLM
     Router cascaded to a fallback after a 404 / cooldown.
+
+    `price_model` (the model the engine asked LiteLLM for) prices the row
+    when the served name isn't in the catalog; it beats `requested_model`,
+    which for an agent's swapped model names a model that never ran.
+    `default_provider` attributes a failed request, which has no response
+    to say who failed, to the provider that was asked. Requests served on
+    this computer or by a free OrcaRouter model cost nothing, whatever the
+    token count.
     """
     latency_ms = int((time.perf_counter() - started_perf) * 1000)
     meta = response.get("_orca_meta", {}) or {}
     usage = response.get("usage", {}) or {}
     resolved = actual_resolved or response.get("model") or requested_model
+    provider = meta.get("provider") or default_provider or "unknown"
     input_t = usage.get("prompt_tokens", 0) or 0
     output_t = usage.get("completion_tokens", 0) or 0
+    if route_notes.served_at_no_cost(provider, meta.get("model_group") or resolved):
+        cost = 0
+    else:
+        cost = _compute_cost_microcents(
+            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
+            model_id=resolved,
+            input_tokens=input_t,
+            output_tokens=output_t,
+            fallback_model=price_model or requested_model,
+        )
     return RequestLog(
         workspace_id=str(kc.workspace_id),
         api_key_id=str(kc.key_id),
         trace_id=str(uuid.uuid4()),
         model_requested=requested_model,
         model_resolved=resolved,
-        provider=meta.get("provider", "unknown"),
+        provider=provider,
         routing_strategy=strategy,
         fallback_level=1 if meta.get("fallback") else 0,
         input_tokens=input_t,
         output_tokens=output_t,
-        cost_microcents=_compute_cost_microcents(
-            litellm_cost_usd=usage.get("cost_usd") or meta.get("cost_usd"),
-            model_id=resolved,
-            input_tokens=input_t,
-            output_tokens=output_t,
-            fallback_model=requested_model,
-        ),
+        cost_microcents=cost,
         latency_ms=meta.get("latency_ms", latency_ms),
         status_code=status_code,
         error_type=error_type,
         is_streaming=body.stream,
+        route_note=route_note,
     )
 
 
@@ -374,6 +421,53 @@ async def execute_chat(
     strategy = raw_strategy if isinstance(raw_strategy, str) and raw_strategy else "balanced"
     raw_preferred = getattr(client, "preferred_models", None)
     preferred_models = raw_preferred if isinstance(raw_preferred, list) else []
+    settings = get_settings()
+    desktop = settings.orca_desktop_mode
+    ctx = desktop_routing.build_context(
+        desktop=desktop,
+        prefs=await prefs.load(db, str(kc.workspace_id)) if desktop else prefs.DEFAULTS,
+        deployments=getattr(client, "_deployments", []) or [],
+    )
+    started_perf = time.perf_counter()
+    # What routing decided before the call, for the request log (see
+    # app/route_notes.py); the served outcome may refine it.
+    route_intent: str | None = None
+
+    async def _refuse(status: int, error_type: str, detail: str, note: str) -> None:
+        """Log a request the engine refuses before calling anyone, then raise.
+
+        These refusals are events the desktop panel reports (a request that
+        needed a paid model), so unlike plain validation errors they get a
+        row, attributed like any other failed request."""
+        row_status = log_status(status, error_type) if log_status is not None else status
+        row = await _build_log_row(
+            body=body, kc=kc, response={}, status_code=row_status, error_type=error_type,
+            started_perf=started_perf, strategy=strategy, requested_model=requested_model,
+            actual_resolved=body.model, route_note=note,
+        )
+        db.add(row)
+        try:
+            await db.commit()
+        except Exception as commit_err:
+            logger.warning("request_log_commit_failed", error=str(commit_err))
+        raise HTTPException(status_code=status, detail=detail, headers={ERROR_TYPE_HEADER: error_type})
+
+    # H0: in "free" mode a paid hosted model isn't deployed. Asking for one
+    # by name (outside an agent, which falls back below) says how to allow
+    # paid models rather than failing as an unknown model.
+    if (
+        not was_auto
+        and ctx.free_mode
+        and ctx.hosted_configured
+        and body.model not in ctx.deployable
+        and not is_agent_key(kc.name)
+        and desktop_routing.is_paid_hosted(body.model)
+    ):
+        await _refuse(
+            422, desktop_routing.NEEDS_PAID_TYPE,
+            desktop_routing.needs_paid_detail(f"{body.model} is paid on OrcaRouter"),
+            route_notes.NEEDS_PAID,
+        )
 
     # A desktop coding agent asking for a model no configured provider serves
     # (Claude Code's claude-* names with only an OpenAI key, say) is routed
@@ -381,10 +475,10 @@ async def execute_chat(
     # `requested_model` above keeps what the agent asked for.
     fallback = fallback_preferences(
         body.model,
-        {d.model_name for d in getattr(client, "_deployments", []) or []},
+        set(ctx.deployable),
         catalog=CATALOG,
         is_agent_key=is_agent_key(kc.name),
-        desktop_mode=get_settings().orca_desktop_mode,
+        desktop_mode=desktop,
     )
     if fallback is not None:
         logger.info("agent_model_fallback", requested=body.model, prefer=fallback[:5])
@@ -402,9 +496,8 @@ async def execute_chat(
     if was_auto:
         body_dict = body.model_dump(exclude_none=True)
         needs = required_capabilities(body_dict)
-        deployable = {
-            d.model_name for d in getattr(client, "_deployments", []) or []
-        }
+        prompt_tokens = estimate_prompt_tokens(body_dict) if desktop else 0
+        deployable = desktop_routing.auto_deployable(ctx)
         if not deployable:
             raise HTTPException(
                 status_code=422,
@@ -449,6 +542,9 @@ async def execute_chat(
             quality_scores=quality_scores,
             tps_scores=tps_scores,
             ttft_scores=ttft_scores,
+            free_first=ctx.free_mode,
+            context_limits=desktop_routing.context_limits(ctx),
+            prompt_tokens=prompt_tokens,
         )
         if not candidates:
             # Empty result has two distinct causes — distinguish them so the
@@ -471,6 +567,8 @@ async def execute_chat(
                     tps_scores=tps_scores,
                     ttft_scores=ttft_scores,
                     top_n=1,
+                    context_limits=desktop_routing.context_limits(ctx),
+                    prompt_tokens=prompt_tokens,
                 )
                 if any_capable:
                     raise HTTPException(
@@ -480,6 +578,25 @@ async def execute_chat(
                             f"{kc.model_allowlist} satisfies the requested "
                             f"capabilities ({sorted(needs) or 'none'})."
                         ),
+                    )
+            if ctx.free_mode and ctx.hosted_configured:
+                # Free models (and own keys) can't take it, but a paid
+                # OrcaRouter model could: say so instead of sending it there.
+                paid_could, _ = choose_auto_model(
+                    needs=needs,
+                    deployable=set(desktop_routing.PAID_HOSTED_NAMES),
+                    candidates=CATALOG,
+                    strategy="cheapest",
+                    allowlist=kc.model_allowlist,
+                    top_n=1,
+                )
+                if paid_could:
+                    await _refuse(
+                        422, desktop_routing.NEEDS_PAID_TYPE,
+                        desktop_routing.needs_paid_detail(
+                            desktop_routing.needs_paid_reason(needs, prompt_tokens)
+                        ),
+                        route_notes.NEEDS_PAID,
                     )
             raise HTTPException(
                 status_code=422,
@@ -521,6 +638,9 @@ async def execute_chat(
     per_call_kwargs: dict = {}
     if was_auto:
         per_call_kwargs["num_retries"] = settings.router_num_retries_auto
+    # Who a failed request is attributed to when no response says so: the
+    # provider that was asked first (own key before OrcaRouter).
+    primary_provider = _provider_of(ctx, resolved_model)
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"
@@ -622,6 +742,9 @@ async def execute_chat(
                 strategy=strategy,
                 requested_model=requested_model,
                 actual_resolved=resolved_model,
+                route_note=route_notes.for_failure(err_type),
+                price_model=resolved_model,
+                default_provider=primary_provider,
             )
             db.add(log)
             try:
@@ -692,6 +815,7 @@ async def execute_chat(
                 # wrapping every chunk would be wasteful). Look up provider
                 # attribution from the served model name against the active
                 # deployments — same lookup the non-stream adapter does.
+                served_group: str | None = None
                 if agg_provider == "unknown" and agg_model:
                     deployments = getattr(client, "_deployments", []) or []
                     served = match_served_deployment(
@@ -701,6 +825,7 @@ async def execute_chat(
                     )
                     if served is not None:
                         agg_provider = served.provider
+                        served_group = served.model_name
                         if not agg_fallback:
                             agg_fallback = hosted_bypass_of_local(
                                 deployments, served, requested_model=resolved_model,
@@ -723,6 +848,11 @@ async def execute_chat(
                     "usage": agg_usage,
                     "_orca_meta": {"provider": agg_provider},
                 }
+                if served_group:
+                    synthetic["_orca_meta"]["model_group"] = served_group
+                hosted_cost = _hosted_cost_usd(hidden_params_of(stream_obj))
+                if hosted_cost is not None:
+                    synthetic["_orca_meta"]["cost_usd"] = hosted_cost
                 if agg_fallback:
                     synthetic["_orca_meta"]["fallback"] = True
                 if agg_latency:
@@ -751,6 +881,14 @@ async def execute_chat(
                 row_status = status_code
                 if log_status is not None and error_type is not None:
                     row_status = log_status(status_code, error_type)
+                if error_type is None:
+                    note = route_notes.for_success(
+                        intent=route_intent, provider=agg_provider,
+                        served_model=served_group or agg_model or resolved_model,
+                    )
+                    _note_hosted_success(agg_provider)
+                else:
+                    note = route_notes.for_failure(error_type)
                 template = await _build_log_row(
                     body=body, kc=kc, response=synthetic,
                     status_code=row_status, error_type=error_type,
@@ -758,6 +896,9 @@ async def execute_chat(
                     strategy=strategy,
                     requested_model=requested_model,
                     actual_resolved=agg_model,
+                    route_note=note,
+                    price_model=resolved_model,
+                    default_provider=primary_provider,
                 )
                 row_values = {
                     c.key: getattr(template, c.key)
@@ -1096,8 +1237,18 @@ async def execute_chat(
     finally:
         if log_status is not None and error_type is not None:
             status_code = log_status(status_code, error_type)
+        response_dict = response if isinstance(response, dict) else {}
+        if error_type is None and status_code < 400:
+            meta = response_dict.get("_orca_meta") or {}
+            note = route_notes.for_success(
+                intent=route_intent, provider=meta.get("provider"),
+                served_model=meta.get("model_group") or actual_resolved or resolved_model,
+            )
+            _note_hosted_success(meta.get("provider"))
+        else:
+            note = route_notes.for_failure(error_type)
         log = await _build_log_row(
-            body=body, kc=kc, response=response if isinstance(response, dict) else {},
+            body=body, kc=kc, response=response_dict,
             status_code=status_code, error_type=error_type,
             started_perf=started_perf,
             strategy=strategy,
@@ -1106,6 +1257,9 @@ async def execute_chat(
             # primary so the log row records what we tried, not "auto" (which
             # _build_log_row would otherwise default to via requested_model).
             actual_resolved=actual_resolved or resolved_model,
+            route_note=note,
+            price_model=resolved_model,
+            default_provider=primary_provider,
         )
         db.add(log)
         try:

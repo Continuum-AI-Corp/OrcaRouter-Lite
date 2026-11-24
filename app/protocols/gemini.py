@@ -557,6 +557,11 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     "upstream_auth_error": 403,
     "no_providers_configured": 403,
     "no_capable_provider": 403,
+    # The desktop app's refusals: only a paid model could serve the request
+    # (the user has to allow paid models), or OrcaRouter is out of credit.
+    # Neither succeeds on retry.
+    "needs_paid_model": 403,
+    "out_of_credit": 403,  # PERMISSION_DENIED: Google has no 402
     "upstream_timeout": 503,
     "upstream_error": 503,
 }

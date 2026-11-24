@@ -105,11 +105,10 @@ def test_catalog_lists_hosted_free_models_with_zero_cost():
         assert m.output_cost_per_token == 0.0
 
 
-def test_free_models_are_listed_but_not_auto_eligible():
-    """Deliberate interaction: choose_auto_model excludes zero-blended-cost
-    entries (unpriced ≠ free in litellm's catalog, and zero-cost wins would
-    skew the savings math), so the free models are discoverable + pinnable
-    but never auto-selected."""
+def test_free_models_are_auto_eligible():
+    """choose_auto_model still excludes zero-blended-cost litellm entries
+    (unpriced ≠ free), but OrcaRouter's free models really are free: the
+    desktop app starts every user on them (H0), so auto may pick them."""
     from app.auto_routing import choose_auto_model
     from packages.litellm_adapter.catalog import CATALOG_BY_ID
 
@@ -117,4 +116,4 @@ def test_free_models_are_listed_but_not_auto_eligible():
     chosen, _ = choose_auto_model(
         needs=set(), deployable={"orcarouter/free"}, candidates=[m],
     )
-    assert chosen == []
+    assert chosen == ["orcarouter/free"]

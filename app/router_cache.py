@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from packages.auth.encryption import decrypt_credential
 from packages.litellm_adapter.catalog import models_for_provider
 from packages.litellm_adapter.hosted_catalog import (
+    FREE_HOSTED_MODELS,
     HOSTED_MODEL_ALIASES,
     HOSTED_MODELS,
 )
@@ -38,6 +39,7 @@ def build_deployments(
     env_keys: dict[str, str],
     db_keys: list["ProviderKey"],
     settings: "Settings",
+    hosted_models: str = "all",
 ) -> list[ProviderDeployment]:
     """Assemble the deployment list from env vars + DB rows + hosted upstream.
 
@@ -45,6 +47,11 @@ def build_deployments(
       1. DB provider keys (UI-edited, authoritative; encrypted at rest)
       2. Env vars for providers not present in DB
       3. Hosted-as-upstream (one entry per catalog model) — DB key > env key
+
+    `hosted_models="free"` (the desktop app's default) deploys only
+    OrcaRouter's free models: a paid hosted model that isn't deployed can't
+    be picked by auto, by a fallback chain or as LiteLLM's peer of an
+    own-key deployment, so nothing paid is ever used by surprise.
     """
     deployments: list[ProviderDeployment] = []
     db_provider_keys: dict[str, str] = {}
@@ -84,6 +91,8 @@ def build_deployments(
     if hosted_key:
         for provider, bare_id in HOSTED_MODELS:
             wire_id = f"{provider}/{bare_id}"
+            if hosted_models == "free" and wire_id not in FREE_HOSTED_MODELS:
+                continue
             model_groups = [bare_id]
             if wire_id in HOSTED_MODEL_ALIASES:
                 model_groups.append(wire_id)
@@ -193,22 +202,25 @@ class RouterInputs:
 
     num_retries: int
     cooldown_seconds: float
+    hosted_models: str = "all"
 
 
 async def router_inputs(session, settings) -> RouterInputs:
     num_retries = settings.router_num_retries_default
+    hosted_models = "all"
     cooldown = float(settings.router_cooldown_seconds)
     if settings.orca_desktop_mode:
         from app.seed import DEFAULT_WORKSPACE_ID
         from packages.desktop import prefs
 
         p = await prefs.load(session, DEFAULT_WORKSPACE_ID)
+        hosted_models = p.hosted_models
         explicit = settings.model_fields_set
         if p.router_num_retries is not None and "router_num_retries_default" not in explicit:
             num_retries = p.router_num_retries
         if p.router_cooldown_seconds is not None and "router_cooldown_seconds" not in explicit:
             cooldown = float(p.router_cooldown_seconds)
-    return RouterInputs(num_retries=num_retries, cooldown_seconds=cooldown)
+    return RouterInputs(num_retries=num_retries, cooldown_seconds=cooldown, hosted_models=hosted_models)
 
 
 async def get_router(session) -> object:
@@ -246,6 +258,7 @@ async def get_router(session) -> object:
             env_keys=settings.env_provider_keys(),
             db_keys=list(rows),
             settings=settings,
+            hosted_models=inputs.hosted_models,
         )
 
         routing_row = (
