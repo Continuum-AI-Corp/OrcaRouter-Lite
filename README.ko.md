@@ -83,6 +83,17 @@ Claude Code 상태 표시줄에 오늘의 지출을 표시하려면 `~/.claude/s
 | Cline | 붙여넣기 한 번: Cline에서 API Provider → OpenAI Compatible을 선택하고 앱이 보여 주는 기본 URL과 키를 붙여넣기 |
 | Aider | 자동: `~/.aider.conf.yml`에 `openai-api-base`, 전용 키, `model: openai/auto`를 설정 |
 | Cursor | 붙여넣기 한 번: Cursor 모델 설정에 넣을 기본 URL과 키를 앱이 보여 줌 |
+| Hermes Agent | 자동: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | 자동: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | 자동: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | 자동: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | 자동: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | 자동: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | 자동: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | 붙여넣기 한 번: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | 붙여넣기 한 번: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | 붙여넣기 한 번: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | 붙여넣기 한 번: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 연결된 에이전트마다 전용 키가 발급됩니다. 이 덕분에 에이전트별로 지출을 나눌 수 있고, 연결을 해제하면
 즉시 접근이 취소됩니다. 앱이 컴퓨터에서 건드릴 수 있는 범위는

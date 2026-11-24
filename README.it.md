@@ -83,6 +83,17 @@ La spesa di oggi nella barra di stato di Claude Code: aggiungi questo a `~/.clau
 | Cline | Un passaggio di copia e incolla: scegli API Provider → OpenAI Compatible in Cline e incolla l'URL base e la chiave mostrati dall'app |
 | Aider | Automatico: imposta `openai-api-base`, una chiave dedicata e `model: openai/auto` in `~/.aider.conf.yml` |
 | Cursor | Un passaggio di copia e incolla: l'app mostra un URL base e una chiave per le impostazioni dei modelli di Cursor |
+| Hermes Agent | Automatico: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Automatico: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Automatico: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Automatico: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Automatico: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Automatico: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Automatico: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Un passaggio di copia e incolla: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Un passaggio di copia e incolla: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Un passaggio di copia e incolla: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Un passaggio di copia e incolla: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 Ogni agente connesso riceve la propria chiave: è così che la spesa viene suddivisa per agente, ed è
 per questo che disconnetterlo revoca subito l'accesso. Cosa può toccare l'app sul tuo computer è

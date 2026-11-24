@@ -83,6 +83,17 @@ macOS 用户也可以 `brew install --cask continuum-ai-corp/tap/orcarouter-lite
 | Cline | 粘贴一步：在 Cline 中选择 API Provider → OpenAI Compatible，然后粘贴应用显示的 base URL 和密钥 |
 | Aider | 自动：在 `~/.aider.conf.yml` 中设置 `openai-api-base`、专用密钥和 `model: openai/auto` |
 | Cursor | 粘贴一步：应用会显示用于 Cursor 模型设置的 base URL 和密钥 |
+| Hermes Agent | 自动：`~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | 自动：`~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | 自动：`~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | 自动：`~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | 自动：`~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | 自动：`~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | 自动：`~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | 粘贴一步：`settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | 粘贴一步：`/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | 粘贴一步：Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | 粘贴一步：Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 每个已连接的 Agent 都有自己的密钥：花费正是借此按 Agent 拆分，断开连接也因此能立即撤销访问。
 应用可以触碰你电脑上的哪些内容，详见

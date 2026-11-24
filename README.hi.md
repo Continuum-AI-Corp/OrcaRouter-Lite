@@ -76,6 +76,17 @@ Claude Code के स्टेटस बार में आज का खर�
 | Cline | एक पेस्ट स्टेप: Cline में API Provider → OpenAI Compatible चुनें और ऐप जो base URL और कुंजी दिखाता है, उन्हें पेस्ट करें |
 | Aider | स्वचालित: `~/.aider.conf.yml` में `openai-api-base`, एक अलग कुंजी और `model: openai/auto` सेट करता है |
 | Cursor | एक पेस्ट स्टेप: ऐप Cursor की मॉडल सेटिंग्स के लिए एक base URL और कुंजी दिखाता है |
+| Hermes Agent | स्वचालित: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | स्वचालित: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | स्वचालित: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | स्वचालित: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | स्वचालित: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | स्वचालित: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | स्वचालित: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | एक पेस्ट स्टेप: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | एक पेस्ट स्टेप: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | एक पेस्ट स्टेप: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | एक पेस्ट स्टेप: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 हर कनेक्टेड एजेंट को अपनी अलग कुंजी मिलती है: इसी से खर्च प्रति एजेंट बँटता है, और इसी वजह से डिस्कनेक्ट करते ही एक्सेस तुरंत रद्द हो जाता है। ऐप आपके कंप्यूटर पर क्या-क्या छू सकता है, यह [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch) में विस्तार से बताया गया है।
 

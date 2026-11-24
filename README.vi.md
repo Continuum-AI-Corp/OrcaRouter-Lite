@@ -83,6 +83,17 @@ Chi tiêu hôm nay trên thanh trạng thái của Claude Code: thêm dòng này
 | Cline | Một bước dán: chọn API Provider → OpenAI Compatible trong Cline rồi dán URL gốc và khoá mà ứng dụng hiển thị |
 | Aider | Tự động: đặt `openai-api-base`, một khoá riêng và `model: openai/auto` trong `~/.aider.conf.yml` |
 | Cursor | Một bước dán: ứng dụng hiển thị URL gốc và khoá để dán vào phần cài đặt mô hình của Cursor |
+| Hermes Agent | Tự động: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Tự động: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Tự động: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Tự động: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Tự động: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Tự động: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Tự động: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Một bước dán: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Một bước dán: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Một bước dán: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Một bước dán: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 Mỗi agent được kết nối có khoá riêng: đó là cách chi tiêu được chia theo agent, và cũng là lý do
 ngắt kết nối sẽ thu hồi quyền truy cập ngay lập tức. Những gì ứng dụng được phép động tới trên máy tính

@@ -83,6 +83,17 @@ Les dépenses du jour dans la barre d'état de Claude Code : ajoutez ceci à `~/
 | Cline | Un copier-coller : choisissez API Provider → OpenAI Compatible dans Cline et collez l'URL de base et la clé affichées par l'app |
 | Aider | Automatique : définit `openai-api-base`, une clé dédiée et `model: openai/auto` dans `~/.aider.conf.yml` |
 | Cursor | Un copier-coller : l'app affiche une URL de base et une clé pour les réglages de modèles de Cursor |
+| Hermes Agent | Automatique : `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Automatique : `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Automatique : `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Automatique : `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Automatique : `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Automatique : `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Automatique : `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Un copier-coller : `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Un copier-coller : `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Un copier-coller : Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Un copier-coller : Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 Chaque agent connecté reçoit sa propre clé : c'est ainsi que les dépenses sont réparties par agent,
 et c'est pourquoi la déconnexion révoque l'accès immédiatement. Ce que l'app peut toucher sur votre

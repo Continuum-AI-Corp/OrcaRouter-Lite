@@ -76,6 +76,17 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 | Cline | Один шаг вручную: выберите в Cline API Provider → OpenAI Compatible и вставьте базовый URL и ключ, которые показывает приложение |
 | Aider | Автоматически: прописывает `openai-api-base`, выделенный ключ и `model: openai/auto` в `~/.aider.conf.yml` |
 | Cursor | Один шаг вручную: приложение показывает базовый URL и ключ, которые нужно вставить в настройки моделей Cursor |
+| Hermes Agent | Автоматически: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Автоматически: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Автоматически: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Автоматически: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Автоматически: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Автоматически: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Автоматически: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Один шаг вручную: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Один шаг вручную: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Один шаг вручную: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Один шаг вручную: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 Каждый подключённый агент получает собственный ключ: так расходы разделяются по агентам, и поэтому отключение сразу отзывает доступ. Что приложению разрешено трогать на вашем компьютере, подробно описано в [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch).
 

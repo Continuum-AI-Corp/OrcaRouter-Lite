@@ -83,6 +83,17 @@ Claude Code のステータスバーに今日の支出を表示するには、`~
 | Cline | 貼り付け 1 回: Cline で API Provider → OpenAI Compatible を選び、アプリが表示するベース URL とキーを貼り付け |
 | Aider | 自動: `~/.aider.conf.yml` に `openai-api-base`、専用キー、`model: openai/auto` を設定 |
 | Cursor | 貼り付け 1 回: Cursor のモデル設定に入力するベース URL とキーをアプリが表示 |
+| Hermes Agent | 自動: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | 自動: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | 自動: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | 自動: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | 自動: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | 自動: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | 自動: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | 貼り付け 1 回: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | 貼り付け 1 回: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | 貼り付け 1 回: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | 貼り付け 1 回: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 接続した各エージェントには専用のキーが割り当てられます。これによってエージェントごとに支出を分けられ、
 接続を解除すると即座にアクセスが取り消されます。アプリがコンピューター上で触れる可能性のある範囲は

@@ -106,6 +106,16 @@ person on one computer:
   backed up first in `~/.orcarouter-lite/agents/` (mode 0600, because it may
   contain earlier credentials). Disconnecting restores it, and keeps any change
   you made in the meantime.
+- **Where each agent's key lives.** OpenCode, Kilo Code, Command Code and Goose
+  read their key from a private file (`~/.orcarouter-lite/agents/keys/<agent>.key`,
+  mode 0600), so it never appears in their config. Claude Code, Codex, Gemini
+  CLI, Aider, Hermes Agent, Pi, OMP, OpenClaw and Kimi Code take the key inside
+  their own config file, because that's the only place they read it from. That
+  key can only call models (see above) and stops working when you disconnect.
+  For the one-paste-step agents (Cline, Cursor, Zed, OpenHands, DeepSeek
+  Harness, ZCode) nothing is written; you paste the key into the agent.
+- **Agent logos are bundled.** The app shows each agent's logo from files it
+  ships with, loaded as images, so showing them never contacts anyone.
 - **Team gateways only over https.** `orca login` and "Join my company's
   gateway" accept an https address, or plain http only to a loopback or
   private-network address, and check the key against the gateway before any

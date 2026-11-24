@@ -108,8 +108,12 @@ def stack(tmp_path_factory):
     )
     frozen = os.environ.get("ORCA_E2E_ENGINE")
     orca = [frozen] if frozen else [sys.executable, "-c", "import sys; from app.orca_cli import entrypoint; sys.argv[0]='orca'; entrypoint()"]
-    engine = subprocess.Popen([*orca, "up", "--port", str(engine_port)], cwd=ROOT, env=env,
-                              stdout=open(logs / "engine.log", "w"), stderr=subprocess.STDOUT)
+    # Started the way the desktop app starts it: the engine exits when its
+    # stdin closes. A frozen one-file engine runs as a launcher plus a child;
+    # closing stdin stops both, where terminate() would leave the child
+    # holding the exe open (on Windows that blocks signing it afterwards).
+    engine = subprocess.Popen([*orca, "up", "--port", str(engine_port), "--exit-with-stdin"], cwd=ROOT, env=env,
+                              stdin=subprocess.PIPE, stdout=open(logs / "engine.log", "w"), stderr=subprocess.STDOUT)
     try:
         _wait(f"http://127.0.0.1:{up_port}/v1/models", upstream, "fake provider")
         _wait(f"http://127.0.0.1:{engine_port}/health", engine, "engine")
@@ -119,12 +123,24 @@ def stack(tmp_path_factory):
             "app_key": (orca_home / "app.key").read_text().strip(),
         }
     finally:
-        for p in (engine, upstream):
-            p.terminate()
-            try:
-                p.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                p.kill()
+        engine.stdin.close()
+        _stop(engine, graceful_seconds=15)
+        upstream.terminate()
+        _stop(upstream, graceful_seconds=10)
+
+
+def _stop(proc: subprocess.Popen, *, graceful_seconds: float) -> None:
+    """Wait for a process to exit, then kill it and anything it started."""
+    try:
+        proc.wait(timeout=graceful_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    else:
+        proc.kill()
+    proc.wait(timeout=10)
 
 
 def _orca(stack, *args) -> subprocess.CompletedProcess:

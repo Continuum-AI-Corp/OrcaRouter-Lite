@@ -83,6 +83,17 @@ Die heutigen Ausgaben in der Statusleiste von Claude Code: Fügen Sie dies zu `~
 | Cline | Ein Schritt per Copy & Paste: Wählen Sie in Cline API Provider → OpenAI Compatible und fügen Sie die Basis-URL und den Schlüssel ein, die die App anzeigt |
 | Aider | Automatisch: setzt `openai-api-base`, einen eigenen Schlüssel und `model: openai/auto` in `~/.aider.conf.yml` |
 | Cursor | Ein Schritt per Copy & Paste: Die App zeigt eine Basis-URL und einen Schlüssel für die Modelleinstellungen von Cursor |
+| Hermes Agent | Automatisch: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | Automatisch: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | Automatisch: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | Automatisch: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | Automatisch: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | Automatisch: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | Automatisch: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | Ein Schritt per Copy & Paste: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | Ein Schritt per Copy & Paste: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | Ein Schritt per Copy & Paste: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | Ein Schritt per Copy & Paste: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
 
 Jeder verbundene Agent erhält einen eigenen Schlüssel: So werden die Ausgaben pro Agent aufgeteilt,
 und deshalb entzieht das Trennen der Verbindung sofort den Zugriff. Worauf die App auf Ihrem Rechner
