@@ -12,11 +12,12 @@ plain group-by on `requests_log.api_key_id`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import os
 import shutil
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,9 @@ class _Row:
     output_tokens: int
     fallback_level: int
     created_at: datetime
+    route_note: str | None = None
+    model_requested: str = ""
+    model_resolved: str = ""
 
 
 @dataclass
@@ -525,6 +529,158 @@ def _gateway_info(ctx: DesktopContext) -> dict | None:
     return {"url": url} if url else None
 
 
+def _local_month_start_utc(now: datetime, tz_offset_minutes: int) -> datetime:
+    local = now + timedelta(minutes=tz_offset_minutes)
+    start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start - timedelta(minutes=tz_offset_minutes)
+
+
+def _local_date(now: datetime, tz_offset_minutes: int) -> str:
+    return (now + timedelta(minutes=tz_offset_minutes)).date().isoformat()
+
+
+async def _log_rows(db: AsyncSession, workspace_id: str, since: datetime) -> list[_Row]:
+    # Plain rows, not ORM entities: normalising timestamps must never mark
+    # log rows as modified (that would autoflush UPDATEs into the log).
+    result = await db.execute(
+        select(
+            RequestLog.api_key_id, RequestLog.provider, RequestLog.status_code, RequestLog.cost_microcents,
+            RequestLog.input_tokens, RequestLog.output_tokens, RequestLog.fallback_level,
+            RequestLog.created_at, RequestLog.route_note, RequestLog.model_requested, RequestLog.model_resolved,
+        ).where(
+            RequestLog.workspace_id == workspace_id,
+            RequestLog.is_deleted == 0,
+            RequestLog.created_at >= since,
+        )
+    )
+    return [
+        _Row(r.api_key_id, r.provider, r.status_code, int(r.cost_microcents or 0), r.input_tokens,
+             r.output_tokens, r.fallback_level, _aware(r.created_at), r.route_note, r.model_requested or "",
+             r.model_resolved or "")
+        for r in result.all()
+    ]
+
+
+async def _agent_key_ids(db: AsyncSession, workspace_id: str) -> dict[str, str]:
+    """api key id -> agent id, for every key an agent has had (reconnecting
+    mints a new one; revoked keys still own their past requests)."""
+    keys = (await db.execute(select(ApiKey.id, ApiKey.name).where(ApiKey.workspace_id == workspace_id))).all()
+    return {kid: name[len(AGENT_KEY_PREFIX):] for kid, name in keys if name.startswith(AGENT_KEY_PREFIX)}
+
+
+async def _hosted_configured(db: AsyncSession) -> bool:
+    from app.config import get_settings
+    from app.router_cache import HOSTED_PROVIDER_NAME
+
+    if get_settings().orcarouter_api_key:
+        return True
+    row = (
+        await db.execute(
+            select(ProviderKey.id).where(ProviderKey.provider == HOSTED_PROVIDER_NAME, ProviderKey.is_deleted == 0)
+        )
+    ).first()
+    return row is not None
+
+
+async def _hosted_month(db: AsyncSession, workspace_id: str, since: datetime) -> tuple[int, int, int]:
+    """(spend, requests, rescued) through OrcaRouter since `since` (H4)."""
+    from sqlalchemy import case, func
+
+    from app.route_notes import HOSTED_PROVIDER
+
+    count, spend, rescued = (
+        await db.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(RequestLog.cost_microcents), 0),
+                func.coalesce(func.sum(case((RequestLog.fallback_level > 0, 1), else_=0)), 0),
+            ).where(
+                RequestLog.workspace_id == workspace_id,
+                RequestLog.is_deleted == 0,
+                RequestLog.provider == HOSTED_PROVIDER,
+                RequestLog.status_code < 400,
+                RequestLog.created_at >= since,
+            )
+        )
+    ).one()
+    return int(spend or 0), int(count or 0), int(rescued or 0)
+
+
+def _hosted_links(source: str) -> dict:
+    from app.config import get_settings
+    from packages.desktop.links import with_ref
+
+    s = get_settings()
+    return {
+        "console_url": with_ref(s.orcarouter_console_url, source),
+        "billing_url": with_ref(s.orcarouter_billing_url, source),
+        "token_url": with_ref(s.orcarouter_token_url, source),
+        "signup_url": with_ref(s.orcarouter_signup_url, source),
+    }
+
+
+def _backup_offer(failed: list[_Row], agent_of: dict[str, str]) -> dict | None:
+    """H2: today's failures with no other provider left, for the provider that
+    failed most. None when nothing failed that way."""
+    if not failed:
+        return None
+    provider, count = Counter(r.provider for r in failed).most_common(1)[0]
+    mine = [r for r in failed if r.provider == provider]
+    agents = Counter(agent_of[r.api_key_id] for r in mine if r.api_key_id in agent_of)
+    models = Counter(r.model_resolved or r.model_requested for r in mine)
+    return {
+        "id": "backup",
+        "failed_today": count,
+        "provider": provider,
+        "agent": agents.most_common(1)[0][0] if agents else None,
+        "models": [m for m, _n in models.most_common(5) if m],
+    }
+
+
+def _substitutions(rows: list[_Row], kept: set[str]) -> list[dict]:
+    """H3: what an agent asked for and what answered instead."""
+    pairs = Counter(
+        (r.model_requested, r.model_resolved) for r in rows
+        if r.route_note == "substituted" and r.model_requested not in kept
+    )
+    return [{"requested": req, "served": served, "count": n} for (req, served), n in pairs.most_common()]
+
+
+def _agent_state(status: ag.AgentStatus | None) -> str:
+    if status is None or not status.connected:
+        return "disconnected"
+    return "changed" if status.changed else "connected"
+
+
+# The panel polls the summary; it must never wait for local discovery (up to
+# a second per runtime). It shows the last result and refreshes it here.
+_local_refresh: asyncio.Task | None = None
+
+
+def _refresh_local_models_in_background() -> None:
+    global _local_refresh
+    from packages.desktop import local_models
+
+    if local_models.disabled() or (_local_refresh is not None and not _local_refresh.done()):
+        return
+
+    async def _run() -> None:
+        with contextlib.suppress(Exception):
+            await local_models.discover()
+
+    _local_refresh = asyncio.get_running_loop().create_task(_run())
+
+
+def _local_summary() -> dict:
+    from packages.desktop import local_models
+
+    _refresh_local_models_in_background()
+    return {"runtimes": [
+        {"id": r.id, "name": r.name, "url": r.url, "running": r.running, "models": len(r.models)}
+        for r in local_models.last()
+    ]}
+
+
 @router.get("/summary")
 async def summary(
     tz_offset_minutes: int = Query(0, ge=-14 * 60, le=14 * 60),
@@ -532,41 +688,24 @@ async def summary(
     ctx: DesktopContext = Depends(get_desktop_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    from app import route_notes
+    from packages.desktop import hosted_state
+    from packages.desktop.links import PANEL
     from packages.litellm_adapter.catalog import CATALOG_BY_ID
 
     now = datetime.now(timezone.utc)
     week_start = now - timedelta(days=7)
     today_start = _local_midnight_utc(now, tz_offset_minutes)
-    window_start = min(week_start, today_start)
-
-    # Plain rows, not ORM entities: normalising timestamps must never mark
-    # log rows as modified (that would autoflush UPDATEs into the log).
-    rows = [
-        _Row(r.api_key_id, r.provider, r.status_code, int(r.cost_microcents or 0), r.input_tokens,
-             r.output_tokens, r.fallback_level, _aware(r.created_at))
-        for r in (
-            await db.execute(
-                select(
-                    RequestLog.api_key_id, RequestLog.provider, RequestLog.status_code, RequestLog.cost_microcents,
-                    RequestLog.input_tokens, RequestLog.output_tokens, RequestLog.fallback_level,
-                    RequestLog.created_at,
-                ).where(
-                    RequestLog.workspace_id == kc.workspace_id,
-                    RequestLog.is_deleted == 0,
-                    RequestLog.created_at >= window_start,
-                )
-            )
-        ).all()
-    ]
+    rows = await _log_rows(db, kc.workspace_id, min(week_start, today_start))
 
     ok = [r for r in rows if r.status_code < 400]
     week = [r for r in ok if r.created_at >= week_start]
     today = [r for r in ok if r.created_at >= today_start]
+    today_all = [r for r in rows if r.created_at >= today_start]
 
-    keys = (
-        await db.execute(select(ApiKey.id, ApiKey.name).where(ApiKey.workspace_id == kc.workspace_id))
-    ).all()
-    agent_of = {kid: name[len(AGENT_KEY_PREFIX):] for kid, name in keys if name.startswith(AGENT_KEY_PREFIX)}
+    agent_of = await _agent_key_ids(db, kc.workspace_id)
+    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
+    statuses = {s.id: s for s in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which)}
 
     buckets: dict[str, dict] = {}
 
@@ -579,50 +718,87 @@ async def summary(
                 "today_microcents": 0,
                 "week_microcents": 0,
                 "requests_week": 0,
+                "state": _agent_state(statuses.get(agent_id)) if spec else "other",
+                "substitutions": [],
+                "budget_cents": settings.agent_budgets.get(agent_id) if spec else None,
+                "paused": False,
             }
         return buckets[agent_id]
 
+    # Every connected agent shows, even before it has spent anything.
+    for status in statuses.values():
+        if status.connected:
+            _bucket(status.id)
     for r in week:
         b = _bucket(agent_of.get(r.api_key_id, "other"))
-        b["week_microcents"] += int(r.cost_microcents or 0)
+        b["week_microcents"] += r.cost_microcents
         b["requests_week"] += 1
     for r in today:
-        _bucket(agent_of.get(r.api_key_id, "other"))["today_microcents"] += int(r.cost_microcents or 0)
+        _bucket(agent_of.get(r.api_key_id, "other"))["today_microcents"] += r.cost_microcents
+    kept = set(settings.kept_substitutions)
+    for agent_id, b in buckets.items():
+        if agent_id == "other":
+            continue
+        b["substitutions"] = _substitutions([r for r in today if agent_of.get(r.api_key_id) == agent_id], kept)
+        if b["budget_cents"] is not None:
+            b["paused"] = b["today_microcents"] >= b["budget_cents"] * 10_000
 
-    spend_today = sum(int(r.cost_microcents or 0) for r in today)
-    spend_week = sum(int(r.cost_microcents or 0) for r in week)
+    spend_today = sum(r.cost_microcents for r in today)
+    spend_week = sum(r.cost_microcents for r in week)
     baseline = CATALOG_BY_ID.get(BASELINE_MODEL)
     saved = max(0, _baseline_microcents(week, baseline) - spend_week) if baseline else 0
+    local_week = [r for r in week if r.provider == route_notes.LOCAL_PROVIDER]
 
-    settings = _desktop_settings(await _workspace(db, kc.workspace_id))
     recent = [r for r in rows if r.created_at >= now - HEALTH_WINDOW]
+    hosted_configured = await _hosted_configured(db)
+    month_spend, month_requests, month_rescued = await _hosted_month(
+        db, kc.workspace_id, _local_month_start_utc(now, tz_offset_minutes)
+    )
 
-    from app.config import get_settings
-    from app.router_cache import HOSTED_PROVIDER_NAME
-
-    hosted_db = (
-        await db.execute(
-            select(ProviderKey.id).where(
-                ProviderKey.provider == HOSTED_PROVIDER_NAME, ProviderKey.is_deleted == 0
-            )
-        )
-    ).first()
+    offers = []
+    if not hosted_configured and settings.dismissed_offers.get("backup") != _local_date(now, tz_offset_minutes):
+        offer = _backup_offer([r for r in today_all if r.route_note == route_notes.NO_FALLBACK], agent_of)
+        if offer:
+            offers.append(offer)
 
     return {
         "currency": "USD",
         "generated_at": now.isoformat(),
-        "today": {"spend_microcents": spend_today, "requests": len(today)},
+        "today": {
+            "spend_microcents": spend_today,
+            "requests": len(today),
+            "free_requests": sum(1 for r in today if r.route_note == route_notes.FREE),
+            # Spend through OrcaRouter today: its free models cost nothing,
+            # so this is what its paid models cost.
+            "paid_spend_microcents": sum(r.cost_microcents for r in today if r.provider == route_notes.HOSTED_PROVIDER),
+        },
         "week": {
             "spend_microcents": spend_week,
             "requests": len(week),
             "saved_microcents": saved,
             "baseline_model": BASELINE_MODEL,
             "failures_avoided": sum(1 for r in week if (r.fallback_level or 0) > 0),
+            # Served on this computer at $0; priced at the baseline, that's
+            # what they would have cost (already part of saved_microcents).
+            "local_requests": len(local_week),
+            "local_saved_microcents": _baseline_microcents(local_week, baseline) if baseline else 0,
+            "hosted_requests": sum(1 for r in week if r.provider == route_notes.HOSTED_PROVIDER),
         },
         "budget": _budget(settings.daily_budget_cents, spend_today, settings.budget_mode),
         "agents": sorted(buckets.values(), key=lambda b: (b["id"] == "other", -b["week_microcents"])),
         "providers": await _providers(db, kc.workspace_id, recent),
-        "hosted": {"configured": bool(get_settings().orcarouter_api_key or hosted_db)},
+        "hosted": {
+            "configured": hosted_configured,
+            "models": settings.hosted_models,
+            "out_of_credit": hosted_state.out_of_credit(),
+            "month_spend_microcents": month_spend,
+            "month_requests": month_requests,
+            "month_rescued": month_rescued,
+            "needs_paid_today": sum(1 for r in today_all if r.route_note == route_notes.NEEDS_PAID),
+            **_hosted_links(PANEL),
+        },
+        "offers": offers,
+        "local": _local_summary(),
         "gateway": _gateway_info(ctx),
         "update": updates.CHECKER.latest,
     }
