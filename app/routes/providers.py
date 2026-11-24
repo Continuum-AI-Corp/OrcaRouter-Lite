@@ -114,6 +114,9 @@ _KNOWN_KEY_PREFIXES: dict[str, tuple[str, ...]] = {
     "deepseek": ("sk-",),
     "fireworks": ("fw_",),
     "orcarouter": ("sk-orca-",),
+    "moonshot": ("sk-",),
+    "qwen": ("sk-",),
+    "openrouter": ("sk-or-",),
 }
 
 _PROVIDER_DISPLAY = {
@@ -125,6 +128,9 @@ _PROVIDER_DISPLAY = {
     "deepseek": "DeepSeek",
     "fireworks": "Fireworks",
     "orcarouter": "OrcaRouter",
+    "moonshot": "Moonshot",
+    "qwen": "DashScope",
+    "openrouter": "OpenRouter",
 }
 
 
@@ -162,6 +168,17 @@ def provider_key_format_warning(provider: str, api_key: str) -> str | None:
         f"Key prefix '{shown}' doesn't match known {label} format "
         f"(expected {expected}). Verify this is correct."
     )
+
+
+@router.get("/supported")
+async def supported_providers(_kc: KeyContext = Depends(get_key_context)) -> dict:
+    """Every provider a key can be added for, in display order, with what the
+    UI needs to ask for one (key shape, env var, where to get it). Static
+    and key-free, so any valid key may read it."""
+    from packages.desktop.provider_check import CHECKS
+    from packages.litellm_adapter.provider_registry import supported_providers as rows
+
+    return {"providers": rows(checkable=set(CHECKS), token_url=get_settings().orcarouter_token_url)}
 
 
 @router.get("")

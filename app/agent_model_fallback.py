@@ -31,8 +31,10 @@ _VENDOR_PREFIXES: tuple[tuple[str, str], ...] = (
     ("o4", "openai"),
     ("grok", "xai"),
     ("deepseek", "deepseek"),
-    ("kimi", "kimi"),
-    ("moonshot", "kimi"),
+    ("kimi", "moonshot"),
+    ("moonshot", "moonshot"),
+    ("glm", "zai"),
+    ("chatglm", "zai"),
     ("qwen", "qwen"),
     ("mistral", "mistral"),
     ("codestral", "mistral"),
@@ -40,6 +42,11 @@ _VENDOR_PREFIXES: tuple[tuple[str, str], ...] = (
     ("command", "cohere"),
     ("minimax", "minimax"),
 )
+
+
+# Catalog providers that are one vendor for this purpose: the hosted catalog
+# lists Kimi models as "kimi", a Moonshot key deploys them as "moonshot".
+_FAMILY: dict[str, str] = {"kimi": "moonshot"}
 
 
 def is_agent_key(key_name: str | None) -> bool:
@@ -73,7 +80,7 @@ def fallback_preferences(
     """
     if not (desktop_mode and is_agent_key) or model == "auto" or model in deployable or not deployable:
         return None
-    by_id = {m.id: m.provider for m in catalog}
+    by_id = {m.id: _FAMILY.get(m.provider, m.provider) for m in catalog}
     vendor = _vendor(model, by_id)
     if vendor is None:
         return []

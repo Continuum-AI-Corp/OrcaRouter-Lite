@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Providers we accept from env vars. Must stay in sync with:
@@ -30,6 +31,13 @@ _PROVIDERS_FROM_ENV = (
     "fireworks",
     "xai",          # Grok 2/3/4 series. NOTE: NOT the same as `groq`.
     "deepseek",     # deepseek-chat / -reasoner / -v3 / -v3.2.
+    "mistral",
+    "cohere",
+    "moonshot",     # Kimi. MOONSHOT_API_KEY.
+    "qwen",         # Alibaba DashScope. DASHSCOPE_API_KEY (field alias below).
+    "minimax",
+    "zai",          # Z.ai GLM. ZAI_API_KEY.
+    "openrouter",
 )
 
 
@@ -79,6 +87,17 @@ class Settings(BaseSettings):
     fireworks_api_key: str | None = None
     xai_api_key: str | None = None
     deepseek_api_key: str | None = None
+    mistral_api_key: str | None = None
+    cohere_api_key: str | None = None
+    moonshot_api_key: str | None = None
+    # The provider id is "qwen" (what users recognise), but DashScope's own
+    # docs and LiteLLM call the variable DASHSCOPE_API_KEY. Accept both.
+    qwen_api_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("dashscope_api_key", "qwen_api_key"),
+    )
+    minimax_api_key: str | None = None
+    zai_api_key: str | None = None
+    openrouter_api_key: str | None = None
 
     # ── Hosted-as-upstream (standard fallback) ──
     # When configured (env or via dashboard), every catalog model gets an extra
@@ -93,6 +112,10 @@ class Settings(BaseSettings):
     # only for users without an account yet (the token console bounces
     # them through sign-up/login on its own).
     orcarouter_token_url: str = "https://www.orcarouter.ai/console/token"
+    # Where the desktop app sends people to see their OrcaRouter spend and to
+    # add credit (the out-of-credit message names the billing page).
+    orcarouter_console_url: str = "https://www.orcarouter.ai/console"
+    orcarouter_billing_url: str = "https://www.orcarouter.ai/console/topup"
     # Source of truth for the "Models you can't reach" tile's curated
     # top list. Fetched lazily, cached in-process for ~1h, with a static
     # fallback if the remote is unreachable.

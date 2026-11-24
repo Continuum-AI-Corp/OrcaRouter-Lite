@@ -24,8 +24,18 @@ CHECKS: dict[str, tuple[str, str, str, str | None]] = {
     "groq": ("Groq", "https://api.groq.com/openai/v1", "bearer", None),
     "together": ("Together", "https://api.together.xyz/v1", "bearer", None),
     "fireworks": ("Fireworks", "https://api.fireworks.ai/inference/v1", "bearer", None),
+    "cohere": ("Cohere", "https://api.cohere.com/v1", "bearer", None),
+    "moonshot": ("Moonshot", "https://api.moonshot.ai/v1", "bearer", "MOONSHOT_API_BASE"),
+    "qwen": ("DashScope", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "bearer", "DASHSCOPE_API_BASE"),
+    "zai": ("Z.ai", "https://api.z.ai/api/paas/v4", "bearer", "ZAI_API_BASE"),
+    "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "bearer", "OPENROUTER_API_BASE"),
     "orcarouter": ("OrcaRouter", "https://api.orcarouter.ai/v1", "bearer", "ORCAROUTER_BASE_URL"),
 }
+# MiniMax has no key check: it offers no model list to ask.
+
+# Where to ask, when it isn't the model list. OpenRouter's model list is
+# public, so it would accept any key; its key endpoint doesn't.
+_PATHS: dict[str, str] = {"openrouter": "/key"}
 
 
 def _request(provider: str, key: str, env: Mapping[str, str]) -> tuple[str, str, dict[str, str]]:
@@ -38,7 +48,7 @@ def _request(provider: str, key: str, env: Mapping[str, str]) -> tuple[str, str,
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
     else:
         headers = {"x-goog-api-key": key}
-    return name, f"{base.rstrip('/')}/models", headers
+    return name, f"{base.rstrip('/')}{_PATHS.get(provider, '/models')}", headers
 
 
 async def check_key(
