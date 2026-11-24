@@ -9,6 +9,9 @@ import {
   createClipboardOffers,
   isOrcaKey,
   keySavedText,
+  localOnlyChoice,
+  requestedSetup,
+  withoutStepRequest,
   localChoice,
   localRuntime,
   requestedStep,
@@ -158,7 +161,7 @@ test("setupRoutes starts a returning user from what they have", () => {
   assert.equal(setupRoutes({ runtime: ollama, providers: ["orcarouter"], strategy: "local_first" }).selected, "local_hosted");
   assert.equal(setupRoutes({ runtime: ollama, providers: [], strategy: "local_first" }).selected, "local_only");
   assert.equal(setupRoutes({ runtime: ollama, providers: ["orcarouter"], strategy: "balanced" }).selected, "hosted");
-  assert.equal(setupRoutes({ runtime: ollama, providers: ["openai"], strategy: "local_first" }).selected, "byok");
+  assert.equal(setupRoutes({ runtime: ollama, providers: ["openai"], strategy: "balanced" }).selected, "byok");
 });
 
 test("strategyChange turns local first on for the local choices and off only when the user moves away", () => {
@@ -230,4 +233,52 @@ test("keySavedText mentions the clipboard only when it was cleared", () => {
   assert.equal(keySavedText({ checked: false, warn: "OrcaRouter didn't answer.", cleared: true }),
     "OrcaRouter didn't answer. The clipboard was cleared.");
   assert.equal(keySavedText({ checked: false, cleared: false }), "Orca couldn't check it with OrcaRouter.");
+});
+
+// ── review fixes ──
+
+test("requestedSetup also says when the panel asked for paid models as a backup", () => {
+  const now = 1_000_000;
+  assert.deepEqual(requestedSetup(JSON.stringify({ step: "orcarouter", at: now - 1_000, then: "paid" }), "", now), {
+    route: "hosted", then: "paid",
+  });
+  assert.deepEqual(requestedSetup(JSON.stringify({ step: "orcarouter", at: now }), "", now), { route: "hosted", then: null });
+  assert.deepEqual(requestedSetup(null, "#key=abc&step=orcarouter&then=paid", now), { route: "hosted", then: "paid" });
+  // Only "paid", and only with the OrcaRouter step.
+  assert.deepEqual(requestedSetup(JSON.stringify({ step: "orcarouter", at: now, then: "everything" }), "", now), {
+    route: "hosted", then: null,
+  });
+  assert.deepEqual(requestedSetup(null, "#step=gateway&then=paid", now), { route: "company", then: null });
+  assert.equal(requestedSetup(JSON.stringify({ step: "orcarouter", at: now - 120_000, then: "paid" }), "", now), null);
+  assert.equal(requestedSetup(null, "", now), null);
+});
+
+test("withoutStepRequest drops a consumed step from the URL fragment, keeping the rest", () => {
+  assert.equal(withoutStepRequest("#key=abc&step=orcarouter&then=paid"), "#key=abc");
+  assert.equal(withoutStepRequest("#step=gateway"), "");
+  assert.equal(withoutStepRequest("#key=abc"), "#key=abc");
+  assert.equal(withoutStepRequest(""), "");
+});
+
+test("keySavedText says when paid models were turned on as a backup", () => {
+  assert.equal(keySavedText({ checked: true, cleared: true, paid: true }),
+    "Checked with OrcaRouter and saved in your keychain. The clipboard was cleared. " +
+      "Paid models are on as a backup: free models and your own keys still come first.");
+  assert.equal(keySavedText({ checked: true, cleared: false, paid: false }), "Checked with OrcaRouter and saved in your keychain.");
+});
+
+test("'Only this computer' is offered as such only when there are no cloud keys", () => {
+  const ollama = { id: "ollama", name: "Ollama" };
+  assert.deepEqual(localOnlyChoice(ollama, []), { title: "Only this computer", body: "Free and offline. Hard requests may fail." });
+  // Own keys stay as fallbacks with local first, so say that.
+  assert.deepEqual(localOnlyChoice(ollama, ["openai"]), {
+    title: "Ollama first, your keys for the rest", body: "Local first; your keys handle the rest.",
+  });
+  // With an OrcaRouter key, "Ollama first, OrcaRouter for the rest" already is that choice.
+  assert.equal(localOnlyChoice(ollama, ["orcarouter", "openai"]), null);
+  assert.deepEqual(setupRoutes({ runtime: ollama, providers: ["orcarouter"] }).routes, ["local_hosted", "hosted", "byok", "company"]);
+  assert.deepEqual(setupRoutes({ runtime: ollama, providers: ["openai"] }).routes,
+    ["local_hosted", "local_only", "hosted", "byok", "company"]);
+  // Own keys with local first already on: that's the local choice.
+  assert.equal(setupRoutes({ runtime: ollama, providers: ["openai"], strategy: "local_first" }).selected, "local_only");
 });

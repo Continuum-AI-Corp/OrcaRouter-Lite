@@ -8,7 +8,8 @@ const [base, key] = process.argv.slice(2);
 (async () => {
   const report = { errors: [] };
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 600, height: 860 } });
+  const context = await browser.newContext({ viewport: { width: 600, height: 860 } });
+  const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(e.message));
   await page.addInitScript(stubNativeBridge);
   const checked = () => page.evaluate(() => document.querySelector('input[name="route"]:checked')?.value);
@@ -21,6 +22,14 @@ const [base, key] = process.argv.slice(2);
 
   await load("&step=gateway");
   report.fromHash = await checked();
+  // Used once: the step leaves the URL, so a reload starts as usual.
+  report.hashAfter = await page.evaluate(() => location.hash);
+  report.keyKept = report.hashAfter === `#key=${key}`;
+  // Fields of choices that aren't selected are out of the tab order.
+  report.gatewayInertWhenSelected = await page.evaluate(() => Boolean(document.querySelector("#gateway-url").closest("[inert]")));
+  await page.locator('input[name="route"][value="byok"]').check({ force: true });
+  report.gatewayInertWhenNot = await page.evaluate(() => Boolean(document.querySelector("#gateway-url").closest("[inert]")));
+  report.chipsInertWhenSelected = await page.evaluate(() => Boolean(document.querySelector("#provider-chips").closest("[inert]")));
 
   await page.evaluate(() => localStorage.setItem("orca-setup-step", JSON.stringify({ step: "gateway", at: Date.now() })));
   await load("");
@@ -32,6 +41,17 @@ const [base, key] = process.argv.slice(2);
   await page.evaluate(() => localStorage.setItem("orca-setup-step", JSON.stringify({ step: "gateway", at: Date.now() - 600000 })));
   await load("");
   report.stale = await checked();
+
+  // Setup already open: the panel's request arrives as a storage change
+  // (the app only focuses the window). Played here by a second page of the
+  // same origin, as the panel is.
+  const panel = await context.newPage();
+  await panel.goto(`${base}/desktop/panel.html#key=${key}`);
+  await panel.evaluate(() => localStorage.setItem("orca-setup-step", JSON.stringify({ step: "gateway", at: Date.now() })));
+  await page.waitForFunction(() => document.querySelector('input[name="route"]:checked')?.value === "company", null, { timeout: 5000 })
+    .catch(() => {});
+  report.whileOpen = await checked();
+  report.whileOpenLeft = await page.evaluate(() => localStorage.getItem("orca-setup-step"));
 
   await browser.close();
   process.stdout.write(JSON.stringify(report) + "\n");

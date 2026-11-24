@@ -632,6 +632,22 @@ def test_10e_setup_puts_orcarouter_first_and_offers_a_key_from_the_clipboard(sta
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
+def test_10e2_add_orcarouter_backup_turns_on_paid_models_only_when_asked(stack):
+    try:
+        report = _browser("setup_paid.cjs", stack["base"], stack["app_key"], CLIPBOARD_KEY)
+    finally:
+        _app(stack, "PUT", "/v1/app/settings", json={"hosted_models": "free"})
+    assert report["errors"] == []
+    assert report["before"] == "free"  # 10e saved a key without the request: still free
+    assert report["selected"] == "hosted"
+    assert report["saved"].endswith(
+        "Paid models are on as a backup: free models and your own keys still come first.")
+    assert report["afterClipboard"] == "all"
+    assert "OrcaRouter paid models: On as a backup" in report["results"] and report["afterPaste"] == "all"
+    assert report["withoutRequest"] == "free" and "OrcaRouter paid models" not in report["resultsWithout"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
 def test_10f_setup_offers_local_models_only_when_one_is_running(stack):
     env = {**stack["env"]}
     ollama = subprocess.Popen(
@@ -644,12 +660,20 @@ def test_10f_setup_offers_local_models_only_when_one_is_running(stack):
         assert any(r["id"] == "ollama" and r["running"] for r in found["runtimes"]), found
         report = _browser("setup_local.cjs", stack["base"], stack["app_key"])
         assert report["errors"] == []
-        assert report["choices"] == ["Ollama first, OrcaRouter for the rest", "Only this computer", "OrcaRouter gateway",
-                                     "My own API keys", "My company's gateway"]
-        assert report["descriptions"][:2] == [
-            "Quick requests stay on this computer. Harder ones go to OrcaRouter's free models first, paid ones only when needed.",
-            "Free and offline. Hard requests may fail.",
-        ]
+        local_hosted = ("Ollama first, OrcaRouter for the rest",
+                        "Quick requests stay on this computer. Harder ones go to OrcaRouter's free models first, "
+                        "paid ones only when needed.")
+        rest = ["OrcaRouter gateway", "My own API keys", "My company's gateway"]
+        # No cloud key: "Only this computer" really is only this computer.
+        assert report["firstRunChoices"] == [local_hosted[0], "Only this computer", *rest]
+        assert report["firstRunDescriptions"][:2] == [local_hosted[1], "Free and offline. Hard requests may fail."]
+        # Own keys only: they stay as fallbacks, so the choice says so.
+        assert report["ownKeysChoices"] == [local_hosted[0], "Ollama first, your keys for the rest", *rest]
+        assert report["ownKeysDescriptions"][1] == "Local first; your keys handle the rest."
+        # With an OrcaRouter key the first choice already is "local first, then the cloud".
+        assert report["choices"] == [local_hosted[0], *rest]
+        assert report["descriptions"][0] == local_hosted[1]
+        assert "Free and offline" not in report["page"]
         # A returning user keeps their route until they pick another (a first run
         # starts on the local choice; see desktop/tests/setup.test.mjs).
         assert report["selected"] == "hosted"
@@ -674,6 +698,11 @@ def test_10f2_setup_opens_at_the_step_the_panel_asked_for(stack):
     assert report["fromHash"] == "company" and report["fromStorage"] == "company"
     assert report["storageLeft"] is None  # used once
     assert report["nextOpen"] != "company" and report["stale"] != "company"
+    assert report["keyKept"] is True and "step=" not in report["hashAfter"]
+    assert report["gatewayInertWhenSelected"] is False and report["gatewayInertWhenNot"] is True
+    assert report["chipsInertWhenSelected"] is False
+    # Already open: the request still lands, and is used up.
+    assert report["whileOpen"] == "company" and report["whileOpenLeft"] is None
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node with playwright")
@@ -710,6 +739,10 @@ def test_10h_the_dashboard_in_the_app(stack):
     assert report["newChips"] == [p["name"] for p in supported if p.get("new")]
     assert report["moonshotPlaceholder"] == "sk-…"  # the key's shape, from the same list
     assert set(report["newChips"]) == {"Moonshot (Kimi)", "Qwen (DashScope)", "MiniMax", "Z.ai (GLM)", "OpenRouter"}
+    # In the app OrcaRouter serves free models until paid ones are turned on: say that.
+    assert "OrcaRouter's free models are ready; paid models only when you turn them on in Orca." in report["hostedActive"]
+    assert "reachable" not in report["hostedActive"]
+    assert "Every catalog model is reachable" in report["serverHostedActive"]
     # H0: the hosted card's links carry the dashboard's ref.
     for href in report["hostedLinks"]:
         assert href.startswith("https://www.orcarouter.ai/") and href.endswith("ref=lite-dashboard"), href

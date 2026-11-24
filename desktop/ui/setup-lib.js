@@ -109,13 +109,24 @@ const LOCAL_ROUTES = new Set(["local_hosted", "local_only"]);
 // The choices in step 2, in order, and which one starts selected.
 // `providers`: ids of providers that already have a key.
 export function setupRoutes({ runtime, providers = [], strategy = null }) {
-  const routes = [...(runtime ? ["local_hosted", "local_only"] : []), "hosted", "byok", "company"];
+  const local = runtime ? ["local_hosted", ...(localOnlyChoice(runtime, providers) ? ["local_only"] : [])] : [];
+  const routes = [...local, "hosted", "byok", "company"];
   const localFirst = Boolean(runtime) && strategy === "local_first";
   let selected;
   if (!providers.length) selected = runtime ? (localFirst ? "local_only" : "local_hosted") : "hosted";
-  else if (!providers.includes("orcarouter")) selected = "byok";
+  else if (!providers.includes("orcarouter")) selected = localFirst ? "local_only" : "byok";
   else selected = localFirst ? "local_hosted" : "hosted";
   return { routes, selected };
+}
+
+// The second local choice says what it does: with no cloud key it really is
+// "only this computer"; with own keys they stay as fallbacks; with an
+// OrcaRouter key "<runtime> first, OrcaRouter for the rest" is that choice,
+// so this one isn't shown (null).
+export function localOnlyChoice(runtime, providers = []) {
+  if (providers.includes("orcarouter")) return null;
+  if (providers.length) return { title: `${runtime.name} first, your keys for the rest`, body: "Local first; your keys handle the rest." };
+  return { title: "Only this computer", body: "Free and offline. Hard requests may fail." };
 }
 
 // The routing strategy to save for the chosen route, or null to leave it.
@@ -163,24 +174,46 @@ export function setupLinkConfirmation(link, agents) {
 const STEP_ROUTES = { orcarouter: "hosted", gateway: "company" };
 export const SETUP_STEP_KEY = "orca-setup-step";
 
-export function requestedStep(stored, hash, now = Date.now()) {
+// {route, then} for the step asked for, or null. `then: "paid"` comes with
+// the OrcaRouter step from the panel's "Add OrcaRouter backup": once a key
+// is saved, OrcaRouter's paid models are turned on as a backup.
+export function requestedSetup(stored, hash, now = Date.now()) {
+  const out = (step, then) => (STEP_ROUTES[step] ? { route: STEP_ROUTES[step], then: step === "orcarouter" && then === "paid" ? "paid" : null } : null);
   if (stored) {
     try {
-      const { step, at } = JSON.parse(stored);
-      if (typeof at === "number" && now - at >= 0 && now - at < 60_000 && STEP_ROUTES[step]) return STEP_ROUTES[step];
+      const { step, at, then } = JSON.parse(stored);
+      if (typeof at === "number" && now - at >= 0 && now - at < 60_000 && STEP_ROUTES[step]) return out(step, then);
     } catch {
       /* a broken entry is ignored */
     }
   }
-  const fromHash = new URLSearchParams(String(hash || "").replace(/^#/, "")).get("step");
-  return STEP_ROUTES[fromHash] || null;
+  const params = new URLSearchParams(String(hash || "").replace(/^#/, ""));
+  return out(params.get("step"), params.get("then"));
+}
+
+export function requestedStep(stored, hash, now = Date.now()) {
+  return requestedSetup(stored, hash, now)?.route || null;
+}
+
+// The URL fragment without a step request it carried, so reopening or
+// reloading setup doesn't jump to that step again.
+export function withoutStepRequest(hash) {
+  const params = new URLSearchParams(String(hash || "").replace(/^#/, ""));
+  params.delete("step");
+  params.delete("then");
+  const rest = params.toString();
+  return rest ? `#${rest}` : "";
 }
 
 // ── setup: the line under a saved OrcaRouter key ──
 
 // Says the clipboard was cleared only when it was: it isn't if something
 // else was copied in the meantime, or outside the app (no native bridge).
-export function keySavedText({ checked, warn = null, cleared = false }) {
-  const first = checked ? "Checked with OrcaRouter and saved in your keychain." : warn || "Orca couldn't check it with OrcaRouter.";
-  return cleared ? `${first} The clipboard was cleared.` : first;
+export function keySavedText({ checked, warn = null, cleared = false, paid = false }) {
+  const parts = [checked ? "Checked with OrcaRouter and saved in your keychain." : warn || "Orca couldn't check it with OrcaRouter."];
+  if (cleared) parts.push("The clipboard was cleared.");
+  if (paid) parts.push(PAID_BACKUP_TEXT);
+  return parts.join(" ");
 }
+
+export const PAID_BACKUP_TEXT = "Paid models are on as a backup: free models and your own keys still come first.";

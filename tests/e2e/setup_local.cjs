@@ -17,27 +17,42 @@ const [base, key] = process.argv.slice(2);
     await page.goto(`${base}/desktop/setup.html?load=${++loads}#key=${key}`);
     await page.locator("#provider-chips .chip").first().waitFor({ state: "attached" });
   };
-  // A first run (no keys yet) starts on the local choice.
-  await page.route("**/v1/app/summary*", async (route) => {
-    const response = await route.fetch();
-    route.fulfill({ response, json: { ...(await response.json()), providers: [] } });
-  });
-  await open();
-  report.firstRunSelected = await page.locator('input[name="route"]:checked').getAttribute("value");
-  await page.unroute("**/v1/app/summary*");
-  await open();
   const visible = page.locator(".choice:not([hidden])");
-  report.choices = await visible.locator(".body > b").evaluateAll((els) => els.map((e) => e.firstChild.textContent.trim()));
-  report.descriptions = await visible.locator(".body > small").allTextContents();
-  report.selected = await page.locator('input[name="route"]:checked').getAttribute("value");
-  report.page = await page.locator("body").innerText();
-  await shots(page, "h6-step2", page.locator("#s2").locator(".."));
+  const choices = () => visible.locator(".body > b").evaluateAll((els) => els.map((e) => e.firstChild.textContent.trim()));
+  const descriptions = () => visible.locator(".body > small").allTextContents();
+  // Setup as it would look with only these providers' keys.
+  const openWith = async (providers) => {
+    await page.route("**/v1/app/summary*", async (route) => {
+      const response = await route.fetch();
+      route.fulfill({ response, json: { ...(await response.json()), providers: providers.map((p) => ({ provider: p, state: "idle" })) } });
+    });
+    await open();
+    await page.unroute("**/v1/app/summary*");
+  };
+  // A first run (no keys yet) starts on the local choice; "Only this computer" is just that.
+  await openWith([]);
+  report.firstRunSelected = await page.locator('input[name="route"]:checked').getAttribute("value");
+  report.firstRunChoices = await choices();
+  report.firstRunDescriptions = await descriptions();
   // Keyboard: arrow keys move between the choices; the key step follows.
   await page.locator('input[name="route"][value="local_hosted"]').focus();
   await page.keyboard.press("ArrowDown");
   report.afterArrow = await page.locator('input[name="route"]:checked').getAttribute("value");
   await shots(page, "h6-only-this-computer", page.locator("#s2").locator(".."));
-  await page.keyboard.press("ArrowUp");
+  // With only own keys, they stay as fallbacks, and the choice says so.
+  await openWith(["openai"]);
+  report.ownKeysChoices = await choices();
+  report.ownKeysDescriptions = await descriptions();
+  await shots(page, "h6-own-keys", page.locator("#s2").locator(".."));
+
+  // This engine has an OrcaRouter key (saved by the clipboard test).
+  await open();
+  report.choices = await choices();
+  report.descriptions = await descriptions();
+  report.selected = await page.locator('input[name="route"]:checked').getAttribute("value");
+  report.page = await page.locator("body").innerText();
+  await shots(page, "h6-step2", page.locator("#s2").locator(".."));
+  await page.locator('input[name="route"][value="local_hosted"]').check({ force: true });
   report.keyStepUnderLocal = await page.locator('.choice[data-route="local_hosted"] #orca-key').count() === 1;
   await shots(page, "h6-local-hosted", page.locator("#s2").locator(".."));
 
