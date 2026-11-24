@@ -33,6 +33,8 @@ y un enrutador autoalojado para todo un equipo. Licencia MIT.
 
 OrcaRouter Lite es la edición open source de [OrcaRouter](https://www.orcarouter.ai). Se ejecuta en tu ordenador o en tu servidor, habla las API de OpenAI, Anthropic y Gemini, y puede usar el `api.orcarouter.ai` alojado como red de seguridad ante caídas y para los modelos de los que no tienes claves.
 
+**OrcaRouter** es el gateway alojado detrás de la red de seguridad de Lite: una sola clave para todos los modelos, failover entre proveedores, modelos gratuitos para empezar y pago por petición para los modelos de pago. La app de escritorio lo sugiere primero y arranca los agentes con sus modelos gratuitos; tus propias claves de proveedor siguen siendo una alternativa completa, con o sin él.
+
 ## La app de escritorio
 
 La app Orca vive en tu barra de menús. Ejecuta el enrutador en `127.0.0.1`, conecta a él tus agentes
@@ -147,7 +149,7 @@ Sin clonar, sin docker. Regístrate, obtén una clave, apunta cualquier SDK de O
 # 2. Usa https://api.orcarouter.ai/v1 como URL base
 ```
 
-**Requiere cuenta.** El servicio alojado se encarga del enrutamiento, la facturación y la larga cola de proveedores — facturado por token en tu cuenta de OrcaRouter. Consulta [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Requiere cuenta.** Modelos gratuitos para empezar; los modelos de pago se facturan por petición en tu cuenta de OrcaRouter. El servicio alojado se encarga del enrutamiento, el failover entre proveedores y la larga cola de modelos. Consulta [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Luego invócalo desde cualquier SDK de OpenAI
 
@@ -230,7 +232,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Casos de uso:
-- **Probar antes de comprar** — sin necesidad de claves de proveedor locales
+- **Empieza gratis** — los modelos gratuitos no necesitan claves de proveedor; modelos de pago solo cuando tú los eliges
 - **Logging local** — el alojado gestiona el enrutamiento, Lite guarda filas de RequestLog para el panel
 - **Failover** — los proveedores locales fallan, el alojado es la red de seguridad
 
@@ -299,7 +301,7 @@ Se cargan más de 100 modelos de chat al arrancar desde la [base de datos de pre
 - `GET/PUT/DELETE /v1/providers/{provider}` — crea / lista / revoca claves de proveedor cifradas
 - `GET/PUT /v1/routing` — cambia la estrategia (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — analítica local, sin telemetría que salga de la caja
-- `GET  /v1/hosted` — estado del respaldo alojado (alimenta la tarjeta "Get $5 free credit" del panel)
+- `GET  /v1/hosted` — estado del gateway alojado (alimenta la tarjeta de OrcaRouter del panel)
 - `GET/POST/DELETE /v1/keys/...` — lista / rota / revoca claves de API
 - `/v1/app/*` — agentes, resumen de gasto y presupuesto para la app de escritorio (solo al iniciar con `orca up`; consulta [SECURITY.md](./SECURITY.md))
 - Panel de una sola página en `/`

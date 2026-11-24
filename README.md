@@ -14,6 +14,35 @@ developer, and a self-hosted router for a whole team. MIT licensed.
   <img src="docs/screenshots/desktop-setup.png" alt="First-run setup: detected coding agents, where requests go, and a daily budget" width="420">
 </p>
 
+## Works with
+
+<p>
+  <img src="desktop/ui/assets/agents/claude-code.svg" alt="Claude Code" title="Claude Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/codex.svg" alt="Codex" title="Codex" width="32" height="32">
+  <img src="desktop/ui/assets/agents/gemini-cli.svg" alt="Gemini CLI" title="Gemini CLI" width="32" height="32">
+  <img src="desktop/ui/assets/agents/opencode.svg" alt="OpenCode" title="OpenCode" width="32" height="32">
+  <img src="desktop/ui/assets/agents/cline.svg" alt="Cline" title="Cline" width="32" height="32">
+  <img src="desktop/ui/assets/agents/command-code.svg" alt="Command Code" title="Command Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/hermes.svg" alt="Hermes Agent" title="Hermes Agent" width="32" height="32">
+  <img src="desktop/ui/assets/agents/pi.svg" alt="Pi" title="Pi" width="32" height="32">
+  <img src="desktop/ui/assets/agents/omp.svg" alt="OMP" title="OMP" width="32" height="32">
+  <img src="desktop/ui/assets/agents/kilo.svg" alt="Kilo Code" title="Kilo Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/openclaw.svg" alt="OpenClaw" title="OpenClaw" width="32" height="32">
+  <img src="desktop/ui/assets/agents/kimi-code.svg" alt="Kimi Code" title="Kimi Code" width="32" height="32">
+  <img src="desktop/ui/assets/agents/goose.svg" alt="Goose" title="Goose" width="32" height="32">
+  <img src="desktop/ui/assets/agents/cursor.svg" alt="Cursor" title="Cursor" width="32" height="32">
+  <img src="desktop/ui/assets/agents/aider.svg" alt="Aider" title="Aider" width="32" height="32">
+  <img src="desktop/ui/assets/agents/zed.svg" alt="Zed" title="Zed" width="32" height="32">
+  <img src="desktop/ui/assets/agents/openhands.svg" alt="OpenHands" title="OpenHands" width="32" height="32">
+  <img src="desktop/ui/assets/agents/deepseek-harness.svg" alt="DeepSeek Harness" title="DeepSeek Harness" width="32" height="32">
+  <img src="desktop/ui/assets/agents/zcode.svg" alt="ZCode" title="ZCode" width="32" height="32">
+</p>
+
+Claude Code, Codex, Gemini CLI, OpenCode, Cline, Command Code, Hermes Agent, Pi, OMP, Kilo Code, OpenClaw,
+Kimi Code, Goose, Cursor, Aider, Zed, OpenHands, DeepSeek Harness and ZCode, plus anything that speaks the
+OpenAI, Anthropic or Gemini API. <sub>Names and logos are their owners' trademarks, shown only to identify
+each agent; no endorsement implied. Sources and licences: [NOTICE](desktop/ui/assets/agents/NOTICE.md).</sub>
+
 ## Languages
 
 - [English](./README.md)
@@ -32,6 +61,8 @@ developer, and a self-hosted router for a whole team. MIT licensed.
 **Find us:** [All model APIs](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
 OrcaRouter Lite is the open-source edition of [OrcaRouter](https://www.orcarouter.ai). It runs on your computer or your server, speaks the OpenAI, Anthropic and Gemini APIs, and can use hosted `api.orcarouter.ai` as a safety net for outages and for models you don't hold keys for.
+
+**OrcaRouter** is the hosted gateway behind Lite's safety net: one key for every model, failover between providers, free models to start, and pay per request for paid models. The desktop app suggests it first and starts agents on its free models; your own provider keys remain a full alternative, with or without it.
 
 ## The desktop app
 
@@ -146,7 +177,7 @@ No clone, no docker. Register, get a key, point any OpenAI SDK at hosted.
 # 2. Use https://api.orcarouter.ai/v1 as the base URL
 ```
 
-**Account required.** Hosted handles routing, billing, and the long tail of providers — billed per-token on your OrcaRouter account. See [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Account required.** Free models to start; paid models are billed per request on your OrcaRouter account. Hosted handles routing, failover between providers and the long tail of models. See [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Then call it from any OpenAI SDK
 
@@ -229,7 +260,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Use cases:
-- **Try-before-you-buy** — no local provider keys needed
+- **Free models to start** — no provider keys needed; paid models only when you choose them
 - **Local logging** — hosted handles routing, Lite stores RequestLog rows for the dashboard
 - **Failover** — local providers fail, hosted is the safety net
 
@@ -304,7 +335,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 - `GET/PUT/DELETE /v1/providers/{provider}` — set / list / revoke encrypted provider keys (`decryptable` flags rows that no longer open after a `CREDENTIAL_ENCRYPTION_KEY` rotation)
 - `GET/PUT /v1/routing` — change strategy (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, no telemetry leaves the box
-- `GET  /v1/hosted` — hosted-fallback status (drives the dashboard's "Get $5 free credit" card)
+- `GET  /v1/hosted` — hosted-gateway status (drives the dashboard's OrcaRouter card)
 - `GET/POST/DELETE /v1/keys/...` — list / rotate / revoke API keys
 - `/v1/app/*` — agents, spend summary and budget for the desktop app (only when started with `orca up`; see [SECURITY.md](./SECURITY.md))
 - Single-page dashboard at `/`
@@ -427,6 +458,18 @@ packages/
 - [ ] Embeddings, Ollama/vLLM providers, custom fallback chains
 
 See [DEMO.md](./DEMO.md) for the failover demo.
+
+## Badge
+
+Using Orca to keep a project's agent spend in check? Add the badge to its README:
+
+[![budgeted with OrcaRouter Lite](https://img.shields.io/badge/budgeted%20with-OrcaRouter%20Lite-2D7FF9)](https://continuum-ai-corp.github.io/OrcaRouter-Lite/?ref=lite-badge)
+
+```md
+[![budgeted with OrcaRouter Lite](https://img.shields.io/badge/budgeted%20with-OrcaRouter%20Lite-2D7FF9)](https://continuum-ai-corp.github.io/OrcaRouter-Lite/?ref=lite-badge)
+```
+
+It's a static shields.io image, so there's nothing to set up. The link goes to the landing page.
 
 ## License
 

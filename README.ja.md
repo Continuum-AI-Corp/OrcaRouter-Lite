@@ -33,6 +33,8 @@ Claude Code、Codex、Gemini CLI、OpenCode、そして自作アプリの支出�
 
 OrcaRouter Lite は [OrcaRouter](https://www.orcarouter.ai) のオープンソース版です。手元のコンピューターでもサーバーでも動作し、OpenAI・Anthropic・Gemini の API に対応します。また、障害時や、キーを持っていないモデルを使うときのセーフティネットとして、ホスト型の `api.orcarouter.ai` を利用できます。
 
+**OrcaRouter** は Lite のセーフティネットを支えるホスト型ゲートウェイです。1 つのキーですべてのモデルを使え、プロバイダー間でフェイルオーバーし、まずは無料モデルから始められ、有料モデルはリクエストごとの支払いです。デスクトップアプリは最初にこれを提案し、エージェントを無料モデルで開始します。自分のプロバイダーキーも、OrcaRouter の有無にかかわらず、完全な代替手段として使えます。
+
 ## デスクトップアプリ
 
 Orca アプリはメニューバーに常駐します。ルーターを `127.0.0.1` で起動し、コーディングエージェントを
@@ -146,7 +148,7 @@ docker compose up
 # 2. Use https://api.orcarouter.ai/v1 as the base URL
 ```
 
-**アカウントが必要です。** Hosted はルーティング、請求、プロバイダーのロングテールを処理します。OrcaRouter アカウントのトークンごとに請求されます。 [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction) を参照してください。
+**アカウントが必要です。** まずは無料モデルから。有料モデルは OrcaRouter アカウントでリクエストごとに請求されます。Hosted はルーティング、プロバイダー間のフェイルオーバー、モデルのロングテールを処理します。[docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction) を参照してください。
 
 ### 次に、任意の OpenAI SDK から呼び出します。
 
@@ -229,7 +231,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 使用例:
-- **購入前に試してください** — ローカルプロバイダーキーは必要ありません
+- **無料で始める** — 無料モデルにはプロバイダーキーは不要です。有料モデルは自分で選んだときだけ使われます
 - **ローカル ログ** - ホストされたルーティング処理、Lite はダッシュボードの RequestLog 行を保存します
 - **フェイルオーバー** — ローカルプロバイダーに障害が発生し、ホストされているのがセーフティネットです
 
@@ -298,7 +300,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 - `GET/PUT/DELETE /v1/providers/{provider}` — 暗号化されたプロバイダー キーを設定 / リスト / 取り消し
 - `GET/PUT /v1/routing` — 戦略の変更 (`バランス` / `最安` / `最速` / `品質`)
 - `GET /v1/analytics/{recent,spend,latency, Savingss,unreachable}` — ローカル分析、テレメトリはボックスから出ません
-- `GET /v1/hosted` — ホスト型フォールバック ステータス (ダッシュボードの "Get $5 free Credit" カードを駆動します)
+- `GET /v1/hosted` — ホスト型ゲートウェイのステータス (ダッシュボードの OrcaRouter カードを駆動します)
 - `GET/POST/DELETE /v1/keys/...` — API キーのリスト化、回転、取り消し
 - `/v1/app/*` — デスクトップアプリ用のエージェント、支出サマリー、予算（`orca up` で起動した場合のみ。[SECURITY.md](./SECURITY.md) を参照）
 - `/` の単一ページのダッシュボード

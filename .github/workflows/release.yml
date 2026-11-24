@@ -289,13 +289,23 @@ jobs:
       # published PyPI version can never be replaced, so writing it first would
       # leave a failure here half-done — and the re-run would abort at the
       # upload step before ever reaching the attach.
+      # The CLI-only Homebrew formula installs this exact sdist from PyPI, so
+      # it is rendered from the file being published (copy it to the tap's
+      # Formula/orcarouter-lite.rb; see RELEASING.md).
+      - name: render the Homebrew formula for the CLI
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          python packaging/homebrew/render_formula.py --version "$v" \
+            --sdist "dist/orcarouter_lite-$v.tar.gz" > orcarouter-lite-formula.rb
+          cat orcarouter-lite-formula.rb
+
       - name: attach dists to the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/* orcarouter-lite-formula.rb --clobber
 
       - name: publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

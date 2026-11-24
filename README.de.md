@@ -33,6 +33,8 @@ für einzelne Entwickler und ein selbst gehosteter Router für ganze Teams. MIT-
 
 OrcaRouter Lite ist die Open-Source-Edition von [OrcaRouter](https://www.orcarouter.ai). Es läuft auf Ihrem Rechner oder Ihrem Server, spricht die APIs von OpenAI, Anthropic und Gemini und kann das gehostete `api.orcarouter.ai` als Sicherheitsnetz bei Ausfällen und für Modelle nutzen, für die Sie keine Schlüssel haben.
 
+**OrcaRouter** ist das gehostete Gateway hinter Lites Sicherheitsnetz: ein Schlüssel für jedes Modell, Failover zwischen Providern, kostenlose Modelle für den Einstieg und Bezahlung pro Anfrage für kostenpflichtige Modelle. Die Desktop-App schlägt es zuerst vor und startet Agenten mit den kostenlosen Modellen; Ihre eigenen Provider-Schlüssel bleiben eine vollwertige Alternative, mit oder ohne OrcaRouter.
+
 ## Die Desktop-App
 
 Die Orca-App sitzt in Ihrer Menüleiste. Sie betreibt den Router auf `127.0.0.1`, verbindet Ihre
@@ -147,7 +149,7 @@ Kein Klonen, kein Docker. Registrieren, Schlüssel holen, jedes OpenAI-SDK auf d
 # 2. https://api.orcarouter.ai/v1 als Basis-URL verwenden
 ```
 
-**Konto erforderlich.** Hosted übernimmt Routing, Abrechnung und den Long Tail an Providern — pro Token über Ihr OrcaRouter-Konto abgerechnet. Siehe [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
+**Konto erforderlich.** Kostenlose Modelle für den Einstieg; kostenpflichtige Modelle werden pro Anfrage über Ihr OrcaRouter-Konto abgerechnet. Hosted übernimmt Routing, Failover zwischen Providern und den Long Tail an Modellen. Siehe [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction).
 
 ### Dann von einem beliebigen OpenAI-SDK aufrufen
 
@@ -230,7 +232,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 Anwendungsfälle:
-- **Vor dem Kauf testen** — keine lokalen Provider-Schlüssel nötig
+- **Kostenlos starten** — kostenlose Modelle brauchen keine Provider-Schlüssel; kostenpflichtige Modelle nur, wenn Sie sie wählen
 - **Lokales Logging** — Hosted erledigt Routing, Lite speichert RequestLog-Zeilen für das Dashboard
 - **Failover** — lokale Provider fallen aus, Hosted ist das Sicherheitsnetz
 
@@ -299,7 +301,7 @@ Beim Start werden über 100 Chat-Modelle aus [LiteLLMs von der Community gepfleg
 - `GET/PUT/DELETE /v1/providers/{provider}` — verschlüsselte Provider-Schlüssel setzen / auflisten / widerrufen
 - `GET/PUT /v1/routing` — Strategie ändern (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — lokale Analytics, keine Telemetrie verlässt die Box
-- `GET  /v1/hosted` — Status des Hosted-Fallbacks (treibt die "Get $5 free credit"-Karte des Dashboards an)
+- `GET  /v1/hosted` — Status des gehosteten Gateways (treibt die OrcaRouter-Karte des Dashboards an)
 - `GET/POST/DELETE /v1/keys/...` — API-Schlüssel auflisten / rotieren / widerrufen
 - `/v1/app/*` — Agenten, Ausgabenübersicht und Budget für die Desktop-App (nur wenn mit `orca up` gestartet; siehe [SECURITY.md](./SECURITY.md))
 - Single-Page-Dashboard unter `/`
