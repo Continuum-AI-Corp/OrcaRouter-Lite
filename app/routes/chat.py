@@ -468,6 +468,40 @@ async def execute_chat(
             logger.warning("request_log_commit_failed", error=str(commit_err))
         raise HTTPException(status_code=status, detail=detail, headers={ERROR_TYPE_HEADER: error_type})
 
+    async def _refuse_unavailable_mapping(target: str) -> None:
+        """The agent's mapped model can't be served and auto isn't allowed.
+        A paid OrcaRouter model in "free" mode says how to allow it."""
+        if ctx.free_mode and ctx.hosted_configured and desktop_routing.is_paid_hosted(target):
+            await _refuse(
+                422, desktop_routing.NEEDS_PAID_TYPE,
+                desktop_routing.needs_paid_detail(f"{target} is paid on OrcaRouter"),
+                route_notes.NEEDS_PAID,
+            )
+        from packages.desktop.agents import AGENTS
+
+        spec = AGENTS.get(agent_id or "")
+        await _refuse(
+            422, desktop_routing.MAPPED_UNAVAILABLE_TYPE,
+            desktop_routing.mapped_unavailable_detail(spec.name if spec else agent_id or "this agent", target),
+            route_notes.MAPPED,
+        )
+
+    # D2: the user's model map for this agent decides what serves it.
+    agent_id = prefs.agent_of(kc.name)
+    target = desktop_routing.mapped_model(ctx, agent_id, body.model)
+    if target:
+        route_intent = route_notes.MAPPED
+        if target == "auto":
+            body = body.model_copy(update={"model": "auto"})
+            was_auto = True
+        else:
+            servable = target if target in ctx.deployable else desktop_routing.twin(target, ctx.deployable)
+            if servable is None and not ctx.prefs.agent_models[agent_id].fallback_to_auto:
+                await _refuse_unavailable_mapping(target)
+            # Not servable but allowed: agent fallback below routes it as auto.
+            body = body.model_copy(update={"model": servable or target})
+            was_auto = False
+
     # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
     # claude-sonnet-4-6) is the model that was asked for, not a substitute.
     if not was_auto and body.model not in ctx.deployable:
@@ -507,7 +541,7 @@ async def execute_chat(
         logger.info("agent_model_fallback", requested=body.model, prefer=fallback[:5])
         body = body.model_copy(update={"model": "auto"})
         was_auto = True
-        route_intent = route_notes.SUBSTITUTED
+        route_intent = route_intent or route_notes.SUBSTITUTED
         if fallback:
             preferred_models = fallback
 

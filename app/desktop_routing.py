@@ -106,6 +106,39 @@ def is_paid_hosted(model: str) -> bool:
     return model in PAID_HOSTED_NAMES or (twin(model, PAID_HOSTED_NAMES) is not None)
 
 
+MAPPED_UNAVAILABLE_TYPE = "mapped_model_unavailable"
+
+# Model-name marks of an agent's background requests (Claude Code's titles
+# and summaries go to haiku; others use their vendor's mini/nano/lite).
+_BACKGROUND_MARKS = ("haiku", "-mini", "-nano", "flash-lite", "-lite")
+
+
+def is_background_model(model: str) -> bool:
+    name = model.rsplit("/", 1)[-1].lower()
+    return any(mark in name for mark in _BACKGROUND_MARKS)
+
+
+def mapped_model(ctx: RoutingContext, agent_id: str | None, requested: str) -> str | None:
+    """D2: the model the user chose for this agent's request, or None to
+    serve what it asked for. Background-looking requests use the agent's
+    background model when one is set; everything else its main model."""
+    if not (ctx.desktop and agent_id):
+        return None
+    m = ctx.prefs.agent_models.get(agent_id)
+    if m is None:
+        return None
+    if is_background_model(requested):
+        return m.background
+    return m.main
+
+
+def mapped_unavailable_detail(agent_name: str, model: str) -> str:
+    return (
+        f"{model}, the model chosen for {agent_name}, isn't available. Add a key that serves it, "
+        "or turn on \"If a model isn't available, use auto\" in Orca."
+    )
+
+
 def needs_paid_reason(needs: set[str], prompt_tokens: int) -> str:
     """Why free models can't take a request, in words for the user."""
     if "vision" in needs:
