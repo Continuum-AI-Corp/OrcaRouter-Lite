@@ -80,6 +80,10 @@ def build_deployments(
                     litellm_model=f"{model.litellm_prefix}{model.id}",
                     api_key=api_key,
                     provider=provider,
+                    # A stable id: LiteLLM reports it back as the deployment
+                    # that answered, and per-request weights name it (own
+                    # keys before OrcaRouter, see app/routes/chat.py).
+                    deployment_id=f"{provider}::{model.id}",
                 )
             )
 

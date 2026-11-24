@@ -705,6 +705,10 @@ async def execute_chat(
     # Who a failed request is attributed to when no response says so: the
     # provider that was asked first (own key before OrcaRouter).
     primary_provider = _provider_of(ctx, resolved_model)
+    chain = [body.model, *((fallbacks_arg or [{}])[0].get(body.model, []))]
+    weights = desktop_routing.own_first_weights(ctx, chain)
+    if weights:
+        per_call_kwargs["_router_weights"] = weights
 
     # ── Prompt cache (blocking deterministic requests only) ────────────
     cache_status = "BYPASS"

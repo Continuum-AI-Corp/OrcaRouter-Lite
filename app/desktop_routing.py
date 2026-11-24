@@ -91,6 +91,28 @@ def auto_deployable(ctx: RoutingContext) -> set[str]:
     return deployable
 
 
+def own_first_weights(ctx: RoutingContext, groups: Iterable[str]) -> dict[str, dict[str, float]]:
+    """Per-request LiteLLM weights that make an own key (or local model)
+    answer before OrcaRouter when both serve the same model name.
+
+    LiteLLM otherwise picks at random among a name's deployments, so about
+    half of such requests went to OrcaRouter even with a healthy own key,
+    and kept going there while it was out of credit. Weight 0 keeps
+    OrcaRouter as the backup: LiteLLM still uses it when every own
+    deployment is cooling down. Only names with both kinds are listed.
+    """
+    if not ctx.desktop:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for group in dict.fromkeys(groups):
+        deps = [d for d in ctx.deployments if d.model_name == group]
+        kinds = {d.provider == HOSTED_PROVIDER for d in deps}
+        if kinds != {True, False} or any(not d.deployment_id for d in deps):
+            continue
+        out[group] = {d.deployment_id: 0.0 if d.provider == HOSTED_PROVIDER else 1.0 for d in deps}
+    return out
+
+
 def context_limits(ctx: RoutingContext) -> dict[str, int]:
     """Usable context per model, for models whose limit routing must respect:
     the free hosted models and the models on this computer."""

@@ -23,7 +23,8 @@ USAGE = {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500}
 
 
 def own(provider: str, *models: str) -> list[ProviderDeployment]:
-    return [ProviderDeployment(model_name=m, litellm_model=f"{provider}/{m}", api_key="k", provider=provider)
+    return [ProviderDeployment(model_name=m, litellm_model=f"{provider}/{m}", api_key="k", provider=provider,
+                               deployment_id=f"{provider}::{m}")
             for m in models]
 
 

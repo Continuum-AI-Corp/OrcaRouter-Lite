@@ -46,6 +46,26 @@ async def test_own_keys_keep_serving_auto_while_out_of_credit(engine):
     assert set(tried) <= {"gpt-4o-mini", "gpt-4.1"}
 
 
+async def test_own_keys_come_before_orcarouter_for_the_same_model(engine):
+    # LiteLLM picks at random among deployments of one model; the engine
+    # weights an own key's deployment over OrcaRouter's so OrcaRouter is
+    # only the backup (and while it's out of credit, never the first try).
+    await engine.settings(hosted_models="all")
+    engine.router = FakeRouter([*own("openai", "gpt-5", "gpt-4o-mini"), *hosted("gpt-5")])
+    await engine.chat(engine.root_key, {**PING, "model": "gpt-5"})
+    assert engine.router.calls[-1]["_router_weights"] == {"gpt-5": {"openai::gpt-5": 1.0, "hosted::gpt-5": 0.0}}
+    await engine.chat(engine.root_key, {**PING, "model": "gpt-4o-mini"})
+    assert "_router_weights" not in engine.router.calls[-1]  # nothing to weigh
+
+
+def test_own_key_deployments_have_stable_ids():
+    from app.config import Settings
+    from app.router_cache import build_deployments
+
+    deps = build_deployments(env_keys={"openai": "sk-o"}, db_keys=[], settings=Settings(_env_file=None))
+    assert {d.deployment_id for d in deps if d.model_name == "gpt-4o-mini"} == {"openai::gpt-4o-mini"}
+
+
 async def test_an_agent_falls_back_to_own_keys_too(engine):
     await engine.settings(hosted_models="all")
     engine.router = FakeRouter([*hosted("claude-sonnet-4.6", "claude-haiku-4.5"), *own("openai", "gpt-4o-mini")])
