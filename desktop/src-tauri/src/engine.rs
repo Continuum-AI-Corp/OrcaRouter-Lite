@@ -46,14 +46,18 @@ fn healthy(port: u16) -> bool {
         .is_ok()
 }
 
+/// The bundled engine next to the app's own executable, if there is one.
+/// It is also the `orca` command-line tool.
+pub fn sidecar() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = if cfg!(windows) { "orca-engine.exe" } else { "orca-engine" };
+    let p = exe.parent()?.join(name);
+    p.exists().then_some(p)
+}
+
 fn engine_command() -> Command {
-    let sidecar = std::env::current_exe().ok().and_then(|exe| {
-        let name = if cfg!(windows) { "orca-engine.exe" } else { "orca-engine" };
-        let p = exe.parent()?.join(name);
-        p.exists().then_some(p)
-    });
     #[allow(unused_mut)]
-    let mut cmd = match sidecar {
+    let mut cmd = match sidecar() {
         Some(p) => Command::new(p),
         None => Command::new("orca"),
     };
@@ -219,11 +223,57 @@ impl Engine {
     }
 
     pub fn summary(&self) -> Result<serde_json::Value, u16> {
-        let offset = crate::tz_offset_minutes();
+        self.get_json(&format!("/v1/app/summary?tz_offset_minutes={}", crate::tz_offset_minutes()), 5)
+    }
+
+    /// The diagnostics report (`/v1/app/diagnostics`): versions, agents'
+    /// and providers' states and the engine log's tail, with keys masked,
+    /// paths under ~ and no prompt text. The engine builds it.
+    pub fn diagnostics(&self) -> Result<String, u16> {
+        let v = self.get_json("/v1/app/diagnostics", 20)?;
+        v.get("text").and_then(|t| t.as_str()).map(str::to_string).ok_or(0)
+    }
+
+    /// `orca diagnostics` from the bundled engine, for when the engine isn't
+    /// answering: the CLI builds the same report without the HTTP part.
+    pub fn cli_diagnostics() -> Option<String> {
+        let mut child = engine_command()
+            .arg("diagnostics")
+            .env("ORCA_HOME", orca_home())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut out = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut out, &mut text).ok().map(|_| text)
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let text = reader.join().ok().flatten()?;
+                    return (status.success() && !text.trim().is_empty()).then_some(text);
+                }
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// GET an app endpoint with the app key, picking up a re-minted key once.
+    #[allow(clippy::result_large_err)] // ureq::Error, straight from ureq
+    fn get_json(&self, path: &str, timeout_secs: u64) -> Result<serde_json::Value, u16> {
         let call = |key: &str| {
-            ureq::get(&format!("{}/v1/app/summary?tz_offset_minutes={offset}", self.base_url))
+            ureq::get(&format!("{}{}", self.base_url, path))
                 .set("Authorization", &format!("Bearer {key}"))
-                .timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(timeout_secs))
                 .call()
         };
         match call(&self.key()) {
