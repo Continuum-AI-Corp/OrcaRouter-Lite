@@ -36,6 +36,7 @@ from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
 from packages.desktop import hosted_state, prefs
+from packages.desktop.agents import CODEX_AUTO_MODEL
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
@@ -47,6 +48,9 @@ from packages.litellm_adapter.hosted_fallback import (
 from packages.litellm_adapter.types import UpstreamProviderError
 
 logger = structlog.get_logger()
+# Model names an agent was connected with that mean model="auto".
+AUTO_ALIASES = frozenset({CODEX_AUTO_MODEL})
+
 router = APIRouter(prefix="/v1", tags=["Chat Completions"])
 
 # Relays the engine's translated error type (rate_limit_error,
@@ -416,6 +420,10 @@ async def execute_chat(
     # Capture client intent before any mutation so the request log and the
     # `x-orca-requested-model` header always reflect what the user asked for,
     # not the post-resolution primary.
+    if body.model in AUTO_ALIASES:
+        # Codex is connected under a name it recognises (CODEX_AUTO_MODEL) so
+        # it keeps its file-editing tools; that name means auto.
+        body = body.model_copy(update={"model": "auto"})
     requested_model = body.model
     was_auto = body.model == "auto"
 

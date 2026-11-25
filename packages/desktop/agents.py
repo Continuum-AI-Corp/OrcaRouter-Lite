@@ -73,6 +73,14 @@ class AgentConfigError(AgentError):
     pass
 
 
+# The model Orca connects Codex with. Codex chooses its tools (apply_patch for
+# editing files, the shell tool) from the model's catalog entry, matched by
+# prefix, and an unknown name such as "auto" gets none of them: Codex could
+# talk but not edit. A name starting with a model in Codex's catalog inherits
+# that model's tools and instructions; the engine routes it like "auto".
+CODEX_AUTO_MODEL = "gpt-5.5-orca-auto"
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     id: str
@@ -811,7 +819,7 @@ def _desired_values(
         }
         return {".codex/config.toml": {
             "model_provider": PROVIDER_ID,
-            "model": "auto",
+            "model": CODEX_AUTO_MODEL,
             f"model_providers.{PROVIDER_ID}": provider,
         }}
     if agent_id == "gemini-cli":

@@ -201,7 +201,7 @@ def test_codex_connect_adds_a_responses_provider_and_selects_it(home, state_dir)
     assert "# my codex settings" in text
     data = tomllib.loads(text)
     assert data["model_provider"] == "orca"
-    assert data["model"] == "auto"
+    assert data["model"] == ag.CODEX_AUTO_MODEL  # a name Codex knows, routed as auto
     assert data["approval_policy"] == "on-request"
     assert data["projects"]["/home/me/app"]["trust_level"] == "trusted"
     assert data["model_providers"]["orca"] == {
