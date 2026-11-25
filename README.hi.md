@@ -279,7 +279,7 @@ Requests को एज पर उसी आंतरिक पाइपलाइ
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (अगली टैग की गई रिलीज़ से प्रकाशित होगी; [SECURITY.md](./SECURITY.md) में दिए कमांड से इसे सत्यापित करें) |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) का इस्तेमाल करता है, secrets जनरेट करता है, डेटाबेस को एक डिस्क पर रखता है |
 | Fly.io | `fly launch --no-deploy`, फिर [`fly.toml`](./fly.toml) में सबसे ऊपर दिए volume और `fly secrets set` वाले स्टेप, फिर `fly deploy` |
-| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, फिर `railway up` ([`railway.json`](./railway.json) से बिल्ड होता है) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>या एक क्लिक में एक कम्युनिटी टेम्पलेट से डिप्लॉय करें, जो वही वॉल्यूम और वेरिएबल सेट करता है।<br>`railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, फिर `railway up` ([`railway.json`](./railway.json) से बिल्ड होता है) |
 
 ## बॉक्स में क्या है
 
