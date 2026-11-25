@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+from typing_extensions import TypedDict
 
 from app.response_format import normalize_response_format
+
+
+class PromptCacheOptions(TypedDict, total=False):
+    """OpenAI Chat Completions options; omitted members stay omitted."""
+
+    mode: Literal["implicit", "explicit"]
+    ttl: Literal["30m"]
 
 
 class ChatMessage(BaseModel):
@@ -54,6 +62,10 @@ class ChatCompletionRequest(BaseModel):
     # chat.py can't see what the client actually asked for, so an
     # explicit `include_usage=false` from the client gets clobbered.
     stream_options: dict | None = None
+    # Keep explicit provider cache policy through exclude_none=True.
+    # Supported models/entitlements are still checked by the provider.
+    prompt_cache_key: str | None = None
+    prompt_cache_options: PromptCacheOptions | None = None
 
     @field_validator("response_format")
     @classmethod
