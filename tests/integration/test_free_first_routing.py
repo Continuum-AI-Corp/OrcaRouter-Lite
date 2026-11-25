@@ -9,8 +9,8 @@ import pytest
 
 from tests.integration.routing_harness import FakeRouter, hosted, own
 
-FREE_DEPS = hosted("deepseek/deepseek-v4-pro-free", "deepseek/deepseek-v4-flash-free",
-                   "qwen/qwen3.8-27b-free", "orcarouter/free")
+FREE_DEPS = hosted("z-ai/glm-5.3-flash-free", "deepseek/deepseek-v4-flash-free",
+                   "deepseek/deepseek-v4.1-flash-free", "orcarouter/free")
 PAID_DEPS = hosted("claude-sonnet-4.6", "gpt-5.5", "qwen3-vl-235b-a22b-instruct")
 PING = {"model": "auto", "messages": [{"role": "user", "content": "ping"}]}
 IMAGE = {"model": "auto", "messages": [{"role": "user", "content": [
@@ -26,7 +26,7 @@ async def test_free_models_serve_ordinary_requests_at_no_cost(engine, stream):
     r = await engine.chat(engine.root_key, PING, stream=stream)
     assert r.status_code == 200
     call = engine.router.calls[-1]
-    assert call["model"] == "deepseek/deepseek-v4-pro-free"
+    assert call["model"] == "z-ai/glm-5.3-flash-free"
     assert set(call["fallbacks"][0][call["model"]]) <= {d.model_name for d in FREE_DEPS}
     log = await engine.last_log()
     assert (log.route_note, log.cost_microcents, log.provider) == ("free", 0, "orcarouter")
@@ -39,7 +39,7 @@ async def test_free_models_rank_first_and_own_keys_follow(engine, stream):
     r = await engine.chat(engine.root_key, PING, stream=stream)
     assert r.status_code == 200
     call = engine.router.calls[-1]
-    assert call["model"] == "deepseek/deepseek-v4-pro-free"
+    assert call["model"] == "z-ai/glm-5.3-flash-free"
     assert set(call["fallbacks"][0][call["model"]]) & {"gpt-4o-mini", "gpt-4.1"}
     log = await engine.last_log()
     assert log.provider == "openai" and log.route_note is None and log.cost_microcents > 0
@@ -86,7 +86,7 @@ async def test_an_agent_asking_for_a_paid_model_gets_a_free_one(engine):
     r = await engine.chat(key, {**PING, "model": "claude-sonnet-4-6"})
     assert r.status_code == 200
     assert r.headers["x-orca-requested-model"] == "claude-sonnet-4-6"
-    assert r.headers["x-orca-resolved-model"] == "deepseek/deepseek-v4-pro-free"
+    assert r.headers["x-orca-resolved-model"] == "z-ai/glm-5.3-flash-free"
     log = await engine.last_log()
     assert (log.route_note, log.cost_microcents) == ("free", 0)
 

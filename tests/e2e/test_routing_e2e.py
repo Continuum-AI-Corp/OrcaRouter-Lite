@@ -37,7 +37,7 @@ from tests.e2e.test_desktop_e2e import _claude, _free_port, _opencode, _stop, _w
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.e2e
 ANTHROPIC_HEADERS = {"anthropic-version": "2023-06-01"}
-FREE = {"deepseek/deepseek-v4-pro-free", "deepseek/deepseek-v4-flash-free", "qwen/qwen3.8-27b-free",
+FREE = {"z-ai/glm-5.3-flash-free", "deepseek/deepseek-v4-flash-free", "deepseek/deepseek-v4.1-flash-free",
         "orcarouter/free"}
 
 

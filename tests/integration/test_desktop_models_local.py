@@ -71,7 +71,7 @@ async def test_model_groups_in_order_with_prices_per_million(desktop_app, seeded
     assert gpt["available"] is True and gpt["free"] is False and gpt["tools"] is True
     # Free models, and paid ones, need an OrcaRouter key.
     free = {m["id"]: m for m in groups["free"]["models"]}
-    assert "deepseek/deepseek-v4-pro-free" in free
+    assert "z-ai/glm-5.3-flash-free" in free
     assert all(m["free"] and m["input_per_m"] == 0 and not m["available"] for m in free.values())
     assert groups["paid"]["models"] and not any(m["available"] for m in groups["paid"]["models"])
     assert all(m["provider"] == "orcarouter" for m in groups["paid"]["models"])
@@ -117,7 +117,9 @@ async def test_with_an_orcarouter_key_free_models_are_available_and_paid_ones_ne
         assert not any(m["available"] for m in groups["paid"]["models"])
         await c.put("/v1/app/settings", headers=_auth(root), json={"hosted_models": "all"})
         _, groups = await _models(c, root)
-    assert all(m["available"] for m in groups["paid"]["models"])
+        assert all(m["available"] for m in groups["paid"]["models"])
+        # The paid list is longer than one page of the picker: find it by name.
+        _, groups = await _models(c, root, q="claude-sonnet-4.6")
     sonnet = next(m for m in groups["paid"]["models"] if m["id"] == "claude-sonnet-4.6")
     assert sonnet["input_per_m"] and sonnet["output_per_m"]
 

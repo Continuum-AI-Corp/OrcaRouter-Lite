@@ -16,7 +16,7 @@ CODER = CatalogModel("ollama/qwen3-coder:30b", "local", "", True, False, True, 0
 LLAVA = CatalogModel("ollama/llava:7b", "local", "", False, True, True, 0.0, 0.0)
 LOCAL = [CODER, LLAVA]
 CLOUD = {"gpt-4o-mini", "gpt-4.1", "gpt-4o"}
-FREE = {"deepseek/deepseek-v4-pro-free", "orcarouter/free"}
+FREE = {"z-ai/glm-5.3-flash-free", "orcarouter/free"}
 DEPLOYABLE = {*CLOUD, *FREE, CODER.id, LLAVA.id}
 LIMITS = {CODER.id: 26_214, LLAVA.id: 3_276}
 
