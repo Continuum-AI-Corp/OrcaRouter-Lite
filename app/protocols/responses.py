@@ -877,6 +877,8 @@ _ENGINE_ERROR_STATUS = {
     # (the user has to allow paid models), or OrcaRouter is out of credit.
     # Neither succeeds on retry.
     "needs_paid_model": 403,
+    # OrcaRouter refused its free models for this account: no retry helps.
+    "free_unavailable": 403,
     "out_of_credit": 402,
     # A provider's own 402 (no balance left on the user's key).
     "payment_required": 402,

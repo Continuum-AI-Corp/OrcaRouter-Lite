@@ -8,11 +8,13 @@ solo dev to ship a working router.
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
 import structlog
 
+from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
     HOSTED_DEPLOYMENT_PREFIX,
     hidden_params_of,
@@ -68,10 +70,63 @@ def _build_allowed_fails_policy():
     )
 
 
+# OrcaRouter's words when it refuses its free models to a whole account.
+_NOT_ELIGIBLE = "not available to this account"
+_LITELLM_PREFIX = re.compile(r"^(?:litellm\.\w+: )?(?:\w+: )?(?:\w+Exception - )?")
+
+
+def free_refusal(exc: Exception) -> str | None:
+    """OrcaRouter's message when it refused a free model for the whole account
+    (not eligible for free models yet, or the free allowance is used up);
+    None for anything else, a passing free rate limit included."""
+    failed = str(getattr(exc, "failed_deployment_id", "") or "")
+    if not failed.startswith(HOSTED_DEPLOYMENT_PREFIX) or not is_free_hosted(failed[len(HOSTED_DEPLOYMENT_PREFIX):]):
+        return None
+    body = getattr(exc, "body", None)
+    body = body if isinstance(body, dict) else {}
+    # LiteLLM prefixes the upstream text with its own exception names.
+    message = _LITELLM_PREFIX.sub("", str(body.get("message") or exc)).strip()
+    status = getattr(exc, "status_code", None)
+    if status == 402 or body.get("code") == "free_quota_exhausted":
+        return message
+    if status == 429 and _NOT_ELIGIBLE in message:
+        return message
+    return None
+
+
+def free_refusal_watcher(on_refusal):
+    """A LiteLLM callback calling `on_refusal(message)` whenever a free model
+    is refused for the account, also mid-fallback when a later model answers
+    (the final error alone would miss those)."""
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _Watcher(CustomLogger):
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            exc = kwargs.get("exception")
+            if exc is None:
+                return
+            if not getattr(exc, "failed_deployment_id", None):
+                model_info = (kwargs.get("litellm_params") or {}).get("model_info") or {}
+                try:
+                    exc.failed_deployment_id = model_info.get("id")
+                except AttributeError:
+                    return
+            message = free_refusal(exc)
+            if message:
+                on_refusal(message)
+
+    return _Watcher()
+
+
 def _translate_error(exc: Exception) -> UpstreamProviderError:
     import litellm
 
     msg = str(exc)
+    refused = free_refusal(exc)
+    if refused:
+        # Not a rate limit to retry nor an empty wallet: this account can't
+        # use OrcaRouter's free models (the message says why and what to do).
+        return UpstreamProviderError(refused, http_status=403, error_type="free_unavailable")
     if isinstance(exc, litellm.ContextWindowExceededError):
         return UpstreamProviderError(msg, http_status=422, error_type="context_length_exceeded")
     if isinstance(exc, litellm.NotFoundError):

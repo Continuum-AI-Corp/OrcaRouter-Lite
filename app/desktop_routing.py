@@ -36,6 +36,7 @@ LOCAL_PROVIDER = local_models.PROVIDER
 
 NEEDS_PAID_TYPE = "needs_paid_model"
 OUT_OF_CREDIT_TYPE = "out_of_credit"
+FREE_UNAVAILABLE_TYPE = "free_unavailable"
 
 # Every name a hosted model is deployed under: its bare id, plus the wire id
 # for the aliased (free) ones. Paid = all of them but the free ones.
@@ -85,6 +86,12 @@ def auto_deployable(ctx: RoutingContext) -> set[str]:
     state) or says it's still out of credit.
     """
     deployable = set(ctx.deployable)
+    if ctx.desktop and hosted_state.free_unavailable():
+        # OrcaRouter refused its free models for this account: skip them
+        # rather than fail through them first on every request.
+        others = {n for n in deployable if not (n in ctx.hosted_only and is_free_hosted(n))}
+        if others:
+            deployable = others
     if ctx.desktop and hosted_state.out_of_credit():
         own = deployable - ctx.hosted_only
         if own:
@@ -221,6 +228,14 @@ def needs_paid_detail(reason: str) -> str:
     return (
         f"This request needs a paid model ({reason}). Open Orca and choose \"Use paid models\" "
         "to allow OrcaRouter's paid models."
+    )
+
+
+def free_unavailable_detail(reason: str | None) -> str:
+    said = f" OrcaRouter says: {reason.strip()}" if reason else ""
+    return (
+        "OrcaRouter's free models aren't available to this account." + said
+        + " To keep going, open Orca and turn on \"Paid models on OrcaRouter\", or add your own provider key."
     )
 
 

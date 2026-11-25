@@ -199,6 +199,10 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
     message then says what to do about it in plain words.
     """
     detail = f"Upstream provider error: {exc}"
+    if exc.error_type == desktop_routing.FREE_UNAVAILABLE_TYPE:
+        hosted_state.mark_free_unavailable(str(exc))
+        if desktop:
+            detail = desktop_routing.free_unavailable_detail(str(exc))
     if exc.error_type == route_notes.OUT_OF_CREDIT:
         hosted_state.mark_out_of_credit()
         if desktop:

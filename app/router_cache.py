@@ -306,6 +306,8 @@ async def get_router(session) -> object:
             enable_pre_call_checks=settings.router_pre_call_checks,
             num_retries=inputs.num_retries,
         )
+        if settings.orca_desktop_mode:
+            _watch_free_refusals()
         _cached_inputs = inputs
         return _cached_client
 
@@ -315,3 +317,22 @@ def invalidate_router() -> None:
     global _cached_client, _cached_inputs
     _cached_client = None
     _cached_inputs = None
+
+
+_free_watcher = None
+
+
+def _watch_free_refusals() -> None:
+    """Register (once) the LiteLLM callback that notes OrcaRouter refusing its
+    free models for this account, including on an attempt a later model in
+    the same request rescued, so auto stops trying them for a while."""
+    global _free_watcher
+    if _free_watcher is not None:
+        return
+    import litellm
+
+    from packages.desktop import hosted_state
+    from packages.litellm_adapter.client import free_refusal_watcher
+
+    _free_watcher = free_refusal_watcher(hosted_state.mark_free_unavailable)
+    litellm.callbacks = [*(litellm.callbacks or []), _free_watcher]
