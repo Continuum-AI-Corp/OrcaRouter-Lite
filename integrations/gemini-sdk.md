@@ -49,6 +49,12 @@ logs; the header form doesn't.
 
 ## Known limitations (v1)
 
+- Blocking and terminal streaming `usageMetadata.cachedContentTokenCount`
+  is included when upstream reports a valid cache-read count, including an
+  explicit zero. `promptTokenCount` remains inclusive, per the [Gemini usage contract](https://ai.google.dev/api/generate-content#UsageMetadata).
+  Missing/null cache counters stay omitted. Negative, non-integer,
+  conflicting aliases, or a cache breakdown exceeding the prompt count
+  is omitted; an unusable prompt count falls back to zero.
 - `candidateCount > 1`, `cachedContent`, Files API (`fileData`), and
   server-side tools (`googleSearch`, `codeExecution`, `urlContext`)
   return 400. Function declarations are fully supported (uppercase proto

@@ -53,6 +53,13 @@ Streaming (`client.messages.stream(...)`) and tool use work as usual.
 - Streaming `message_start.usage.input_tokens` is the same estimate
   `/v1/messages/count_tokens` returns — the upstream only reports the
   exact count at end-of-stream, where it is sent in `message_delta`.
+  Blocking and terminal streaming usage split LiteLLM's inclusive prompt
+  count into ordinary `input_tokens` and observed `cache_read_input_tokens` /
+  `cache_creation_input_tokens`, following [Anthropic's additive usage contract](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#tracking-cache-performance).
+  Missing/null cache counters stay omitted; explicit zeros are preserved.
+  Negative, non-integer, conflicting aliases, or cache totals exceeding the
+  prompt count cause the cache breakdown to be omitted and the inclusive
+  count retained. An unusable prompt count falls back to zero.
 - Server-side tools (web search, computer use), PDF `document` blocks, and
   the Files API return 400. Custom function tools are fully supported.
 - `POST /v1/messages/count_tokens` returns an estimate

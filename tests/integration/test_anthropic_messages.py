@@ -182,6 +182,35 @@ async def test_invalid_key_renders_anthropic_envelope(native_client):
 # ── blocking ──
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_native_cache_usage_reaches_blocking_and_terminal_response(native_client, stream):
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+    client, fake, key = native_client
+    usage = AnthropicConfig().calculate_usage({
+        "input_tokens": 50, "output_tokens": 10,
+        "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 1000,
+    }, reasoning_content=None).model_dump(exclude_none=True)
+
+    async def chunks():
+        for chunk in _stream_chunks():
+            if "usage" in chunk:
+                chunk["usage"] = usage
+            yield chunk
+
+    async def upstream(**kwargs):
+        if kwargs.get("stream"):
+            return chunks()
+        return {**_openai_response(), "usage": usage}
+
+    fake.acompletion.side_effect = upstream
+    response = await client.post("/v1/messages", json=_messages_payload(stream=stream), headers={"x-api-key": key})
+    assert response.status_code == 200
+    actual = _parse_anthropic_sse(response.text)[-2][1]["usage"] if stream else response.json()["usage"]
+    assert actual == {"input_tokens": 50, "output_tokens": 10,
+                      "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 1000}
+
+
 async def test_blocking_response_shape_and_orca_headers(native_client):
     client, fake, key = native_client
     r = await client.post("/v1/messages", json=_messages_payload(),
