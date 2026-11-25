@@ -77,6 +77,7 @@ class AnthropicMessagesRequest(BaseModel):
     stream: bool = False
     metadata: dict | None = None
     thinking: dict | None = None
+    cache_control: dict | None = None
 
 
 # ── Request translation (Anthropic → OpenAI) ───────────────────────────
@@ -85,7 +86,16 @@ def _invalid(message: str) -> HTTPException:
     return HTTPException(status_code=400, detail=message)
 
 
-def _system_text(system: str | list[dict]) -> str:
+def _with_cache_control(translated: dict, original: dict) -> dict:
+    control = original.get("cache_control")
+    if control is not None:
+        if not isinstance(control, dict):
+            raise _invalid("cache_control must be an object")
+        translated["cache_control"] = dict(control)
+    return translated
+
+
+def _system_content(system: str | list[dict]) -> str | list[dict]:
     """The `system` param is text-only per the Anthropic API (string or
     text blocks). Anything else — an image block a client tucked into a
     role:"system" message inside messages[], which this surface tolerates
@@ -93,18 +103,20 @@ def _system_text(system: str | list[dict]) -> str:
     log rather than silently vanishing."""
     if isinstance(system, str):
         return system
-    parts: list[str] = []
+    parts: list[dict] = []
     dropped = 0
     for b in system:
         if isinstance(b, dict) and b.get("type") == "text":
             text = require_text(b.get("text"), field="system[].text")
             if text:
-                parts.append(text)
+                parts.append(_with_cache_control({"type": "text", "text": text}, b))
         else:
             dropped += 1
     if dropped:
         logger.warning("anthropic_non_text_system_block_dropped", count=dropped)
-    return "\n\n".join(parts)
+    if any("cache_control" in part for part in parts):
+        return parts
+    return "\n\n".join(part["text"] for part in parts)
 
 
 def _image_part(block: dict) -> dict:
@@ -112,24 +124,23 @@ def _image_part(block: dict) -> dict:
     stype = source.get("type")
     if stype == "base64":
         media = source.get("media_type", "application/octet-stream")
-        return {
+        return _with_cache_control({
             "type": "image_url",
             "image_url": {"url": f"data:{media};base64,{source.get('data', '')}"},
-        }
+        }, block)
     if stype == "url":
-        return {"type": "image_url", "image_url": {"url": source.get("url", "")}}
+        return _with_cache_control(
+            {"type": "image_url", "image_url": {"url": source.get("url", "")}}, block,
+        )
     raise _invalid(f"Unsupported image source type: {stype!r}")
 
 
-def _split_tool_result_content(content) -> tuple[str, list[dict]]:
+def _split_tool_result_content(content, *, preserve_blocks: bool = False) -> tuple[str | list[dict], list[dict]]:
     """Split tool_result.content into (text, image parts).
 
-    tool_result.content is a string or a list of text/image blocks. An
-    OpenAI `role: "tool"` message carries a plain string, so the text is
-    flattened into it and any images are handed back for the caller to
-    attach to the user message that follows the tool results — a tool
-    returning a screenshot is the common case, and dropping it would
-    silently compute the answer without context the caller supplied.
+    Unmarked results retain the existing text flattening/image handoff to
+    the following user message. Marked results use LiteLLM's multipart
+    tool-message representation to keep their cache breakpoint in place.
     """
     if content is None:
         return "", []
@@ -138,6 +149,7 @@ def _split_tool_result_content(content) -> tuple[str, list[dict]]:
     if not isinstance(content, list):
         return str(content), []
     texts: list[str] = []
+    parts: list[dict] = []
     images: list[dict] = []
     for b in content:
         if not isinstance(b, dict):
@@ -146,8 +158,16 @@ def _split_tool_result_content(content) -> tuple[str, list[dict]]:
             text = require_text(b.get("text"), field="tool_result.content[].text")
             if text:
                 texts.append(text)
+                parts.append(_with_cache_control({"type": "text", "text": text}, b))
         elif b.get("type") == "image":
-            images.append(_image_part(b))
+            image = _image_part(b)
+            images.append(image)
+            parts.append(image)
+    if preserve_blocks:
+        # LiteLLM supports multipart tool messages. Keep a marked result's
+        # boundaries and images inside that result, so its breakpoint still
+        # ends at the content the caller selected.
+        return parts, []
     return "\n\n".join(texts), images
 
 
@@ -155,31 +175,33 @@ _DROPPED_BLOCK_TYPES = {"thinking", "redacted_thinking"}
 
 
 def _translate_assistant_message(blocks: list[dict]) -> dict:
-    texts: list[str] = []
+    parts: list[dict] = []
     tool_calls: list[dict] = []
     for block in blocks:
         btype = block.get("type")
         if btype == "text":
-            texts.append(require_text(block.get("text"), field="messages[].content[].text"))
+            text = require_text(block.get("text"), field="messages[].content[].text")
+            parts.append(_with_cache_control({"type": "text", "text": text}, block))
         elif btype == "tool_use":
             name = block.get("name")
             if not isinstance(name, str) or not name:
                 # The upstream rejects an empty function name with a 400
                 # the engine would report as a retryable 503 — fail here.
                 raise _invalid("tool_use block requires a non-empty string 'name'")
-            tool_calls.append({
+            tool_calls.append(_with_cache_control({
                 "id": block.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
                 "type": "function",
                 "function": {
                     "name": name,
                     "arguments": json.dumps(block.get("input") or {}),
                 },
-            })
+            }, block))
         elif btype in _DROPPED_BLOCK_TYPES:
             continue
         else:
             raise _invalid(f"Unsupported content block type in assistant message: {btype!r}")
-    out: dict = {"role": "assistant", "content": "".join(texts) or None}
+    content = parts if any("cache_control" in part for part in parts) else "".join(p["text"] for p in parts)
+    out: dict = {"role": "assistant", "content": content or None}
     if tool_calls:
         out["tool_calls"] = tool_calls
     if out["content"] is None and not tool_calls:
@@ -195,9 +217,9 @@ def _translate_assistant_message(blocks: list[dict]) -> dict:
 def _translate_user_message(blocks: list[dict]) -> list[dict]:
     """One Anthropic user message may carry tool_result blocks plus regular
     content. OpenAI needs the tool results as their own `role: "tool"`
-    messages (first), then the remaining content as a user message —
-    which is also where images returned by a tool end up, since an OpenAI
-    tool message can only hold text."""
+    messages (first), then the remaining content as a user message.
+    Unmarked tool images retain the existing handoff to that user message;
+    marked results stay multipart until LiteLLM's provider conversion."""
     tool_messages: list[dict] = []
     parts: list[dict] = []
     for block in blocks:
@@ -209,12 +231,18 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
                 # the upstream as a malformed tool message and comes back
                 # as a retryable 503 for a request that can never succeed.
                 raise _invalid("tool_result block requires a non-empty string 'tool_use_id'")
-            text, images = _split_tool_result_content(block.get("content"))
-            tool_messages.append({
+            content = block.get("content")
+            marked = block.get("cache_control") is not None or (
+                isinstance(content, list) and any(
+                    isinstance(part, dict) and part.get("cache_control") is not None for part in content
+                )
+            )
+            text, images = _split_tool_result_content(content, preserve_blocks=marked)
+            tool_messages.append(_with_cache_control({
                 "role": "tool",
                 "tool_call_id": tool_use_id,
                 "content": text,
-            })
+            }, block))
             parts.extend(images)
         elif btype == "text":
             text = require_text(block.get("text"), field="messages[].content[].text")
@@ -224,7 +252,7 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
                 # as a BadRequest — reported back as a retryable 5xx for a
                 # request that can never succeed. A turn left with no
                 # content at all is rejected below, as `content: []` is.
-                parts.append({"type": "text", "text": text})
+                parts.append(_with_cache_control({"type": "text", "text": text}, block))
         elif btype == "image":
             parts.append(_image_part(block))
         elif btype in _DROPPED_BLOCK_TYPES:
@@ -236,7 +264,7 @@ def _translate_user_message(blocks: list[dict]) -> list[dict]:
 
     out = tool_messages
     if parts:
-        if len(parts) == 1 and parts[0]["type"] == "text":
+        if len(parts) == 1 and parts[0]["type"] == "text" and "cache_control" not in parts[0]:
             out.append({"role": "user", "content": parts[0]["text"]})
         else:
             out.append({"role": "user", "content": parts})
@@ -257,7 +285,7 @@ def _translate_message(m: AnthropicMessage) -> list[dict]:
         # Code 2.x internal requests) also put role:"system" entries inside
         # messages[]. OpenAI's format allows system messages there, so
         # translate instead of rejecting — a 400 here breaks Claude Code.
-        text = m.content if isinstance(m.content, str) else _system_text(m.content)
+        text = _system_content(m.content)
         return [{"role": "system", "content": text}]
     if m.role not in ("user", "assistant"):
         raise _invalid(f"Unsupported message role: {m.role!r}")
@@ -304,7 +332,7 @@ def _translate_tool(tool: dict) -> dict:
     }
     if description:
         fn["description"] = description
-    return {"type": "function", "function": fn}
+    return _with_cache_control({"type": "function", "function": fn}, tool)
 
 
 def _translate_tool_choice(tc: dict) -> str | dict:
@@ -323,12 +351,58 @@ def _translate_tool_choice(tc: dict) -> str | dict:
     raise _invalid(f"Unsupported tool_choice type: {tctype!r}")
 
 
+def _apply_automatic_cache_control(out: dict, policy: dict | None) -> None:
+    """Lower automatic policy to its documented last-cacheable-block marker.
+
+    https://platform.claude.com/docs/en/build-with-claude/prompt-caching#automatic-caching
+    Block markers are portable through LiteLLM; a raw Anthropic-only top-level
+    extra would also reach unrelated providers selected by the shared router.
+    """
+    if policy is None:
+        return
+    candidates = list(out.get("tools") or [])
+    for message in out["messages"]:
+        if message["role"] == "tool":
+            candidates.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            content = [{"type": "text", "text": content}]
+            message["content"] = content
+        if isinstance(content, list):
+            candidates.extend(
+                b for b in content if b.get("type") in {"text", "image_url"}
+                and (b.get("type") != "text" or b.get("text"))
+            )
+        # LiteLLM renders assistant text before its tool_calls, matching the
+        # established translation. Select the last rendered block, not the
+        # last native block before that grouping.
+        candidates.extend(message.get("tool_calls") or [])
+    if not candidates:
+        return
+    last = candidates[-1]
+    existing = last.get("cache_control")
+    if existing is not None:
+        if not isinstance(existing, dict):
+            raise _invalid("cache_control must be an object")
+        if existing.get("ttl", "5m") != policy.get("ttl", "5m"):
+            raise _invalid("automatic cache_control conflicts with the last block's TTL")
+        return
+    cache_blocks = list(candidates)
+    for block in candidates:
+        if block.get("role") == "tool" and isinstance(block.get("content"), list):
+            cache_blocks.extend(block["content"])
+    if sum(b.get("cache_control") is not None for b in cache_blocks) >= 4:
+        raise _invalid("automatic cache_control requires a free cache breakpoint slot")
+    last["cache_control"] = dict(policy)
+
+
 def to_openai_request(req: AnthropicMessagesRequest) -> dict:
     """Translate a validated Anthropic Messages request into the internal
     OpenAI chat.completions dict consumed by the chat engine."""
     messages: list[dict] = []
     if req.system is not None:
-        text = _system_text(req.system)
+        text = _system_content(req.system)
         if text:
             messages.append({"role": "system", "content": text})
     for m in req.messages:
@@ -361,6 +435,7 @@ def to_openai_request(req: AnthropicMessagesRequest) -> dict:
         logger.warning("anthropic_thinking_param_dropped")
     if req.top_k is not None:
         logger.info("anthropic_top_k_dropped")
+    _apply_automatic_cache_control(out, req.cache_control)
     return out
 
 
