@@ -511,16 +511,17 @@ async def _providers(db: AsyncSession, workspace_id: str, recent: list) -> list[
     if get_settings().orcarouter_api_key:
         configured.setdefault(HOSTED_PROVIDER_NAME, "env")
 
-    seen = {r.provider for r in recent}
+    # Only providers the user has now: request logs also name deleted ones
+    # and "unknown" (failures no provider was attributed to).
     out = []
-    for provider in sorted(set(configured) | seen):
+    for provider in sorted(configured):
         rows = [r for r in recent if r.provider == provider]
         if not rows:
             state = "idle"
         else:
             failed = sum(1 for r in rows if r.status_code >= 400)
             state = "degraded" if failed * 2 >= len(rows) else "healthy"
-        out.append({"provider": provider, "source": configured.get(provider, "unknown"), "state": state})
+        out.append({"provider": provider, "source": configured[provider], "state": state})
     return out
 
 
