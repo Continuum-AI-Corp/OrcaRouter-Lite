@@ -289,7 +289,7 @@ Oltre 100 modelli di chat vengono caricati all'avvio dal [database di prezzi man
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (pubblicata a partire dalla prossima release taggata; verificala con i comandi in [SECURITY.md](./SECURITY.md)) |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): usa [`render.yaml`](./render.yaml), genera i secret, tiene il database su un disco |
 | Fly.io | `fly launch --no-deploy`, poi i passaggi per il volume e `fly secrets set` in cima a [`fly.toml`](./fly.toml), poi `fly deploy` |
-| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, poi `railway up` (build con [`railway.json`](./railway.json)) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>Oppure esegui il deploy con un clic tramite un template della community che configura lo stesso volume e le stesse variabili.<br>`railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, poi `railway up` (build con [`railway.json`](./railway.json)) |
 
 ## Cosa c'è nella scatola
 

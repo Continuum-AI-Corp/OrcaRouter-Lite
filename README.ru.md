@@ -279,7 +279,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (публикуется начиная со следующего релиза с тегом; проверить образ можно командами из [SECURITY.md](./SECURITY.md)) |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): использует [`render.yaml`](./render.yaml), генерирует секреты, хранит базу данных на диске |
 | Fly.io | `fly launch --no-deploy`, затем шаги с volume и `fly secrets set` из начала [`fly.toml`](./fly.toml), затем `fly deploy` |
-| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, затем `railway up` (сборка по [`railway.json`](./railway.json)) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>Или разверните в один клик с помощью шаблона сообщества, который настраивает тот же том и те же переменные.<br>`railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, затем `railway up` (сборка по [`railway.json`](./railway.json)) |
 
 ## Что в коробке
 

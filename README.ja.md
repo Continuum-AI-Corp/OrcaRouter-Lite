@@ -288,7 +288,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>`（次のタグ付きリリースから公開。[SECURITY.md](./SECURITY.md) のコマンドで検証できます） |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) を使用し、シークレットを生成、データベースはディスク上に保持 |
 | Fly.io | `fly launch --no-deploy`、次に [`fly.toml`](./fly.toml) 冒頭にあるボリュームと `fly secrets set` の手順、最後に `fly deploy` |
-| Railway | `railway init`、`railway volume add --mount-path /data`、`railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`、最後に `railway up`（[`railway.json`](./railway.json) でビルド） |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>または、同じボリュームと変数を設定するコミュニティテンプレートでワンクリックでデプロイできます。<br>`railway init`、`railway volume add --mount-path /data`、`railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`、最後に `railway up`（[`railway.json`](./railway.json) でビルド） |
 
 ## 箱の中身は何ですか
 

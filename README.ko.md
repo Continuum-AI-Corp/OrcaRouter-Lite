@@ -288,7 +288,7 @@ client.models.generate_content(model="auto", contents="Hello!")
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (다음 태그 릴리스부터 게시. [SECURITY.md](./SECURITY.md)의 명령으로 검증 가능) |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) 사용, 시크릿 생성, 데이터베이스는 디스크에 보관 |
 | Fly.io | `fly launch --no-deploy` 후 [`fly.toml`](./fly.toml) 맨 위에 있는 볼륨 및 `fly secrets set` 단계를 거쳐 `fly deploy` |
-| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db` 후 `railway up`([`railway.json`](./railway.json)으로 빌드) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>또는 동일한 볼륨과 변수를 설정하는 커뮤니티 템플릿으로 한 번에 배포할 수 있습니다.<br>`railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db` 후 `railway up`([`railway.json`](./railway.json)으로 빌드) |
 
 ## 상자 안에 무엇이 들어있나요?
 

@@ -323,7 +323,7 @@ routing strategies, and the analytics dashboard all work identically. Guides:
 | Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (published from the next tagged release; verify it with the commands in [SECURITY.md](./SECURITY.md)) |
 | Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): uses [`render.yaml`](./render.yaml), generates the secrets, keeps the database on a disk |
 | Fly.io | `fly launch --no-deploy`, then the volume and `fly secrets set` steps at the top of [`fly.toml`](./fly.toml), then `fly deploy` |
-| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, then `railway up` (builds with [`railway.json`](./railway.json)) |
+| Railway | [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/orcarouter-lite)<br>Or deploy in one click with a community template that sets up the same volume and variables.<br>`railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, then `railway up` (builds with [`railway.json`](./railway.json)) |
 
 ## What's in the box
 
