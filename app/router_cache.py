@@ -100,11 +100,15 @@ def build_deployments(
             model_groups = [bare_id]
             if wire_id in HOSTED_MODEL_ALIASES:
                 model_groups.append(wire_id)
+            # LiteLLM strips a leading `<custom_llm_provider>/` (here "openai/")
+            # before sending, so OpenAI's own models need it twice to reach
+            # OrcaRouter as `openai/gpt-5.5` rather than an unserved bare id.
+            litellm_model = f"openai/{wire_id}" if provider == "openai" else wire_id
             for model_group in model_groups:
                 deployments.append(
                     ProviderDeployment(
                         model_name=model_group,
-                        litellm_model=wire_id,
+                        litellm_model=litellm_model,
                         api_key=hosted_key,
                         api_base=settings.orcarouter_base_url,
                         provider=HOSTED_PROVIDER_NAME,
