@@ -37,6 +37,7 @@ def cache_key(
     max_completion_tokens: int | None = None,
     stop: str | list[str] | None = None,
     tool_choice: str | dict | None = None,
+    parallel_tool_calls: bool | None = None,
     top_p: float | None = None,
     n: int | None = None,
     presence_penalty: float | None = None,
@@ -55,18 +56,17 @@ def cache_key(
     native surfaces pass stop/tool_choice through, so a narrower key is
     reachable in normal use.
 
-    The payload carries `"v": 2` so pre-v2 entries (six fields, omitted
-    temperature coerced to 0.0) can never match.
+    The payload carries `"v": 3` so older entries, including v2 entries
+    that ignored `parallel_tool_calls`, can never match.
 
     `user` is deliberately excluded: it is an abuse-monitoring hint that
     does not change the completion, and keying on it would fragment the
     cache per caller for no correctness gain.
     """
     payload = {
-        # v2: original key hashed only six fields, so e.g. max_tokens=16
-        # collided with max_tokens=4000. The version field keeps those
-        # entries from ever matching this key space.
-        "v": 2,
+        # v3: v2 ignored parallel_tool_calls, so a caller disabling
+        # parallel calls could receive a cached response with several.
+        "v": 3,
         "model": model,
         "messages": messages,
         # Keyed on the true wire value: an ABSENT temperature is not the
@@ -86,6 +86,9 @@ def cache_key(
         # cache for semantically identical requests.
         "stop": [stop] if isinstance(stop, str) else stop,
         "tool_choice": tool_choice,
+        # Preserve None versus False: omission uses the provider default,
+        # while False explicitly restricts the response to one tool call.
+        "parallel_tool_calls": parallel_tool_calls,
         "top_p": top_p,
         "n": n,
         # Both shift the logits before decoding, so they change the output

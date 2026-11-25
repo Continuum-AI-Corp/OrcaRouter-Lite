@@ -112,6 +112,68 @@ async def test_high_temperature_skips_cache(cached_client):
     assert calls["n"] == 2
 
 
+async def test_parallel_tool_call_settings_have_separate_cache_entries(cached_client):
+    """A warm parallel result must not replay when parallel calls are disabled."""
+    from app import router_cache
+
+    client, _ = cached_client
+    fake = await router_cache.get_router(None)
+
+    async def _tool_completion(**kwargs):
+        count = 1 if kwargs.get("parallel_tool_calls") is False else 2
+        return {
+            "id": "tools", "model": kwargs["model"],
+            "object": "chat.completion", "created": 0,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant", "content": None,
+                    "tool_calls": [
+                        {"id": f"call_{i}", "type": "function",
+                         "function": {"name": "lookup", "arguments": "{}"}}
+                        for i in range(count)
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "_orca_meta": {"provider": "openai", "latency_ms": 1},
+        }
+
+    fake.acompletion = AsyncMock(side_effect=_tool_completion)
+    base = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "Look up both cities"}],
+        "temperature": 0,
+        "tools": [{"type": "function", "function": {
+            "name": "lookup", "parameters": {"type": "object", "properties": {}},
+        }}],
+    }
+    for setting, expected_count in [(True, 2), (False, 1), (None, 2)]:
+        body = dict(base)
+        if setting is not None:
+            body["parallel_tool_calls"] = setting
+
+        miss = await client.post("/v1/chat/completions", json=body)
+        assert miss.status_code == 200
+        assert miss.headers["x-orca-cache"] == "MISS"
+        assert len(miss.json()["choices"][0]["message"]["tool_calls"]) == expected_count
+        forwarded = fake.acompletion.call_args.kwargs
+        if setting is None:
+            assert "parallel_tool_calls" not in forwarded
+        else:
+            assert forwarded["parallel_tool_calls"] is setting
+
+        upstream_calls = fake.acompletion.await_count
+        hit = await client.post("/v1/chat/completions", json=body)
+        assert hit.status_code == 200
+        assert hit.headers["x-orca-cache"] == "HIT"
+        assert hit.json() == miss.json()
+        assert fake.acompletion.await_count == upstream_calls
+
+    assert fake.acompletion.await_count == 3
+
+
 async def test_omitted_temperature_skips_cache(cached_client):
     """Omitted temperature is the provider default (1.0), not deterministic."""
     client, calls = cached_client
