@@ -17,6 +17,7 @@ False and every rule is a no-op.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -155,9 +156,19 @@ def twin(model: str, deployable: Iterable[str]) -> str | None:
     """The deployable spelling of `model` when it's deployed only under the
     other spelling (dots vs hyphens in the version: claude-sonnet-4-6 and
     claude-sonnet-4.6). None when there's no single such twin."""
+    deployable = list(deployable)
     key = model.replace(".", "-")
     hits = [d for d in deployable if d != model and d.replace(".", "-") == key]
+    if not hits and _DATED.search(model):
+        # A dated release id (claude-haiku-4-5-20251001, which Claude Code uses
+        # for background work) is the same model as the undated one.
+        undated = _DATED.sub("", key)
+        hits = [d for d in deployable if d.replace(".", "-") == undated]
     return hits[0] if len(hits) == 1 else None
+
+
+# Anthropic's release-date suffix: -YYYYMMDD at the end of a model id.
+_DATED = re.compile(r"-20\d{6}$")
 
 
 def is_paid_hosted(model: str) -> bool:
