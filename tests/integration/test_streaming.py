@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -531,6 +532,45 @@ async def test_non_streaming_still_works_unchanged(stream_client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
     assert r.json()["choices"][0]["message"]["content"] == "Hello world"
+
+
+async def test_raw_stream_logs_elapsed_latency_without_adapter_metadata(stream_client, monkeypatch):
+    """Ordinary LiteLLM chunks omit metadata; their latency remains measured."""
+    from app.routes import chat
+
+    client, fake = stream_client
+    clock = [100.0]
+    monkeypatch.setattr(chat, "time", SimpleNamespace(
+        perf_counter=lambda: clock[0], time=time.time,
+    ))
+
+    async def _raw_stream():
+        clock[0] += 0.5
+        yield {
+            "id": "raw", "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini", "created": 0,
+            "choices": [{"index": 0, "delta": {"content": "Hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    fake.acompletion.return_value = _raw_stream()
+    fake.acompletion.side_effect = None
+    response = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert "data: [DONE]" in response.text
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        row = (await s.execute(select(RequestLog))).scalar_one()
+    assert row.is_streaming is True
+    assert row.latency_ms == 500
 
 
 async def test_streaming_auto_injects_include_usage_when_client_omits_it(stream_client):

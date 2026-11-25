@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -304,3 +305,83 @@ async def test_cache_hit_does_not_double_log(cached_client):
     assert providers == ["cache", "openai"]
     cache_row = next(r for r in rows if r.provider == "cache")
     assert cache_row.cost_microcents == 0  # cached requests cost nothing
+
+
+async def test_cache_hit_logs_elapsed_lookup_latency(cached_client, monkeypatch):
+    """Cache service time must not be replaced with fabricated zero metadata."""
+    from app import prompt_cache
+    from app.routes import chat
+
+    client, calls = cached_client
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}], "temperature": 0}
+    miss = await client.post("/v1/chat/completions", json=body)
+    assert miss.status_code == 200
+    assert miss.headers["x-orca-cache"] == "MISS"
+
+    clock = [100.0]
+    monkeypatch.setattr(chat, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+    backend = prompt_cache.get_backend()
+    get = backend.get
+
+    async def _timed_get(key):
+        cached = await get(key)
+        clock[0] += 0.125
+        return cached
+
+    monkeypatch.setattr(backend, "get", _timed_get)
+    hit = await client.post("/v1/chat/completions", json=body)
+    assert hit.status_code == 200
+    assert hit.headers["x-orca-cache"] == "HIT"
+    assert hit.json() == miss.json()
+    assert calls["n"] == 1
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        rows = (await s.execute(select(RequestLog))).scalars().all()
+    assert len(rows) == 2
+    cache_row = next(row for row in rows if row.provider == "cache")
+    assert cache_row.latency_ms == 125
+    assert cache_row.cost_microcents == 0
+    assert cache_row.status_code == 200
+
+
+@pytest.mark.parametrize("adapter_latency", [0, 37])
+async def test_adapter_latency_takes_precedence_over_elapsed_time(
+    cached_client, monkeypatch, adapter_latency,
+):
+    """A real adapter's explicit zero or nonzero latency stays authoritative."""
+    from app import router_cache
+    from app.routes import chat
+
+    client, _ = cached_client
+    fake = await router_cache.get_router(None)
+    complete = fake.acompletion.side_effect
+    clock = [100.0]
+    monkeypatch.setattr(chat, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+
+    async def _timed_completion(**kwargs):
+        response = await complete(**kwargs)
+        clock[0] += 0.5
+        response["_orca_meta"]["latency_ms"] = adapter_latency
+        return response
+
+    fake.acompletion.side_effect = _timed_completion
+    response = await client.post(
+        "/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+
+    from sqlalchemy import select
+
+    from packages.db import session as session_mod
+    from packages.db.models.request_log import RequestLog
+
+    async with session_mod._session_factory() as s:
+        row = (await s.execute(select(RequestLog))).scalar_one()
+    assert row.provider == "openai"
+    assert row.latency_ms == adapter_latency
