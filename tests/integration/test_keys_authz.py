@@ -217,3 +217,13 @@ async def test_revoke_rejects_other_workspaces_key(keys_app, seeded_keys, db_ses
         await db_session.execute(select(ApiKey).where(ApiKey.id == foreign_id))
     ).scalar_one()
     assert row.is_active  # untouched
+
+
+@pytest.mark.parametrize("name", ["desktop-app", "agent:claude-code", "Agent:codex", " desktop-app "])
+async def test_reserved_desktop_key_names_cannot_be_minted(keys_app, seeded_keys, name):
+    # The desktop API trusts the key named desktop-app, and agent:<id> keys
+    # are the ones limited to model calls; neither name may be created here.
+    root, _, _ = seeded_keys
+    async with await _client(keys_app) as c:
+        r = await c.post("/v1/keys", json={"name": name}, headers={"Authorization": f"Bearer {root}"})
+    assert r.status_code == 422

@@ -227,12 +227,11 @@
             <div class="hosted-card-head">
               <div>
                 <h2 class="card-title">
-                  Hosted fallback
+                  <span data-i18n="hosted.title">OrcaRouter gateway</span>
                   <span class="pill" id="hosted-status-pill">Not configured</span>
                 </h2>
-                <p class="card-sub" id="hosted-card-sub">
-                  One key, every model. Standard fallback for any model you don't have a local key for.
-                  Free <strong>$5</strong> trial credit on sign-up — no credit card.
+                <p class="card-sub" id="hosted-card-sub" data-i18n="hosted.sub">
+                  One key for every model, with failover between providers. Free models to start; paid models are billed per request.
                 </p>
               </div>
             </div>
@@ -247,14 +246,14 @@
                       Get your key on orcarouter.ai
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                     </a>
-                    <span class="hosted-step-hint">Opens the token console in a new tab &mdash; copy your <code>sk-orca-*</code> key there.</span>
-                    <a class="hosted-step-link" id="hosted-register-link" href="#" target="_blank" rel="noreferrer">No account yet? Sign up for free $5 credit</a>
+                    <span class="hosted-step-hint">Opens orcarouter.ai's key page in a new tab. Copy your <code>sk-orca-…</code> key there.</span>
+                    <a class="hosted-step-link" id="hosted-register-link" href="#" target="_blank" rel="noreferrer" data-i18n="hosted.register">No account yet? Sign up and start on free models</a>
                   </div>
                 </li>
                 <li class="hosted-step-row" id="hosted-step-2">
                   <span class="hosted-step-num">2</span>
                   <div class="hosted-step-body">
-                    <span class="hosted-step-hint">Come back here, paste the key and activate.</span>
+                    <span class="hosted-step-hint">Come back here and paste it. Requests start on free models.</span>
                     <form id="hosted-key-form" class="inline-form hosted-paste">
                       <label class="field flex-grow">
                         <span class="field-label">Hosted API key</span>
@@ -266,14 +265,14 @@
                       </button>
                       <button type="submit" class="btn btn-primary">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                        Activate fallback
+                        Use this key
                       </button>
                     </form>
                   </div>
                 </li>
               </ol>
               <div id="unreachable-list" class="unreachable-list" hidden>
-                <p class="hosted-meta">Models you can't reach today — hosted unlocks all of them:</p>
+                <p class="hosted-meta">Models your keys can't reach today. One OrcaRouter key reaches all of them:</p>
                 <div class="unreachable-grid" id="unreachable-grid"></div>
               </div>
             </div>
@@ -281,8 +280,9 @@
             <!-- Configured state -->
             <div class="hosted-active" id="hosted-active" hidden>
               <p class="hosted-meta" id="hosted-active-meta">Active — every catalog model is reachable.</p>
+              <p class="hosted-meta" id="hosted-ready-desktop" data-i18n="hosted.ready_desktop" hidden>OrcaRouter's free models are ready; paid models only when you turn them on in Orca.</p>
               <div class="hosted-savings" id="hosted-savings"></div>
-              <button class="btn btn-ghost btn-sm" id="hosted-remove-btn" data-tooltip="Disable hosted fallback">Remove key</button>
+              <button class="btn btn-ghost btn-sm" id="hosted-remove-btn" data-tooltip="Remove the OrcaRouter key">Remove key</button>
             </div>
           </article>
 
@@ -305,11 +305,11 @@
             <div class="hosted-card-head">
               <div>
                 <h2 class="card-title">
-                  Hosted fallback
+                  <span data-i18n="hosted.title">OrcaRouter gateway</span>
                   <span class="pill" id="providers-hosted-pill">Not configured</span>
                 </h2>
-                <p class="card-sub">
-                  Cover the long tail without per-provider sign-ups. Free <strong>$5</strong> credit, billed at cost after.
+                <p class="card-sub" data-i18n="hosted.providers_sub">
+                  Every model without per-provider sign-ups. Free models to start; paid models are billed per request.
                 </p>
               </div>
               <a class="btn btn-primary" id="providers-hosted-signup" href="#" target="_blank" rel="noreferrer">
@@ -340,16 +340,9 @@
             <form id="provider-form" class="inline-form">
               <label class="field flex-grow-0">
                 <span class="field-label">Provider</span>
+                <!-- Filled from GET /v1/providers/supported: the one provider list. -->
                 <select id="provider-name">
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="google">Google</option>
-                  <option value="xai">xAI (Grok)</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="groq">Groq</option>
-                  <option value="together">Together</option>
-                  <option value="fireworks">Fireworks</option>
-                  <option value="orcarouter">OrcaRouter (hosted upstream)</option>
+                  <option value="">Loading…</option>
                 </select>
               </label>
               <label class="field flex-grow">
@@ -613,10 +606,15 @@
               </div>
             </header>
             <div class="setup-steps">
-              <ol>
+              <ol data-mode="server">
                 <li>Sign up free at <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">artificialanalysis.ai</a> and generate an API key (free tier: 1,000 req/day, plenty for 1h-cached usage).</li>
                 <li>Add it to your <code>.env</code> as <code>ARTIFICIAL_ANALYSIS_API_KEY=...</code> and restart.</li>
                 <li>Reload this page — scores will appear automatically.</li>
+              </ol>
+              <ol data-mode="desktop" hidden>
+                <li>Sign up free at <a href="https://artificialanalysis.ai" target="_blank" rel="noopener">artificialanalysis.ai</a> and create an API key. The free tier is plenty; scores refresh hourly.</li>
+                <li>Click the Orca icon in your menu bar, open <strong>Settings</strong> and paste the key as the Artificial Analysis key. No restart needed.</li>
+                <li>Reload this page. The scores appear here.</li>
               </ol>
               <p class="callout-foot">
                 Without a key, <code>quality</code> falls back to the legacy cost-based behavior. <code>cheapest</code> / <code>balanced</code> / <code>fastest</code> are unaffected. You can still set <strong>manual overrides</strong> on individual models in the table below — those work without an AA key and take precedence when present.

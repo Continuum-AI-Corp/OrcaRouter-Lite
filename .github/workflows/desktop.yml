@@ -1,0 +1,395 @@
+name: desktop
+
+# The Orca menu-bar app: tests on every change, installers on tags.
+#
+#   test     node --test (view logic) + cargo test (tray/notification rules)
+#   bundle   on pull requests, v* tags and manual runs: freeze the engine with
+#            PyInstaller, then `tauri build` → .dmg (macOS), .deb/.AppImage
+#            (Linux), .msi/.exe (Windows). Pull requests get unsigned
+#            artifacts; tags attach signed installers to the GitHub release.
+#
+# macOS signing and notarisation run only when the APPLE_* secrets exist;
+# without them the .dmg is built unsigned (Gatekeeper will warn on first open).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "desktop/**"
+      - "app/**"
+      - "packages/**"
+      - "requirements.lock"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "app/routes/desktop.py"
+      - "app/orca_cli.py"
+      - "packages/desktop/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes its installer builds.
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: desktop tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: view logic (node --test)
+        working-directory: desktop
+        run: npm test
+      - name: system libraries for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: dev sidecar stand-in (tauri-build checks externalBin exists)
+        run: |
+          triple=$(rustc -vV | sed -n 's/host: //p')
+          mkdir -p desktop/src-tauri/binaries
+          printf '#!/bin/sh\nexec orca "$@"\n' > "desktop/src-tauri/binaries/orca-engine-$triple"
+          chmod +x "desktop/src-tauri/binaries/orca-engine-$triple"
+      - name: cargo test
+        working-directory: desktop/src-tauri
+        run: cargo test --lib
+
+  bundle:
+    name: installer (${{ matrix.name }})
+    needs: test
+    # Tags build release installers; pull requests build the same installers
+    # unsigned, as downloadable artifacts, so every platform is proven before
+    # a release. Nothing is published from a pull request.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS Apple silicon, os: macos-15 }
+          - { name: macOS Intel, os: macos-15-intel }
+          - { name: Linux, os: ubuntu-22.04 }
+          - { name: Windows, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: system libraries for Tauri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      # cryptography ships no Intel macOS wheels from 50.x on, so pip builds it
+      # from the (hash-locked) source here. Link OpenSSL statically: a
+      # dynamically linked build expects a newer libssl than the one
+      # PyInstaller bundles, and the frozen engine fails to import.
+      - name: static OpenSSL for the Intel macOS source build
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+      - name: install the engine from the hash-locked lockfile
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+          if [ "$RUNNER_OS" = macOS ]; then
+            so=$(python -c "import cryptography.hazmat.bindings._rust as m; print(m.__file__)")
+            if otool -L "$so" | grep -E "libssl|libcrypto"; then
+              echo "::error::cryptography links a system OpenSSL; the frozen engine would not import it"
+              exit 1
+            fi
+          fi
+          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r desktop/engine/requirements-build.lock
+      - name: freeze the engine
+        run: python desktop/engine/build_engine.py
+      - name: smoke the frozen engine
+        shell: bash
+        run: |
+          bin=$(ls desktop/src-tauri/binaries/orca-engine-*)
+          export ORCA_HOME="$RUNNER_TEMP/orca-smoke"
+          "$bin" up --port 8791 &
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:8791/health && break; sleep 2; done
+          curl -sf http://127.0.0.1:8791/desktop/panel.html | grep -q "OrcaRouter Lite"
+          test -s "$ORCA_HOME/app.key"
+          kill %1 || true
+      # The shipped binary, end to end: every agent connects, each speaks its
+      # own protocol through the engine to a fake provider, spend is
+      # attributed, the budget stop trips and disconnect restores every file.
+      # Pull requests only, so release builds install nothing extra.
+      - name: end to end against the frozen engine
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python -m pip install "pytest==9.1.1" "pytest-asyncio==1.5.0"
+          ORCA_E2E_ENGINE=$(ls "$PWD"/desktop/src-tauri/binaries/orca-engine-*) PYTHONPATH=. \
+            python -m pytest -p no:cacheprovider -q tests/e2e
+      # Signing secrets are exported only when they exist, so forks and
+      # unsigned builds don't hand Tauri empty values to try to use.
+      - name: macOS signing identity (when configured)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!v}" ]; then
+              { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
+            fi
+          done
+          # Without Apple's certificate, sign ad hoc: Apple silicon won't open
+          # an unsigned app at all ("damaged"), while an ad-hoc signed one gets
+          # the usual unidentified-developer prompt (right-click → Open).
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+      # In-app updates: a tagged release builds them in only with the real
+      # signing key (secret TAURI_SIGNING_PRIVATE_KEY, optional
+      # TAURI_SIGNING_PRIVATE_KEY_PASSWORD, and the public key in the
+      # repository variable TAURI_UPDATER_PUBKEY). Pull requests sign with a
+      # throwaway key so the whole updater path is built and checked; their
+      # artifacts are never published.
+      - name: updater signing key
+        working-directory: desktop
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          npm ci
+          pub="$RUNNER_TEMP/updater.pub"
+          if [ -n "$SIGNING_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
+            printf '%s' "$UPDATER_PUBKEY" > "$pub"
+            { echo "TAURI_SIGNING_PRIVATE_KEY<<__EOF__"; echo "$SIGNING_KEY"; echo "__EOF__"; } >> "$GITHUB_ENV"
+            { echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__EOF__"; echo "$SIGNING_KEY_PASSWORD"; echo "__EOF__"; } >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            npx tauri signer generate --ci -w "$RUNNER_TEMP/updater.key"
+            cp "$RUNNER_TEMP/updater.key.pub" "$pub"
+            echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/updater.key" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No updater signing key: this release links to downloads instead of installing updates in place."
+            exit 0
+          fi
+          python ../packaging/updater/updater_config.py --pubkey-file "$pub" --out "$RUNNER_TEMP/tauri.updater.conf.json"
+          echo "UPDATER_CONFIG=$RUNNER_TEMP/tauri.updater.conf.json" >> "$GITHUB_ENV"
+      # Windows code signing: the real certificate on tags when the secrets
+      # WINDOWS_CERTIFICATE (base64 .pfx) and WINDOWS_CERTIFICATE_PASSWORD are
+      # set; a throwaway self-signed one on pull requests, so the signing step
+      # is exercised. Tags without a certificate stay unsigned.
+      - name: Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+            Remove-Item $pfx
+          } elseif (-not $env:GITHUB_REF.StartsWith("refs/tags/v")) {
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=OrcaRouter Lite CI (untrusted)" -CertStoreLocation Cert:\CurrentUser\My
+          } else {
+            Write-Host "::notice::No Windows certificate: the installers are unsigned."
+            exit 0
+          }
+          $conf = Join-Path $env:RUNNER_TEMP "tauri.windows-sign.conf.json"
+          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } |
+            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $conf
+          "WINDOWS_SIGN_CONFIG=$conf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: tauri build
+        working-directory: desktop
+        shell: bash
+        run: |
+          args=()
+          if [ -n "$UPDATER_CONFIG" ]; then args+=(--config "$UPDATER_CONFIG"); fi
+          if [ -n "$WINDOWS_SIGN_CONFIG" ]; then args+=(--config "$WINDOWS_SIGN_CONFIG"); fi
+          npx tauri build "${args[@]}"
+      - name: check the macOS app is signed
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=$(ls -d "desktop/src-tauri/target/release/bundle/macos/"*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E "^(Identifier|Signature|Authority|TeamIdentifier)" || true
+      - name: check the Windows installers are signed
+        if: runner.os == 'Windows' && env.WINDOWS_SIGN_CONFIG != ''
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem desktop/src-tauri/target/release/bundle/msi/*.msi, desktop/src-tauri/target/release/bundle/nsis/*.exe
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if (-not $sig.SignerCertificate) { Write-Error "$($f.Name) is not signed"; exit 1 }
+            Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject) ($($sig.Status))"
+          }
+      - name: collect the signed updater files
+        if: env.UPDATER_CONFIG != ''
+        shell: bash
+        run: |
+          v=$(python -c "import json; print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
+          b=desktop/src-tauri/target/release/bundle
+          mkdir -p updater
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            macOS)
+              # Both Mac builds name it "OrcaRouter Lite.app.tar.gz"; add the
+              # version and architecture so they can share one release.
+              arch=$([ "$RUNNER_ARCH" = ARM64 ] && echo aarch64 || echo x64)
+              cp "$b/macos/OrcaRouter Lite.app.tar.gz" "updater/OrcaRouter Lite_${v}_${arch}.app.tar.gz"
+              cp "$b/macos/OrcaRouter Lite.app.tar.gz.sig" "updater/OrcaRouter Lite_${v}_${arch}.app.tar.gz.sig" ;;
+            Linux) cp "$b"/appimage/*.AppImage "$b"/appimage/*.AppImage.sig updater/ ;;
+            Windows) cp "$b"/nsis/*-setup.exe "$b"/nsis/*-setup.exe.sig updater/ ;;
+          esac
+          ls -la updater
+          test -n "$(ls updater/*.sig)" || { echo "::error::no updater signature was produced"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: env.UPDATER_CONFIG != ''
+        with:
+          name: orcarouter-lite-updater-${{ matrix.os }}
+          path: updater/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orcarouter-lite-${{ matrix.os }}
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+      - name: attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Four jobs race to create the release; losing that race is fine.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --generate-notes \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
+          shopt -s nullglob
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg \
+            desktop/src-tauri/target/release/bundle/deb/*.deb \
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage \
+            desktop/src-tauri/target/release/bundle/msi/*.msi \
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+  updater-manifest:
+    name: updater manifest
+    needs: bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orcarouter-lite-updater-*
+          path: updater
+          merge-multiple: true
+      - name: render latest.json for all four platforms
+        shell: bash
+        run: |
+          if [ -z "$(ls -A updater 2>/dev/null)" ]; then
+            echo "::notice::No signed updater files (no signing key for this release); skipping latest.json."
+            exit 0
+          fi
+          v=$(python -c "import json; print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
+          python packaging/updater/render_latest_json.py --version "$v" updater > latest.json
+          cat latest.json
+          python -c "import json,sys; p=json.load(open('latest.json'))['platforms']; sys.exit(0 if len(p)==4 else f'only {sorted(p)}')"
+          echo "HAVE_MANIFEST=1" >> "$GITHUB_ENV"
+      - name: attach latest.json and the updater files to the release
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAVE_MANIFEST == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" latest.json updater/* --clobber
+
+  homebrew-cask:
+    name: homebrew cask
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orcarouter-lite-macos-*
+          path: dmgs
+          merge-multiple: true
+      - name: render and attach the cask
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          arm=$(ls dmgs/*_"$v"_aarch64.dmg)
+          x64=$(ls dmgs/*_"$v"_x64.dmg)
+          python packaging/homebrew/render_cask.py --version "$v" --arm64 "$arm" --x64 "$x64" > orcarouter-lite.rb
+          cat orcarouter-lite.rb
+          gh release upload "$GITHUB_REF_NAME" orcarouter-lite.rb --clobber
+
+  winget-manifest:
+    name: winget manifest
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # Pinned by commit: this job can write to the release.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: orcarouter-lite-windows-2022
+          path: windows
+      - name: render and attach the winget manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          exe=$(ls windows/nsis/*_"$v"_x64-setup.exe 2>/dev/null || ls windows/*_"$v"_x64-setup.exe)
+          python packaging/winget/render_manifest.py --version "$v" --installer "$exe" --out winget
+          dir="winget/manifests/o/OrcaRouter/Lite/$v"
+          cat "$dir"/*.yaml
+          gh release upload "$GITHUB_REF_NAME" "$dir"/*.yaml --clobber

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-png"
+description = "Enables the copy_png command without any pre-configured scope."
+commands.allow = ["copy_png"]
+
+[[permission]]
+identifier = "deny-copy-png"
+description = "Denies the copy_png command without any pre-configured scope."
+commands.deny = ["copy_png"]

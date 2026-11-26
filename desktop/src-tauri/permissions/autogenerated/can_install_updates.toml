@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-can-install-updates"
+description = "Enables the can_install_updates command without any pre-configured scope."
+commands.allow = ["can_install_updates"]
+
+[[permission]]
+identifier = "deny-can-install-updates"
+description = "Denies the can_install_updates command without any pre-configured scope."
+commands.deny = ["can_install_updates"]

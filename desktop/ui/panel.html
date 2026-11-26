@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OrcaRouter Lite</title>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main class="panel" id="panel">
+    <header class="ph">
+      <span class="brand"><img src="assets/orca.png" alt=""><span>Orca</span><span class="router">Router</span><span class="lite">Lite</span></span>
+      <span class="pill muted starting" id="engine-pill"><span class="dot" aria-hidden="true"></span><span id="engine-state">Starting</span></span>
+    </header>
+
+    <div class="scroll" id="scroll">
+      <div id="home">
+        <section class="today" id="today" aria-labelledby="today-h">
+          <div class="today-top">
+            <h2 class="label" id="today-h" tabindex="-1">Spend today</h2>
+            <button class="btn btn-link btn-sm" id="budget-edit" type="button" aria-expanded="false" aria-controls="budget-collapse">Set daily budget</button>
+          </div>
+          <div class="today-row">
+            <span class="big" id="today-spend">—</span>
+            <span class="caption" id="budget-caption">No daily budget</span>
+          </div>
+          <p class="free-line" id="free-line" hidden></p>
+          <div class="bar" id="budget-bar" role="progressbar" aria-label="Daily alert used" aria-valuemin="0" aria-valuemax="100" hidden><i></i></div>
+          <div class="collapse" id="budget-collapse">
+            <div class="inner">
+              <form class="budget-form" id="budget-form" novalidate>
+                <label for="budget-input">Daily budget</label>
+                <div class="money-input"><span aria-hidden="true">$</span><input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="20" aria-describedby="budget-help"></div>
+                <span class="per">a day</span>
+                <button class="btn btn-primary btn-sm" type="submit">Save</button>
+                <button class="btn btn-ghost btn-sm" type="button" id="budget-clear">Remove</button>
+                <label class="check-line" for="budget-stop"><input type="checkbox" id="budget-stop"> Pause coding agents when it's reached</label>
+                <p class="fine" id="budget-help">Orca notifies you at 80% and 100%. Unless you tick the box, your agents keep working.</p>
+              </form>
+            </div>
+          </div>
+          <div class="paid" id="paid" hidden>
+            <p class="paid-line"><span id="paid-text"></span> <button class="btn btn-link btn-sm" id="paid-open" type="button" aria-expanded="false" aria-controls="paid-collapse">Use a paid model</button></p>
+            <div class="collapse" id="paid-collapse">
+              <div class="inner">
+                <div class="confirm-box">
+                  <p id="paid-confirm-text"></p>
+                  <div class="actions">
+                    <button class="btn btn-ghost btn-sm" id="paid-cancel" type="button">Not now</button>
+                    <button class="btn btn-primary btn-sm" id="paid-confirm" type="button">Use paid models</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="week"><span id="week-line">Last 7 days —</span> <button class="btn btn-link btn-sm" id="share-open" type="button" hidden>Share</button></p>
+          <p class="week-split" id="week-split" hidden></p>
+          <p class="rescued" id="rescued" hidden></p>
+          <p class="gateway" id="update" hidden><span id="update-text"></span> <button class="btn btn-link btn-sm" id="update-get" type="button">Download</button></p>
+        </section>
+
+        <section class="callout offer" id="offer" hidden aria-labelledby="offer-lead">
+          <p class="offer-head"><b id="offer-lead"></b> <span id="offer-rest"></span></p>
+          <p class="offer-body" id="offer-body"></p>
+          <div class="actions">
+            <button class="btn btn-ghost btn-sm" id="offer-dismiss" type="button">Not now</button>
+            <button class="btn btn-primary btn-sm" id="offer-add" type="button">Add OrcaRouter backup</button>
+          </div>
+          <div id="offer-confirm"></div>
+        </section>
+
+        <section class="callout credit" id="credit" hidden aria-labelledby="credit-lead">
+          <p><b id="credit-lead">OrcaRouter is out of credit.</b> <span id="credit-text"></span></p>
+          <div class="actions">
+            <button class="btn btn-primary btn-sm" id="credit-add" type="button">Add credit <span aria-hidden="true">↗</span></button>
+          </div>
+        </section>
+
+        <section class="callout" id="no-provider" hidden>
+          <div>
+            <b>Add a provider to start routing</b>
+            <span>Requests need your own API key or an OrcaRouter key.</span>
+          </div>
+          <button class="btn btn-primary btn-sm" id="open-setup-cta" type="button">Set up</button>
+        </section>
+
+        <section class="block" aria-labelledby="agents-h">
+          <h2 class="label" id="agents-h" tabindex="-1">Coding agents</h2>
+          <section class="manual" id="manual" tabindex="-1" hidden aria-labelledby="manual-title">
+            <div class="manual-head"><b id="manual-title">Finish in Cursor</b><button class="btn btn-ghost btn-sm" id="manual-close" type="button">Done</button></div>
+            <p id="manual-note"></p>
+            <div class="copy-row"><span class="k">Base URL</span><code class="selectable" id="manual-url"></code><button class="btn btn-ghost btn-sm" data-copy="manual-url" type="button" aria-label="Copy base URL">Copy</button></div>
+            <div class="copy-row"><span class="k">API key</span><code class="selectable" id="manual-key"></code><button class="btn btn-ghost btn-sm" data-copy="manual-key" type="button" aria-label="Copy API key">Copy</button></div>
+            <p class="fine">This key is shown once. Disconnect to revoke it.</p>
+          </section>
+          <ul class="rows" id="agents"></ul>
+          <p class="missing" id="agents-missing" hidden></p>
+          <button class="btn btn-link quiet disconnect-all" id="disconnect-all" type="button" hidden>Disconnect all</button>
+        </section>
+
+        <section class="block" aria-labelledby="routing-h">
+          <h2 class="label" id="routing-h">Providers</h2>
+          <ul class="rows compact" id="providers"></ul>
+        </section>
+
+        <section class="block" id="local-block" aria-labelledby="local-h" hidden>
+          <div class="block-top">
+            <h2 class="label" id="local-h">On this computer</h2>
+            <button class="btn btn-link btn-sm" id="local-refresh" type="button">Refresh</button>
+          </div>
+          <p class="missing" id="local-none" hidden></p>
+          <div id="local-list"></div>
+        </section>
+
+        <section class="block" id="team-block" aria-labelledby="team-h">
+          <h2 class="label" id="team-h">Team</h2>
+          <div class="team-row">
+            <span class="ic tile" id="team-tile" aria-hidden="true"></span>
+            <span class="nm"><b id="team-title">Join your team's gateway</b><small id="team-detail"></small></span>
+            <span class="act" id="team-act">
+              <span class="pill ok" id="team-joined" hidden>Joined</span>
+              <button class="btn btn-ghost btn-sm" id="team-join" type="button">Join</button>
+            </span>
+          </div>
+          <p class="team-leave" id="team-leave-line" hidden><button class="btn btn-link btn-sm quiet" id="gateway-leave" type="button">Leave the gateway</button></p>
+          <div class="team-row">
+            <span class="nm"><b>This week's report</b><small>Spend by agent and model, Monday to Sunday</small></span>
+            <span class="act two">
+              <button class="btn btn-ghost btn-sm" id="report-copy" type="button" aria-label="Copy this week's report as Markdown">Copy</button>
+              <button class="btn btn-ghost btn-sm" id="report-csv" type="button" aria-label="Save this week's report as CSV">CSV</button>
+            </span>
+          </div>
+          <div class="team-row">
+            <span class="nm"><b>Share my setup</b><small>A link with your agents and budget, never keys</small></span>
+            <span class="act"><button class="btn btn-ghost btn-sm" id="share-setup" type="button">Copy link</button></span>
+          </div>
+          <p class="fine team-fine">No server to run? Everyone can route through OrcaRouter's hosted gateway with their own key. Teams that want one shared view run OrcaRouter Lite as a server; agents here join it with one link.</p>
+        </section>
+      </div>
+
+      <section class="view" id="view" hidden aria-labelledby="view-title">
+        <div class="view-head">
+          <button class="btn btn-ghost btn-sm back" id="view-back" type="button" aria-label="Back"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5L4 6l3.5 3.5"/></svg>Back</button>
+          <h2 class="view-title" id="view-title" tabindex="-1"></h2>
+        </div>
+        <div class="view-body" id="view-body"></div>
+      </section>
+    </div>
+
+    <footer class="pf">
+      <button class="btn btn-link" id="open-dashboard" type="button">Open dashboard</button>
+      <button class="btn btn-link" id="open-setup" type="button">Setup</button>
+      <button class="btn btn-link" id="open-settings" type="button">Settings</button>
+      <button class="btn btn-link quiet" id="quit" type="button" hidden>Quit</button>
+    </footer>
+  </main>
+
+  <div class="modal" id="link-modal" hidden>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="link-title" aria-describedby="link-detail">
+      <h2 class="label">A link wants to</h2>
+      <div class="sheet-row">
+        <span class="ic" id="link-tile" aria-hidden="true"></span>
+        <span class="nm"><b id="link-title"></b><small id="link-host" hidden></small></span>
+        <span class="pill warn" id="link-insecure" hidden>Not encrypted</span>
+      </div>
+      <p class="sheet-detail" id="link-detail"></p>
+      <p class="sheet-warn" id="link-insecure-text" hidden>Requests to this gateway, and the key, travel unencrypted. Join only on a network you trust.</p>
+      <form id="link-join" class="link-join" hidden novalidate>
+        <label for="link-key">Team key</label>
+        <input id="link-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste the key" aria-describedby="link-key-help">
+        <p class="fine" id="link-key-help">Paste the key your platform team gave you. Links never carry keys.</p>
+      </form>
+      <div class="actions">
+        <button class="btn btn-ghost btn-sm" id="link-cancel" type="button">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="link-confirm" type="button">Connect</button>
+      </div>
+    </section>
+  </div>
+
+  <section class="offline" id="offline" hidden aria-labelledby="offline-title">
+    <img src="assets/orca.png" alt="">
+    <h1 id="offline-title">Orca isn't running</h1>
+    <p id="offline-detail">It may still be starting. Orca checks again every 15 seconds.</p>
+    <div class="offline-actions">
+      <button class="btn btn-ghost btn-sm" id="retry" type="button">Try again</button>
+      <button class="btn btn-link btn-sm quiet" id="offline-quit" type="button" hidden>Quit Orca</button>
+    </div>
+  </section>
+
+  <p class="sr-only" id="announce" aria-live="polite"></p>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

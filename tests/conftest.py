@@ -69,6 +69,36 @@ def _isolate_orcarouter_remote(request, monkeypatch):
     monkeypatch.setattr(orcarouter_models, "_fetch_remote", _no_network)
 
 
+@pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """The desktop engine checks GitHub for releases; never from tests.
+    Tests of the check itself use a mock transport or delete this variable."""
+    monkeypatch.setenv("ORCA_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_local_model_discovery(monkeypatch):
+    """The desktop engine probes Ollama / LM Studio / llama.cpp on this
+    machine; tests never do. Tests of discovery delete this variable."""
+    monkeypatch.setenv("ORCA_NO_LOCAL_MODELS", "1")
+    yield
+    try:
+        from app import benchmark_key
+        from packages.desktop import hosted_state, local_models
+
+        local_models.reset()
+        hosted_state.reset()
+        benchmark_key.reset()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_system_keychain(monkeypatch):
+    """Tests never read or write the machine's real keychain."""
+    monkeypatch.setenv("ORCA_KEYCHAIN", "0")
+
+
 @pytest.fixture
 def isolated_env(monkeypatch) -> Generator[None, None, None]:
     """Strip every ORCA_*/OPENAI_*/ANTHROPIC_*/etc env var before a test.

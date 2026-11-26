@@ -147,3 +147,19 @@ async def ensure_budget_columns(engine) -> None:
             await _apply_ddl(
                 conn, "ALTER TABLE api_keys ALTER COLUMN budget_limit_cents TYPE BIGINT"
             )
+
+
+async def ensure_route_note_column(engine) -> None:
+    """Add the nullable `requests_log.route_note` column to an upgraded database.
+
+    A plain nullable column with no default: old rows read as NULL ("nothing
+    to say about this request"), which is exactly right for traffic logged
+    before the engine recorded notes. Safe to run on every boot.
+    """
+    async with engine.begin() as conn:
+        cols = {
+            c["name"]
+            for c in await conn.run_sync(lambda sync: inspect(sync).get_columns("requests_log"))
+        }
+        if "route_note" not in cols:
+            await _apply_ddl(conn, "ALTER TABLE requests_log ADD COLUMN route_note VARCHAR(32)")

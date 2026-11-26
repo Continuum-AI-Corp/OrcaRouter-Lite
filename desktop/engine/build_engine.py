@@ -1,0 +1,87 @@
+"""Build the `orca-engine` sidecar the desktop installer bundles.
+
+    pip install -e ".[desktop-build]"
+    python desktop/engine/build_engine.py
+
+Produces desktop/src-tauri/binaries/orca-engine-<rust target triple>[.exe],
+the name Tauri's `externalBin` expects. Run it on each platform you ship.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SEP = os.pathsep  # PyInstaller's --add-data separator
+
+
+def target_triple() -> str:
+    out = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True).stdout
+    return next(line.split(": ", 1)[1] for line in out.splitlines() if line.startswith("host: "))
+
+
+# LiteLLM ships its proxy server's web UI and Swagger assets as package data.
+# Lite never runs LiteLLM's proxy, so those stay out of the engine.
+LITELLM_DATA_EXCLUDES = ["proxy/_experimental/**", "proxy/swagger/**"]
+
+
+def litellm_data_args() -> list[str]:
+    from PyInstaller.utils.hooks import collect_data_files
+
+    args: list[str] = []
+    for src, dest in collect_data_files("litellm", excludes=LITELLM_DATA_EXCLUDES):
+        args += ["--add-data", f"{src}{SEP}{dest}"]
+    return args
+
+
+def main() -> int:
+    work = ROOT / "build" / "orca-engine"
+    dist = work / "dist"
+    args = [
+        "--onefile", "--noconfirm", "--clean",
+        "--name", "orca-engine",
+        "--distpath", str(dist), "--workpath", str(work / "build"), "--specpath", str(work),
+        "--paths", str(ROOT),
+        # Served pages: the dashboard and the desktop UI.
+        "--add-data", f"{ROOT / 'design'}{SEP}app/design",
+        "--add-data", f"{ROOT / 'desktop' / 'ui'}{SEP}app/desktop_ui",
+        # Loaded by name at runtime, so static analysis can't see them:
+        # uvicorn imports the app, SQLAlchemy imports its async SQLite driver,
+        # passlib imports its hash handlers.
+        "--hidden-import", "app.main",
+        "--hidden-import", "aiosqlite",
+        "--collect-submodules", "sqlalchemy.dialects.sqlite",
+        "--collect-submodules", "passlib.handlers",
+        "--collect-submodules", "app",
+        "--collect-submodules", "packages",
+        "--collect-submodules", "uvicorn",
+        "--collect-submodules", "litellm",
+        "--collect-submodules", "tiktoken_ext",
+        "--copy-metadata", "orcarouter-lite",
+        # keyring finds its OS backends through entry points.
+        "--copy-metadata", "keyring",
+        "--collect-submodules", "keyring.backends",
+        *litellm_data_args(),
+        str(ROOT / "desktop" / "engine" / "orca_engine.py"),
+    ]
+    # In-process rather than a subprocess: one --add-data per LiteLLM data file
+    # overflows Windows' 32,767-character command-line limit.
+    import PyInstaller.__main__
+
+    os.chdir(ROOT)
+    PyInstaller.__main__.run(args)
+    exe = ".exe" if os.name == "nt" else ""
+    out = ROOT / "desktop" / "src-tauri" / "binaries" / f"orca-engine-{target_triple()}{exe}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(dist / f"orca-engine{exe}", out)
+    # ASCII only: Windows consoles default to cp1252.
+    print(f"built {out} ({out.stat().st_size // (1024 * 1024)} MB)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

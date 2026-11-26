@@ -12,7 +12,7 @@ of unrelated modules don't need it).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from math import isfinite
 
@@ -34,6 +34,26 @@ _PROVIDER_BY_LITELLM_KEY: dict[str, tuple[str, str]] = {
     "perplexity": ("perplexity", "perplexity/"),
     "xai": ("xai", "xai/"),
 }
+
+# Providers added for own keys in the desktop app (P1). They resell models
+# the providers above already list (DashScope serves DeepSeek and GLM,
+# OpenRouter serves everyone), so they're read after them and never take a
+# model id away from its original vendor: the id keeps that vendor in
+# CATALOG, and the reseller's key still deploys it (see `_RESOLD`).
+# Order matters among themselves for the same reason: vendors before
+# aggregators.
+_RESELLER_BY_LITELLM_KEY: dict[str, tuple[str, str]] = {
+    "moonshot": ("moonshot", "moonshot/"),
+    "zai": ("zai", "zai/"),
+    "minimax": ("minimax", "minimax/"),
+    "dashscope": ("qwen", "dashscope/"),
+    "openrouter": ("openrouter", "openrouter/"),
+}
+
+# Reseller entries whose id CATALOG already lists under another provider:
+# deployable with the reseller's key (PROVIDERS_TO_MODELS), invisible to
+# CATALOG / CATALOG_BY_ID so each id has one canonical record.
+_RESOLD: list["CatalogModel"] = []
 
 # Models where litellm doesn't tag mode but we know they're chat-capable.
 _FORCE_INCLUDE = {"o1", "o1-mini", "o3", "o3-mini"}
@@ -99,6 +119,38 @@ def _strip_prefix(litellm_id: str) -> str:
     return litellm_id.split("/", 1)[1] if "/" in litellm_id else litellm_id
 
 
+def _catalog_entry(raw_id: str, meta: dict, provider_id: str, prefix: str) -> CatalogModel | None:
+    """One litellm `model_cost` row as a CatalogModel, or None to skip it.
+
+    Skips non-chat modes and models the upstream provider has already retired
+    per LiteLLM's metadata. Models LiteLLM hasn't marked yet but the provider
+    has killed are caught at runtime by the Router's cooldown after a 404.
+    """
+    if not _is_chat_model(meta) and _strip_prefix(raw_id) not in _FORCE_INCLUDE:
+        return None
+    if _is_obviously_dead(meta):
+        return None
+    dep_raw = meta.get("deprecation_date")
+    return CatalogModel(
+        id=_strip_prefix(raw_id),
+        provider=provider_id,
+        litellm_prefix=prefix,
+        supports_tools=bool(
+            meta.get("supports_function_calling")
+            or meta.get("supports_tool_choice")
+        ),
+        supports_vision=bool(meta.get("supports_vision")),
+        supports_json_mode=bool(
+            meta.get("supports_response_schema")
+            or meta.get("supports_json_schema")
+        ),
+        input_cost_per_token=float(meta.get("input_cost_per_token") or 0.0),
+        output_cost_per_token=float(meta.get("output_cost_per_token") or 0.0),
+        deprecation_date=dep_raw if isinstance(dep_raw, str) and dep_raw else None,
+        cache_read_input_token_cost=_cache_read_price(meta.get("cache_read_input_token_cost")),
+    )
+
+
 def _build_catalog_from_litellm() -> list[CatalogModel]:
     try:
         import litellm
@@ -112,47 +164,35 @@ def _build_catalog_from_litellm() -> list[CatalogModel]:
     for raw_id, meta in model_cost.items():
         if not isinstance(meta, dict):
             continue
-        litellm_provider = meta.get("litellm_provider", "")
-        mapped = _PROVIDER_BY_LITELLM_KEY.get(litellm_provider)
+        mapped = _PROVIDER_BY_LITELLM_KEY.get(meta.get("litellm_provider", ""))
         if mapped is None:
             continue
-        provider_id, prefix = mapped
-        if not _is_chat_model(meta) and _strip_prefix(raw_id) not in _FORCE_INCLUDE:
-            continue
-        # Drop models the upstream provider has already retired per LiteLLM's
-        # metadata. Models that LiteLLM hasn't marked yet but the provider has
-        # killed (e.g. early-deprecation cases) are caught at runtime by the
-        # Router's cooldown after the first 404.
-        if _is_obviously_dead(meta):
-            continue
-
-        canonical = _strip_prefix(raw_id)
+        entry = _catalog_entry(raw_id, meta, *mapped)
         # Some entries duplicate (e.g. "openai/gpt-4o" and "gpt-4o"); first wins.
-        if canonical in seen:
+        if entry is None or entry.id in seen:
             continue
-        seen.add(canonical)
+        seen.add(entry.id)
+        out.append(entry)
 
-        dep_raw = meta.get("deprecation_date")
-        out.append(
-            CatalogModel(
-                id=canonical,
-                provider=provider_id,
-                litellm_prefix=prefix,
-                supports_tools=bool(
-                    meta.get("supports_function_calling")
-                    or meta.get("supports_tool_choice")
-                ),
-                supports_vision=bool(meta.get("supports_vision")),
-                supports_json_mode=bool(
-                    meta.get("supports_response_schema")
-                    or meta.get("supports_json_schema")
-                ),
-                input_cost_per_token=float(meta.get("input_cost_per_token") or 0.0),
-                output_cost_per_token=float(meta.get("output_cost_per_token") or 0.0),
-                deprecation_date=dep_raw if isinstance(dep_raw, str) and dep_raw else None,
-                cache_read_input_token_cost=_cache_read_price(meta.get("cache_read_input_token_cost")),
-            )
-        )
+    # Resellers second: a model they share with its original vendor keeps
+    # that vendor in CATALOG, and the reseller's key still deploys it.
+    _RESOLD.clear()
+    resold_seen: set[tuple[str, str]] = set()
+    for raw_id, meta in model_cost.items():
+        if not isinstance(meta, dict):
+            continue
+        mapped = _RESELLER_BY_LITELLM_KEY.get(meta.get("litellm_provider", ""))
+        if mapped is None:
+            continue
+        entry = _catalog_entry(raw_id, meta, *mapped)
+        if entry is None or (entry.id, entry.provider) in resold_seen:
+            continue
+        resold_seen.add((entry.id, entry.provider))
+        if entry.id in seen:
+            _RESOLD.append(entry)
+            continue
+        seen.add(entry.id)
+        out.append(entry)
 
     # Make sure a few flagship aliases are always present even if the litellm
     # version pins a different canonical ID. This keeps demos / examples stable
@@ -230,7 +270,7 @@ _STATIC_FALLBACK: list[CatalogModel] = [
 CATALOG: list[CatalogModel] = _build_catalog_from_litellm()
 CATALOG_BY_ID: dict[str, CatalogModel] = {m.id: m for m in CATALOG}
 PROVIDERS_TO_MODELS: dict[str, list[CatalogModel]] = {}
-for _m in CATALOG:
+for _m in (*CATALOG, *_RESOLD):
     PROVIDERS_TO_MODELS.setdefault(_m.provider, []).append(_m)
 
 # Merge supplemental entries for O2-hosted models not in LiteLLM's catalog.
@@ -242,6 +282,14 @@ try:
     from packages.litellm_adapter.hosted_catalog import HOSTED_CATALOG_SUPPLEMENT as _HCS
     for _row in _HCS:
         _id, _prov, _prefix, _tools, _vis, _json, _in, _out = _row
+        _known = CATALOG_BY_ID.get(_id)
+        if _known is not None and not (_known.input_cost_per_token or _known.output_cost_per_token):
+            # litellm lists some reseller entries unpriced (dashscope/qwen3-max);
+            # auto can't rank a model without a price, and the hosted price
+            # is the best estimate there is. Provider and prefix stay.
+            _priced = replace(_known, input_cost_per_token=_in, output_cost_per_token=_out)
+            CATALOG[CATALOG.index(_known)] = _priced
+            CATALOG_BY_ID[_id] = _priced
         if _id not in CATALOG_BY_ID:
             _sm = CatalogModel(
                 id=_id, provider=_prov, litellm_prefix=_prefix,

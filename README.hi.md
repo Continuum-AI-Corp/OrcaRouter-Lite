@@ -1,17 +1,16 @@
 # OrcaRouter Lite
 
-**मैनेज्ड सेफ्टी नेट के साथ self-hosted LLM राउटर।**
-OpenAI-compatible। BYOK। एकल-वर्कस्पेस। स्ट्रीमिंग। `model="auto"`।
+**हर कोडिंग एजेंट पर बजट लगाएँ।**
+देखें और सीमित करें कि Claude Code, Codex, Gemini CLI, OpenCode और आपके अपने ऐप्स हर मॉडल प्रोवाइडर पर कितना खर्च करते हैं — और आपके प्रॉम्प्ट्स आपकी मशीन से बाहर नहीं जाते। एक डेवलपर के लिए मेन्यू-बार ऐप, और पूरी टीम के लिए self-hosted राउटर। MIT लाइसेंस।
 
-![OrcaRouter Lite Logo](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/design/OrcaRouter%20Lite.png?raw=true)
-
-[![tests](https://img.shields.io/badge/tests-403_passing-brightgreen)](#testing)
-[![models](https://img.shields.io/badge/models-100%2B-blue)](#model-catalog)
+[![ci](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/ci.yml)
+[![desktop](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml/badge.svg)](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
-![OrcaRouter Lite फेलओवर डेमो](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/blob/main/demo.gif?raw=true)
-
-*`model="auto"` रीयल-टाइम में प्रोवाइडर आउटेज को सोख लेता है — कोड में कोई बदलाव नहीं। रिकॉर्डिंग तरीका: [DEMO.md](./DEMO.md)।*
+<p>
+  <img src="docs/screenshots/desktop-panel.png" alt="OrcaRouter Lite का मेन्यू-बार पैनल: दैनिक बजट के मुकाबले आज का खर्च, कनेक्टेड कोडिंग एजेंट और प्रोवाइडर की स्थिति" width="340">
+  <img src="docs/screenshots/desktop-setup.png" alt="पहली बार का सेटअप: पहचाने गए कोडिंग एजेंट, requests कहाँ जाती हैं, और एक दैनिक बजट" width="420">
+</p>
 
 ## भाषाएँ
 
@@ -30,11 +29,88 @@ OpenAI-compatible। BYOK। एकल-वर्कस्पेस। स्ट�
 
 **हमें यहाँ भी पाएँ:** [सभी मॉडल API](https://www.orcarouter.ai/models) · [OrcaCode Review](https://www.orcarouter.ai/code-review) · [OrcaReplay](https://github.com/Continuum-AI-Corp/OrcaReplay) · [OrcaPromptVault](https://github.com/Continuum-AI-Corp/OrcaPromptVault)
 
-OrcaRouter Lite, [OrcaRouter](https://www.orcarouter.ai) का ओपन-सोर्स single-workspace संस्करण है। इसे अपने लैपटॉप पर चलाएँ, अपने प्रोडक्ट में पैक करें, या उन मॉडलों की लंबी टेल के लिए सीधे hosted `api.orcarouter.ai` का उपयोग करें जिनकी कुंजियाँ आप खुद नहीं मैनेज करना चाहते।
+OrcaRouter Lite, [OrcaRouter](https://www.orcarouter.ai) का ओपन-सोर्स संस्करण है। यह आपके कंप्यूटर या आपके सर्वर पर चलता है, OpenAI, Anthropic और Gemini API बोलता है, और आउटेज के समय तथा उन मॉडलों के लिए जिनकी कुंजियाँ आपके पास नहीं हैं, hosted `api.orcarouter.ai` को सेफ्टी नेट के रूप में उपयोग कर सकता है।
 
-> **हम क्यों?** LiteLLM एक लाइब्रेरी है; OpenRouter closed-source hosted है; Ollama केवल local है। हम **मैनेज्ड फ़ॉलबैक के साथ self-hosted सर्वर** हैं — एक ऐसा वाक्य जो उनमें से कोई नहीं कह सकता।
+**OrcaRouter** वह hosted gateway है जो Lite के सेफ्टी नेट के पीछे है: हर मॉडल के लिए एक कुंजी, providers के बीच failover, शुरुआत के लिए मुफ़्त मॉडल, और paid मॉडलों के लिए प्रति अनुरोध भुगतान। डेस्कटॉप ऐप सबसे पहले इसी का सुझाव देता है और agents को मुफ़्त मॉडलों पर शुरू करता है; आपकी अपनी provider कुंजियाँ, OrcaRouter के साथ या उसके बिना, पूरा विकल्प बनी रहती हैं।
 
-## 60-सेकंड क्विकस्टार्ट
+## डेस्कटॉप ऐप
+
+Orca ऐप आपके मेन्यू बार में रहता है। यह `127.0.0.1` पर राउटर चलाता है, आपके कोडिंग एजेंटों को उससे कनेक्ट करता है, और दिखाता है कि वे कितना खर्च करते हैं।
+
+- **आज का खर्च, प्रति एजेंट।** आज का कुल खर्च घड़ी के बगल में दिखता है; पैनल इसे एजेंट के हिसाब से बाँटता है, और हर सोमवार एक नोटिफ़िकेशन पूरे हफ़्ते का सार देता है।
+- **दैनिक बजट।** आपकी तय की गई राशि के 80% और 100% पर नोटिफ़िकेशन। डिफ़ॉल्ट रूप से सिर्फ़ अलर्ट; एक बॉक्स टिक करें और राशि पूरी होते ही Orca आपके कोडिंग एजेंटों को पॉज़ कर देता है।
+- **वन-क्लिक कनेक्ट।** Orca एजेंट की अपनी सेटिंग्स बदलता है, उनका बैकअप रखता है, और डिस्कनेक्ट करने पर उन्हें वापस बहाल कर देता है।
+- **कभी डाउन नहीं।** जब कोई प्रोवाइडर फेल होता है या आप पर rate limit लगाता है, तो requests किसी दूसरे प्रोवाइडर या hosted OrcaRouter पर फ़ॉलबैक कर जाती हैं, और ऐप गिनता है कि उसने कितनी requests बचाईं। अपना अकाउंट `orca link --key sk-orca-…` से या सेटअप में लिंक करें।
+- **डिफ़ॉल्ट रूप से प्राइवेट।** प्रॉम्प्ट्स आपके एजेंटों से सीधे आपके चुने हुए प्रोवाइडर तक जाते हैं। कोई टेलीमेट्री नहीं।
+- **आपकी टीम के gateway के साथ काम करता है।** `orca login https://ai-gw.example.com --key …` (या सेटअप में "Join my company's gateway") आपके एजेंटों को उस gateway की ओर पॉइंट करता है जिसे आपकी प्लेटफ़ॉर्म टीम चलाती है; `orca logout` उन्हें वापस बहाल कर देता है।
+
+**इंस्टॉल।** इंस्टॉलर (`.dmg`, `.deb`, `.AppImage`, `.msi`) [`desktop.yml`](./.github/workflows/desktop.yml) से बनते हैं और अगले टैग किए गए वर्ज़न से शुरू होकर हर रिलीज़ के साथ अटैच किए जाते हैं। तब तक, वही इंजन और CLI बस एक कमांड दूर हैं:
+
+**सिर्फ़ ऐप चाहिए:** इसमें अपना इंजन और एक लोकल SQLite फ़ाइल शामिल है; कोई सर्वर या डेटाबेस सेट नहीं करना पड़ता। डाउनलोड, पहली बार चलाना, लॉगिन पर शुरू होना और अनइंस्टॉल: [INSTALL.md](./INSTALL.md) (अंग्रेज़ी में)।
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca up
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect claude-code
+```
+
+```bash
+uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
+```
+
+`orca up` पैनल को `http://127.0.0.1:8765/desktop/panel.html` पर सर्व करता है; मेन्यू-बार ऐप खुद बिल्ड करने के लिए [`desktop/`](./desktop/README.md) देखें। पहली रिलीज़ आने के बाद, macOS उपयोगकर्ता `brew install --cask continuum-ai-corp/tap/orcarouter-lite` से भी इंस्टॉल कर सकेंगे।
+
+Claude Code के स्टेटस बार में आज का खर्च: इसे `~/.claude/settings.json` में जोड़ें।
+
+```json
+"statusLine": { "type": "command", "command": "orca statusline" }
+```
+
+`orca report` हफ़्ते का ब्योरा Markdown (या `--format csv`) में प्रिंट करता है, ताकि आप उसे किसी चैट या शीट में पेस्ट कर सकें।
+
+| एजेंट | कैसे कनेक्ट होता है |
+|---|---|
+| Claude Code | स्वचालित: `~/.claude/settings.json` में `ANTHROPIC_BASE_URL` और एक अलग कुंजी सेट करता है |
+| Codex | स्वचालित: `~/.codex/config.toml` में एक `orca` प्रोवाइडर (Responses API) जोड़ता है और `model = "auto"` से उसे चुनता है |
+| Gemini CLI | स्वचालित: `~/.gemini/.env` में `GOOGLE_GEMINI_BASE_URL` और एक अलग कुंजी सेट करता है, और `~/.gemini/settings.json` में Gemini CLI का gateway साइन-इन |
+| OpenCode | स्वचालित: `~/.config/opencode/opencode.json` में एक `orca` प्रोवाइडर जोड़ता है और `orca/auto` चुनता है; कुंजी एक निजी फ़ाइल में रहती है जिसे OpenCode पढ़ता है |
+| Command Code | स्वचालित: `~/.commandcode/providers.json` में एक `orca` प्रोवाइडर जोड़ता है जिसकी कुंजी एक निजी फ़ाइल से आती है (Command Code वहाँ सीधे लिखी कुंजियाँ स्वीकार नहीं करता) |
+| Cline | एक पेस्ट स्टेप: Cline में API Provider → OpenAI Compatible चुनें और ऐप जो base URL और कुंजी दिखाता है, उन्हें पेस्ट करें |
+| Aider | स्वचालित: `~/.aider.conf.yml` में `openai-api-base`, एक अलग कुंजी और `model: openai/auto` सेट करता है |
+| Cursor | एक पेस्ट स्टेप: ऐप Cursor की मॉडल सेटिंग्स के लिए एक base URL और कुंजी दिखाता है |
+| Hermes Agent | स्वचालित: `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes`) → `providers.orca`, `model.provider: custom:orca` |
+| Pi | स्वचालित: `~/.pi/agent/models.json` → `providers.orca`; `settings.json` → `defaultProvider: orca`, `defaultModel: auto` |
+| OMP | स्वचालित: `~/.omp/agent/models.yml` → `providers.orca`; `config.yml` → `modelRoles.default: orca/auto` |
+| Kilo Code | स्वचालित: `~/.config/kilo/kilo.json` → `provider.orca`, `model: orca/auto` (`{file:…}` key) |
+| OpenClaw | स्वचालित: `~/.openclaw/openclaw.json` → `models.providers.orca`, `agents.defaults.model.primary: orca/auto` |
+| Kimi Code | स्वचालित: `~/.kimi-code/config.toml` → `[providers.orca]`, `[models.orca-auto]`, `default_model` |
+| Goose | स्वचालित: `~/.config/goose/custom_providers/orca.json` (`auth.command` key) + `config.yaml` → `GOOSE_PROVIDER: orca` |
+| Zed | एक पेस्ट स्टेप: `settings.json` → `language_models.openai_compatible.Orca` (`api_url`, model `auto`) + key in Zed / `ORCA_API_KEY` |
+| OpenHands | एक पेस्ट स्टेप: `/settings` → Advanced: model `openai/auto`, base URL, key |
+| DeepSeek Harness | एक पेस्ट स्टेप: Settings → Models → custom OpenAI-compatible provider, model `auto` |
+| ZCode | एक पेस्ट स्टेप: Add provider → Create custom provider → OpenAI chat completions, model `auto` |
+
+हर कनेक्टेड एजेंट को अपनी अलग कुंजी मिलती है: इसी से खर्च प्रति एजेंट बँटता है, और इसी वजह से डिस्कनेक्ट करते ही एक्सेस तुरंत रद्द हो जाता है। ऐप आपके कंप्यूटर पर क्या-क्या छू सकता है, यह [SECURITY.md](./SECURITY.md#what-the-desktop-app-and-orca-cli-can-touch) में विस्तार से बताया गया है।
+
+<a id="free-and-open-for-good"></a>
+## मुफ़्त और ओपन, हमेशा के लिए
+
+- **MIT, स्थायी रूप से।** एक डेवलपर या एक टीम को जो कुछ भी चाहिए, वह इसी रिपॉज़िटरी में MIT के तहत रहता है: रूटिंग, `model="auto"`, बजट, डैशबोर्ड, डेस्कटॉप ऐप। हम कोई भी फ़ीचर Lite से हटाकर पेड प्लान में नहीं ले जाएँगे।
+- **पेड प्लान संगठनों के लिए है।** कई टीमों का प्रबंधन (SSO/SCIM, रोल-आधारित एक्सेस, पूरे संगठन के लिए बजट और पॉलिसी, ऑडिट रिटेंशन, Slack और ईमेल पर अलर्ट) [hosted OrcaRouter](https://www.orcarouter.ai) में है।
+- **सत्यापन योग्य।** रिलीज़ साइन की जाती हैं और provenance तथा SBOM के साथ आती हैं। देखें [SECURITY.md](./SECURITY.md)।
+
+## दूसरों से तुलना
+
+| | किसके लिए सबसे अच्छा | कैसे चलता है |
+|---|---|---|
+| **OrcaRouter Lite** | एक डेवलपर से लेकर ऐसी टीम तक, जिसे नए इंफ्रास्ट्रक्चर के बिना प्रति-एजेंट खर्च, बजट और failover चाहिए | डेस्कटॉप ऐप, `uvx`/`pip`, या Docker; डिफ़ॉल्ट रूप से SQLite |
+| LiteLLM proxy | ऐसी टीमें जिन्हें बड़ी कॉन्फ़िगरेशन सतह और Python SDK चाहिए | Self-hosted सर्वर; खर्च ट्रैकिंग के लिए Postgres |
+| OpenRouter | कई मॉडलों के लिए एक API कुंजी, बिलिंग उन्हीं के ज़रिए | केवल hosted; प्रॉम्प्ट्स उनकी सेवा से होकर गुज़रते हैं |
+| Claude Code का अपना gateway सपोर्ट | ऐसी कंपनियाँ जो केवल Claude इस्तेमाल करती हैं | Claude Code को आपके द्वारा चलाए गए gateway पर पॉइंट करता है; केवल Claude मॉडल |
+
+## इसे सर्वर के रूप में चलाएँ (60 सेकंड)
 
 OrcaRouter उपयोग करने के दो तरीके:
 
@@ -63,7 +139,7 @@ docker compose up
 # 2. बेस URL के रूप में https://api.orcarouter.ai/v1 का उपयोग करें
 ```
 
-**खाता आवश्यक।** Hosted, रूटिंग, बिलिंग और providers की लंबी टेल को संभालता है — आपके OrcaRouter खाते पर प्रति-टोकन बिलिंग के साथ। देखें [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)।
+**खाता आवश्यक।** शुरुआत मुफ़्त मॉडलों से; paid मॉडलों का बिल आपके OrcaRouter खाते पर प्रति अनुरोध बनता है। Hosted रूटिंग, providers के बीच failover और मॉडलों की लंबी टेल को संभालता है। देखें [docs.orcarouter.ai/introduction](https://docs.orcarouter.ai/introduction)।
 
 ### फिर इसे किसी भी OpenAI SDK से कॉल करें
 
@@ -119,21 +195,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 डैशबोर्ड के लिए `http://localhost:8000/` खोलें — providers, रूटिंग, analytics, कुंजियाँ (केवल पथ A)।
 
-## क्यों?
-
-| | OrcaRouter Lite | LiteLLM लाइब्रेरी | OpenRouter | Ollama |
-|---|---|---|---|---|
-| Self-hosted सर्वर | ✓ | लाइब्रेरी के रूप में | ✗ | ✓ |
-| OpenAI-compatible | ✓ | ✓ | ✓ | ✓ |
-| Multi-provider (OpenAI/Anthropic/Google/…) | ✓ | ✓ | ✓ | ✗ |
-| बिल्ट-इन डैशबोर्ड | ✓ | ✗ | ✓ | ✗ |
-| `model="auto"` (सबसे सस्ता सक्षम) | ✓ | ✗ | ✗ | n/a |
-| स्ट्रीमिंग | ✓ | ✓ | ✓ | ✓ |
-| BYOK | ✓ | ✓ | ✗ | n/a |
-| Hosted-as-fallback | ✓ | ✗ | n/a | ✗ |
-| न Postgres / न Redis आवश्यक | ✓ | n/a | n/a | ✓ |
-
-## `model="auto"` — मुख्य फ़ीचर
+## `model="auto"`
 
 `model="auto"` भेजें और OrcaRouter आपके कॉन्फ़िगर किए गए providers में से **सबसे सस्ता** मॉडल चुनेगा जो request की क्षमता आवश्यकताओं (tools, vision, JSON मोड) को पूरा करता है। न मैनुअल रूटिंग नियम; न rate-limit जिमनास्टिक्स; आपके कोड में न कोई `if x: ...` कॉस्ट ऑप्टिमाइज़ेशन।
 
@@ -160,7 +222,7 @@ ORCAROUTER_API_KEY=sk-orca-hosted-abc...
 ```
 
 उपयोग के मामले:
-- **खरीदने-से-पहले-आज़माएँ** — local provider कुंजियों की आवश्यकता नहीं
+- **मुफ़्त में शुरू करें** — मुफ़्त मॉडलों के लिए provider कुंजियों की ज़रूरत नहीं; paid मॉडल केवल तब जब आप उन्हें चुनें
 - **लोकल लॉगिंग** — hosted रूटिंग संभालता है, Lite डैशबोर्ड के लिए RequestLog रिकॉर्ड संग्रहित करता है
 - **Failover** — local providers विफल होते हैं, hosted सेफ्टी नेट है
 
@@ -212,24 +274,26 @@ Requests को एज पर उसी आंतरिक पाइपलाइ
 
 ## कहीं और डिप्लॉय करें
 
-| प्लेटफ़ॉर्म | वन-क्लिक |
+| प्लेटफ़ॉर्म | कैसे |
 |---|---|
-| Railway | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template) |
-| Fly.io | `fly launch --dockerfile Dockerfile` |
-| Render | रेपो कनेक्ट करें, root dir = `.` |
-| बेयर Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/...` (इमेज जल्द आ रही है) |
+| Docker | `docker run -p 8000:8000 -e OPENAI_API_KEY=... ghcr.io/continuum-ai-corp/orcarouter-lite:<version>` (अगली टैग की गई रिलीज़ से प्रकाशित होगी; [SECURITY.md](./SECURITY.md) में दिए कमांड से इसे सत्यापित करें) |
+| Render | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite): [`render.yaml`](./render.yaml) का इस्तेमाल करता है, secrets जनरेट करता है, डेटाबेस को एक डिस्क पर रखता है |
+| Fly.io | `fly launch --no-deploy`, फिर [`fly.toml`](./fly.toml) में सबसे ऊपर दिए volume और `fly secrets set` वाले स्टेप, फिर `fly deploy` |
+| Railway | `railway init`, `railway volume add --mount-path /data`, `railway variables --set CREDENTIAL_ENCRYPTION_KEY=$(openssl rand -hex 32) --set API_KEY_PEPPER=$(openssl rand -hex 32) --set DATABASE_URL=sqlite+aiosqlite:////data/orca.db`, फिर `railway up` ([`railway.json`](./railway.json) से बिल्ड होता है) |
 
 ## बॉक्स में क्या है
 
 - `POST /v1/chat/completions` — proxy + स्ट्रीमिंग + `model="auto"` + cross-provider प्रॉम्प्ट कैश
 - `POST /v1/messages` — **Anthropic Messages API इनग्रेस** (Claude Code / Anthropic SDK सीधे कनेक्ट होते हैं; `+ /count_tokens`)
+- `POST /v1/responses` — **OpenAI Responses API इनग्रेस** (Codex और Responses SDK क्लाइंट; स्ट्रीमिंग, function और custom टूल)
 - `POST /v1beta/models/{model}:generateContent` — **Gemini API इनग्रेस** (google-genai SDK सीधे कनेक्ट होता है; `+ :streamGenerateContent`, `GET /v1beta/models`)
 - `GET  /v1/models` — खोज योग्य मॉडल कैटलॉग (`litellm.model_cost` से 100+ मॉडल)
 - `GET/PUT/DELETE /v1/providers/{provider}` — एन्क्रिप्टेड provider कुंजियाँ सेट / सूचीबद्ध / रद्द करें
 - `GET/PUT /v1/routing` — रणनीति बदलें (`balanced` / `cheapest` / `fastest` / `quality`)
 - `GET  /v1/analytics/{recent,spend,latency,savings,unreachable}` — local analytics, कोई टेलीमेट्री बॉक्स से बाहर नहीं जाती
-- `GET  /v1/hosted` — hosted-fallback स्थिति (डैशबोर्ड के "Get $5 free credit" कार्ड को चलाती है)
+- `GET  /v1/hosted` — hosted gateway स्थिति (डैशबोर्ड के OrcaRouter कार्ड को चलाती है)
 - `GET/POST/DELETE /v1/keys/...` — API कुंजियाँ सूचीबद्ध / रोटेट / रद्द करें
+- `/v1/app/*` — डेस्कटॉप ऐप के लिए एजेंट, खर्च सारांश और बजट (केवल तब जब `orca up` से शुरू किया गया हो; देखें [SECURITY.md](./SECURITY.md))
 - `/` पर सिंगल-पेज डैशबोर्ड
 - डिफ़ॉल्ट रूप से SQLite; `DATABASE_URL` के माध्यम से Postgres opt-in; Redis वैकल्पिक
 
@@ -265,44 +329,18 @@ x-orca-cache: HIT          ← कैश से सर्व, कोई upstream
 - मल्टी-पॉड डिप्लॉयमेंट / Kubernetes
 - अलर्ट्स के लिए ईमेल / Slack / webhooks
 
-उनके लिए, hosted प्रोडक्ट या (आगामी) Teams संस्करण देखें।
+ये संगठनों के लिए फ़ीचर हैं और [hosted OrcaRouter](https://www.orcarouter.ai) में उपलब्ध हैं; देखें [मुफ़्त और ओपन, हमेशा के लिए](#free-and-open-for-good)।
 
 ## टेस्टिंग
 
-टेस्ट-फ़र्स्ट बनाया गया। यहाँ शिप किए गए हर व्यवहार के लिए पहले एक फेल होने वाला टेस्ट था।
+टेस्ट-फ़र्स्ट बनाया गया: यहाँ शिप किए गए हर व्यवहार के लिए पहले एक फेल होने वाला टेस्ट था।
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=. pytest -v
-# 403 passed
+PYTHONPATH=. pytest                          # router, protocols, desktop API, CLI, supply-chain checks
+cd desktop && npm test                       # desktop view logic (node --test)
+cd desktop/src-tauri && cargo test --lib     # menu-bar title and notification rules
 ```
-
-| स्लाइस | टेस्ट | क्या |
-|---|---|---|
-| 1. Config | 5 | env लोडिंग, defaults, `env_provider_keys()` |
-| 2. Seed | 3 | bootstrap workspace + API कुंजी + RoutingConfig, idempotent |
-| 3. Auth मिडलवेयर | 4 | bearer-token सत्यापन, अनुपस्थित/अमान्य पर 401 |
-| 4. App factory | 3 | /health, error envelope, /v1/* gating |
-| 5. Provider कुंजी CRUD | 5 | रेस्ट पर एन्क्रिप्टेड, plaintext कभी round-trip नहीं करता |
-| 6. राउटर कैश | 13 | प्राथमिकता के साथ env+DB+hosted डिप्लॉयमेंट असेंबली |
-| 7. चैट कंप्लीशन | 5 | OpenAI फ़ॉर्मेट, RequestLog, सत्यापन |
-| 8. Analytics | 4 | recent / spend / latency p50/p99 |
-| 9. /v1/{models,keys,routing} | 8 | list/create/revoke + रणनीति अपडेट |
-| 10. स्ट्रीमिंग | 4 | SSE फ़ॉर्मेट, `[DONE]` सेन्टिनल, log writeback |
-| 11. कैटलॉग | 7 | 100+ मॉडल, क्षमता फ्लैग्स, pricing |
-| 12. `model="auto"` | 21 | क्षमता डिटेक्शन, सबसे-सस्ता-जो-ज़रूरत-पूरी-करता-है (unit + एकीकरण) |
-| 13. लागत बचत | 9 | हमेशा-GPT-4 बेसलाइन बनाम बचत + hosted-auto तुलना |
-| 14. प्रॉम्प्ट कैश | 15 | cross-provider exact-match कैश + चैट एकीकरण |
-| 15. Benchmark | 4 | summarize() + render_markdown() एग्रीगेशन |
-| 16. Hosted स्थिति | 7 | `/v1/hosted` config-source + signup-URL surface |
-| 17. Hosted-auto बचत | 3 | सिंथेटिक कैटलॉग पर `_hosted_auto_savings` एज केस |
-| 18. अनुपलब्ध मॉडल | 7 | "जिन मॉडलों तक नहीं पहुँच सकते" टाइल hosted चालू होने पर खाली हो जाती है |
-| 19. मल्टी-प्रोटोकॉल auth | 6 | x-api-key / x-goog-api-key / ?key= स्कोपिंग, /v1beta guard, प्रति-प्रोटोकॉल 401 envelopes |
-| 20. Anthropic `/v1/messages` | 53 | request/response/stream अनुवाद + इनग्रेस एकीकरण |
-| 21. Gemini `/v1beta` | 40 | schema-enum सामान्यीकरण सहित अनुवाद + generateContent/stream इनग्रेस |
-| **कुल** | **403** | |
-
-स्लाइस पंक्तियाँ प्रत्येक स्लाइस के शिप होने पर जोड़े गए टेस्ट दिखाती हैं; कुल वर्तमान पूर्ण टेस्ट सुइट है।
 
 ## आर्किटेक्चर
 
@@ -327,7 +365,13 @@ app/
     ├── hosted.py       /v1/hosted — hosted-fallback status for the dashboard
     └── health.py
 
+desktop/
+├── ui/                 Menu-bar panel + setup pages (served by the engine at /desktop/)
+├── src-tauri/          Native shell: tray title, notifications, starts the engine
+└── engine/             PyInstaller build of the bundled `orca-engine`
+
 packages/
+├── desktop/            Agent connectors (backup/restore) + desktop home folder
 ├── litellm_adapter/    Router wrapper + 100+ model catalog
 ├── auth/               hashing + AES-256-GCM
 └── db/                 models + engine + session
@@ -335,20 +379,22 @@ packages/
 
 ## रोडमैप
 
-- [x] OpenAI-compatible चैट कंप्लीशन
-- [x] स्ट्रीमिंग (SSE)
-- [x] `model="auto"` सबसे-सस्ता-सक्षम रूटिंग
-- [x] Hosted-as-upstream
-- [x] रेस्ट पर एन्क्रिप्टेड BYOK
-- [x] लोकल analytics डैशबोर्ड
-- [x] CI (GitHub Actions)
-- [x] Cross-provider प्रॉम्प्ट कैशिंग
-- [x] Continue.dev / Aider / LangChain / Cursor / Vercel AI SDK इंटीग्रेशन
-- [x] सार्वजनिक benchmark + बचत दावा
-- [ ] Embeddings + image-gen proxy
+- [x] OpenAI-compatible चैट कंप्लीशन, स्ट्रीमिंग, `model="auto"`
+- [x] Anthropic और Gemini के नेटिव एंडपॉइंट
+- [x] Hosted-as-upstream फ़ॉलबैक, एन्क्रिप्टेड BYOK, लोकल डैशबोर्ड
+- [x] Cross-provider प्रॉम्प्ट कैश
+- [x] डेस्कटॉप ऐप: मेन्यू बार में खर्च, दैनिक बजट अलर्ट, वन-क्लिक एजेंट कनेक्ट
+- [x] provenance और SBOM के साथ साइन की गई रिलीज़; हैश-लॉक्ड dependencies
+- [x] दैनिक बजट जो अलर्ट करता है, या सीमा पर कोडिंग एजेंटों को पॉज़ कर देता है
+- [x] `orca login` / "Join my company's gateway": ऐप से ही किसी टीम के gateway का इस्तेमाल
+- [x] `/v1/responses`, ताकि Codex कनेक्ट हो; Gemini CLI, OpenCode, Command Code और Cline भी
+- [x] एन्क्रिप्शन कुंजी OS कीचेन में; दिन में एक बार अपडेट जाँच
+- [ ] साझा टीम gateway पर लागू होने वाले प्रति-डेवलपर बजट
+- [ ] Embeddings, Ollama/vLLM providers, कस्टम फ़ॉलबैक चेन
 
 Failover डेमो के लिए [DEMO.md](./DEMO.md) देखें।
 
+<a id="license"></a>
 ## लाइसेंस
 
 MIT। देखें [LICENSE](./LICENSE)।

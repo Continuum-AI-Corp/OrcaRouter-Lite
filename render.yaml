@@ -1,0 +1,32 @@
+# Render Blueprint for OrcaRouter Lite.
+#
+# Deploy: https://render.com/deploy?repo=https://github.com/Continuum-AI-Corp/OrcaRouter-Lite
+#
+# Render generates the encryption key and key pepper for each deploy and asks
+# you for provider keys (leave them blank and add keys in the dashboard
+# later). The SQLite database lives on the attached disk, which needs a paid
+# instance type; the first admin key is printed in the service logs.
+
+services:
+  - type: web
+    name: orcarouter-lite
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        generateValue: true
+      - key: API_KEY_PEPPER
+        generateValue: true
+      # Four slashes: `sqlite+aiosqlite:` + `///` + `/data/orca.db`.
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:////data/orca.db
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+    disk:
+      name: lite-data
+      mountPath: /data
+      sizeGB: 1

@@ -11,6 +11,11 @@ on:
       - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
+      - "site/**"
+      - "packaging/**"
+      - "docs/**"
+      - "desktop/ui/**"
+      - "*.md"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -21,6 +26,11 @@ on:
       - "design/**"
       - "pyproject.toml"
       - "Dockerfile"
+      - "site/**"
+      - "packaging/**"
+      - "docs/**"
+      - "desktop/ui/**"
+      - "*.md"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -82,14 +92,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: build image
         run: docker build -t orcarouter-lite:ci .
-      - name: boot + curl /health
+      # Like a Fly/Railway volume or a Render disk: a root-owned folder
+      # mounted over /data, holding the database. The entrypoint has to hand
+      # it to the unprivileged user or SQLite can't create the file.
+      - name: boot on a root-owned /data volume + curl /health
         run: |
+          mkdir vol && sudo chown root:root vol && sudo chmod 755 vol
           docker run -d --name lite -p 8000:8000 \
-            -e DATABASE_URL=sqlite+aiosqlite:///./orca.db \
+            -v "$PWD/vol:/data" \
+            -e DATABASE_URL=sqlite+aiosqlite:////data/orca.db \
             orcarouter-lite:ci
           for i in 1 2 3 4 5 6 7 8 9 10; do
             if curl -sf http://localhost:8000/health; then
               echo "✓ healthy"
+              docker exec lite sh -c 'test -s /data/orca.db && [ "$(stat -c %U /data/orca.db)" = orca ]' || { echo "::error::no orca-owned database on /data"; exit 1; }
+              # The entrypoint execs the server, so it is PID 1.
+              docker exec lite sh -c '[ "$(stat -c %U /proc/1)" = orca ]' || { echo "::error::server isn't running as orca"; exit 1; }
               docker rm -f lite
               exit 0
             fi

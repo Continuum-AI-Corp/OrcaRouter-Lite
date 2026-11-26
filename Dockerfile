@@ -12,15 +12,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml .
+COPY requirements.lock .
 
-# Install the runtime dependencies only, read straight out of pyproject. The
-# project itself is deliberately NOT installed here — the runtime stage puts
-# the source on PYTHONPATH instead — so this layer is invalidated only when
-# the dependency list changes, never on a code or README edit.
+# Install the runtime dependencies only, from the hash-locked lockfile: every
+# wheel must match a recorded sha256, so a re-uploaded or hijacked release of
+# any dependency fails the build instead of shipping. The project itself is
+# deliberately NOT installed here — the runtime stage puts the source on
+# PYTHONPATH instead — so this layer is invalidated only when the lockfile
+# changes, never on a code or README edit.
 RUN pip install --no-cache-dir --upgrade pip \
-    && python -c 'import tomllib;f=open("pyproject.toml","rb");print(*tomllib.load(f)["project"]["dependencies"],sep=chr(10))' > /tmp/requirements.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.txt
+    && pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # ── Runtime stage ─────────────────────────────────────
 FROM python:3.12-slim
@@ -43,7 +44,9 @@ COPY scripts/ scripts/
 RUN useradd -m orca \
     && mkdir -p /data \
     && chown -R orca:orca /app /data
-USER orca
+# Starts as root only to hand a platform volume mounted over /data to `orca`,
+# then drops to `orca` before the server starts (see the script).
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 
 EXPOSE 8000
 

@@ -145,6 +145,30 @@ HOSTED_MODEL_ALIASES: frozenset[str] = frozenset({
     'qwen/qwen3.8-27b-free',
 })
 
+# OrcaRouter's free models, in the order the desktop app offers them. They
+# are real zero-priced models (unlike litellm's unpriced rows), so auto may
+# pick them, and in the app's default "free" mode they're the only hosted
+# models deployed and rank first. Each is also deployed under its bare id.
+FREE_HOSTED_MODELS: tuple[str, ...] = (
+    'deepseek/deepseek-v4-pro-free',
+    'deepseek/deepseek-v4-flash-free',
+    'qwen/qwen3.8-27b-free',
+    'orcarouter/free',
+)
+# Every name a free model is deployed under (wire id and bare id).
+FREE_HOSTED_NAMES: frozenset[str] = frozenset(
+    {*FREE_HOSTED_MODELS, *(m.split('/', 1)[1] for m in FREE_HOSTED_MODELS)}
+)
+# The free models' usable context, in tokens. OrcaRouter doesn't publish a
+# per-model figure; this is a conservative bound so a prompt that clearly
+# can't fit asks for a paid model instead of failing upstream.
+FREE_HOSTED_CONTEXT_TOKENS = 128_000
+
+
+def is_free_hosted(model: str | None) -> bool:
+    return bool(model) and model in FREE_HOSTED_NAMES
+
+
 # Supplemental catalog metadata for O2 models absent from LiteLLM's model_cost.
 # Subset of HOSTED_MODELS — only entries whose bare_id LiteLLM doesn't ship.
 # Models in HOSTED_MODELS but absent from this supplement (image-preview,
@@ -153,10 +177,10 @@ HOSTED_MODEL_ALIASES: frozenset[str] = frozenset({
 HOSTED_CATALOG_SUPPLEMENT: tuple[tuple, ...] = (
     # Zero-credit models, listed under the provider-qualified wire IDs O2's
     # own /v1/models uses (each has a matching deployment via
-    # HOSTED_MODEL_ALIASES). 0.0/0.0 is the true zero-credit price; note
-    # that choose_auto_model deliberately excludes zero-blended-cost
-    # entries from auto-routing, so these are discoverable + pinnable but
-    # never auto-selected.
+    # HOSTED_MODEL_ALIASES). 0.0/0.0 is the true zero-credit price;
+    # choose_auto_model excludes other zero-blended-cost entries but allows
+    # these (FREE_HOSTED_MODELS), and ranks them first in the desktop app's
+    # "free" mode.
     ('deepseek/deepseek-v4-flash-free', 'deepseek', 'deepseek/', True, False, True, 0.0, 0.0),
     ('deepseek/deepseek-v4-pro-free'  ,  'deepseek', 'deepseek/', True, False, True, 0.0, 0.0),
     ('orcarouter/free'           , 'orcarouter',   'openai/', True, False, True, 0.0, 0.0),
