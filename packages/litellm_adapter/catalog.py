@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date
+from math import isfinite
 
 # ── Provider mapping: litellm prefix → (our provider id, litellm prefix string) ──
 # Each entry maps a litellm provider key (the part before the `/` in the model
@@ -76,6 +77,14 @@ class CatalogModel:
     # Surfaced for UI display; routing-time exclusion happens at load via
     # `_is_obviously_dead` below, not by reading this field.
     deprecation_date: str | None = None
+    # None means unpriced/unknown; an explicit zero is a known free read.
+    cache_read_input_token_cost: float | None = None
+
+
+def _cache_read_price(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if isfinite(value) and value >= 0 else None
 
 
 def _is_obviously_dead(meta: dict) -> bool:
@@ -138,6 +147,7 @@ def _catalog_entry(raw_id: str, meta: dict, provider_id: str, prefix: str) -> Ca
         input_cost_per_token=float(meta.get("input_cost_per_token") or 0.0),
         output_cost_per_token=float(meta.get("output_cost_per_token") or 0.0),
         deprecation_date=dep_raw if isinstance(dep_raw, str) and dep_raw else None,
+        cache_read_input_token_cost=_cache_read_price(meta.get("cache_read_input_token_cost")),
     )
 
 

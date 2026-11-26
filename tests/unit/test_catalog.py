@@ -8,6 +8,23 @@ same metadata litellm uses internally.
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.mark.parametrize("rate", [1.25e-6, 0.0, None])
+def test_catalog_retains_observed_cache_read_price(monkeypatch, rate):
+    import litellm
+
+    from packages.litellm_adapter.catalog import _build_catalog_from_litellm
+
+    meta = {"litellm_provider": "openai", "mode": "chat",
+            "input_cost_per_token": 2.5e-6, "output_cost_per_token": 1e-5}
+    if rate is not None:
+        meta["cache_read_input_token_cost"] = rate
+    monkeypatch.setattr(litellm, "model_cost", {"cache-price-test": meta})
+    model = next(m for m in _build_catalog_from_litellm() if m.id == "cache-price-test")
+    assert getattr(model, "cache_read_input_token_cost", None) == rate
+
 
 def test_catalog_has_at_least_50_models():
     """A real catalog. The 16-model hardcoded list was a placeholder."""
