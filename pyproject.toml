@@ -1,6 +1,6 @@
 [project]
 name = "orcarouter-lite"
-version = "0.1.0"
+version = "0.1.1"
 description = "Self-hosted LLM router with a managed safety net. OpenAI-compatible, BYOK, single-workspace edition of OrcaRouter."
 readme = "README.md"
 requires-python = ">=3.11"

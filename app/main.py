@@ -213,7 +213,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OrcaRouter Lite",
         description="Open Source. Single Tenant. Self-hosted LLM router with a managed safety net.",
-        version="0.1.0",
+        version="0.1.1",
         lifespan=lifespan,
         **docs,
     )
