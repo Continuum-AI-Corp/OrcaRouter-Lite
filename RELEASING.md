@@ -169,7 +169,7 @@ One-time setup by a repository admin:
    | `ES_USERNAME` | SSL.com account user name |
    | `ES_PASSWORD` | SSL.com account password |
    | `ES_CREDENTIAL_ID` | eSigner credential id of the code-signing order |
-   | `ES_TOTP_SECRET` | eSigner TOTP secret (the base32 seed, not a 6-digit code) |
+   | `ES_TOTP_SECRET` | eSigner TOTP secret: the "secret code" shown next to the QR code (or the `secret=` value inside it), copied exactly; not a 6-digit code |
 
 3. **CodeSignTool is pinned.** `sign.ps1` downloads SSL.com's CodeSignTool
    (`$CodeSignToolVersion`, v1.3.2) and refuses to run it unless its SHA-256
