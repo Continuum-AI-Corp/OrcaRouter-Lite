@@ -94,6 +94,15 @@ def _no_local_model_discovery(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_agent_config_roots(monkeypatch):
+    """Agent connectors follow CLAUDE_CONFIG_DIR / CODEX_HOME / XDG_CONFIG_HOME
+    for the user's home. A test must never reach a developer's real agent
+    config through them: tests that need one set it themselves."""
+    for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_system_keychain(monkeypatch):
     """Tests never read or write the machine's real keychain."""
     monkeypatch.setenv("ORCA_KEYCHAIN", "0")
