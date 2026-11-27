@@ -2,7 +2,8 @@
 
 The check lists the provider's models, which every one of these APIs offers
 and which spends no tokens: 200 means the key works, 401/403 means it
-doesn't. A network problem is reported as "unreachable" and doesn't stop the
+doesn't, and so does a 400 that says the key is wrong (Google and xAI answer
+a bad key that way). A network problem is reported as "unreachable" and doesn't stop the
 key being saved, so setup still works offline. The key itself never appears
 in a result.
 """
@@ -37,6 +38,17 @@ CHECKS: dict[str, tuple[str, str, str, str | None]] = {
 # public, so it would accept any key; its key endpoint doesn't.
 _PATHS: dict[str, str] = {"openrouter": "/key"}
 
+# How a 400 says "this key is wrong":
+#   Google: {"error": {"status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}}
+#   xAI:    {"code": "invalid-argument", "error": "Incorrect API key provided. ..."}
+_BAD_KEY_400 = ("api_key_invalid", "incorrect api key", "invalid api key", "api key not valid")
+
+
+def _rejected(r: httpx.Response) -> bool:
+    if r.status_code in (401, 403):
+        return True
+    return r.status_code == 400 and any(s in r.text.lower() for s in _BAD_KEY_400)
+
 
 def _request(provider: str, key: str, env: Mapping[str, str]) -> tuple[str, str, dict[str, str]]:
     name, base, style, env_var = CHECKS[provider]
@@ -66,7 +78,7 @@ async def check_key(
         r = await client.get(url, headers=headers, timeout=10)
     except httpx.HTTPError:
         return {"status": "unreachable", "detail": f"Couldn't reach {name} to check the key; it's saved anyway."}
-    if r.status_code in (401, 403):
+    if _rejected(r):
         return {"status": "invalid", "detail": f"{name} rejected this key. Check you copied all of it."}
     if r.is_success:
         return {"status": "valid", "detail": f"{name} accepted the key."}
