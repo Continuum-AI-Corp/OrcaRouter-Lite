@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 # values; never by dropping the hash check.
 $CodeSignToolVersion = 'v1.3.2'
 $CodeSignToolUrl = "https://github.com/SSLcom/CodeSignTool/releases/download/$CodeSignToolVersion/CodeSignTool-$CodeSignToolVersion.zip"
-$CodeSignToolSha256 = ''   # TODO(release admin): fill in before the first signed tag, see RELEASING.md
+$CodeSignToolSha256 = 'f14b1e1ef14bfa1fd00279c363aab0debbf5dcfba0e4bcdce5d22bb771de0e3a'
 
 # The O= of the signing certificate, compared against the leaf's subject.
 $Publisher = if ($env:AUTHENTICODE_PUBLISHER) { $env:AUTHENTICODE_PUBLISHER } else { 'CONTINUUM AI PTE. LTD.' }

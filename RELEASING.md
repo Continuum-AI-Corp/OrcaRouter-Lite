@@ -171,17 +171,20 @@ One-time setup by a repository admin:
    | `ES_CREDENTIAL_ID` | eSigner credential id of the code-signing order |
    | `ES_TOTP_SECRET` | eSigner TOTP secret (the base32 seed, not a 6-digit code) |
 
-3. **Pin CodeSignTool.** `sign.ps1` downloads SSL.com's CodeSignTool
-   (`$CodeSignToolVersion`) and refuses to run it unless its SHA-256 matches
-   `$CodeSignToolSha256`, because it is handed all four secrets. Download the
-   zip from <https://github.com/SSLcom/CodeSignTool/releases> on a trusted
-   machine, review it, then commit its hash:
+3. **CodeSignTool is pinned.** `sign.ps1` downloads SSL.com's CodeSignTool
+   (`$CodeSignToolVersion`, v1.3.2) and refuses to run it unless its SHA-256
+   matches `$CodeSignToolSha256`, because it is handed all four secrets. The
+   pinned `CodeSignTool-v1.3.2.zip` (31,515,855 bytes) was reviewed: its jar is
+   signed by SSL Corp's EV code signing certificate and `jarsigner -verify`
+   passes. GitHub publishes no digest for that asset. To upgrade, download the
+   new zip from <https://github.com/SSLcom/CodeSignTool/releases> on a trusted
+   machine, review it, and commit the new version and its hash together:
 
    ```powershell
    (Get-FileHash CodeSignTool-v1.3.2.zip -Algorithm SHA256).Hash.ToLower()
    ```
 
-A tag build without the secrets or the pin fails at the "Windows signing" step
+A tag build without the secrets fails at the "Windows signing" step
 instead of publishing an unsigned installer. After signing, every file is
 checked for a valid chain, a timestamp and the publisher, and the setup, app and
 engine `.exe` are checked again before upload. Pull requests and manual runs

@@ -27,8 +27,9 @@ name: desktop
 #        readable by any workflow, including one on an unmerged branch a tag
 #        points at): ES_USERNAME, ES_PASSWORD, ES_CREDENTIAL_ID, ES_TOTP_SECRET,
 #        the same four values OrcaRouter-O2's connect-release environment holds.
-#   2. Pin CodeSignTool: set $CodeSignToolSha256 in sign.ps1 (RELEASING.md).
-# A tag build without these fails at "Windows signing" instead of shipping an
+#   CodeSignTool is pinned by SHA-256 in sign.ps1; upgrading it means a new
+#   version AND a new hash (RELEASING.md).
+# A tag build without the secrets fails at "Windows signing" instead of shipping an
 # unsigned installer.
 
 on:
