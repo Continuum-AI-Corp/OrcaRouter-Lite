@@ -55,7 +55,10 @@ def stack(tmp_path_factory):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GEMINI_", "ORCAROUTER_", "DATABASE_",
                                 "CREDENTIAL_", "API_KEY_", "ORCA_", "MOONSHOT_", "OLLAMA_", "LMSTUDIO_",
-                                "LLAMACPP_", "ROUTER_", "ARTIFICIAL_"))}
+                                "LLAMACPP_", "ROUTER_", "ARTIFICIAL_"))
+           # Agent config folders: the engine would connect agents in the
+           # developer's real CODEX_HOME / CLAUDE_CONFIG_DIR / XDG_CONFIG_HOME.
+           and k not in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME")}
     env.update({
         "HOME": str(home), "USERPROFILE": str(home), "ORCA_HOME": str(orca_home),
         "ORCA_KEYCHAIN": "0", "ORCA_NO_UPDATE_CHECK": "1", "PYTHONPATH": str(ROOT),
