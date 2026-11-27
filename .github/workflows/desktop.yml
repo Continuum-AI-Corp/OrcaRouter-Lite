@@ -286,15 +286,36 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -File desktop/src-tauri/windows/sign.ps1 -Report
-          $rel = 'desktop/src-tauri/target/release'
-          $files = @(Get-ChildItem "$rel/bundle/nsis/*-setup.exe") + @(Get-Item "$rel/orcarouter-lite-desktop.exe") + @(Get-ChildItem "desktop/src-tauri/binaries/orca-engine-*.exe")
-          if ($files.Count -lt 3) { Write-Error "expected the setup, app and engine .exe, found: $($files.Name -join ', ')"; exit 1 }
-          foreach ($f in $files) {
+          function Test-Signed($f) {
             $sig = Get-AuthenticodeSignature $f.FullName
             if (-not $sig.SignerCertificate) { Write-Error "$($f.Name) is not signed"; exit 1 }
             if (-not $sig.TimeStamperCertificate) { Write-Error "$($f.Name) has no timestamp"; exit 1 }
             if ($env:ORCA_SIGN_MODE -eq 'esigner' -and $sig.Status -ne 'Valid') { Write-Error "$($f.Name): $($sig.Status) $($sig.StatusMessage)"; exit 1 }
             Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject) ($($sig.Status))"
+          }
+          # The setup, and the engine sidecar (Tauri signs it in place in binaries/).
+          # target/release/orcarouter-lite-desktop.exe is NOT checked: Tauri signs
+          # the app after patching it for each package type and then restores the
+          # unsigned, unpatched binary, so only the copy inside the setup is signed.
+          $setup = @(Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
+          $engine = @(Get-ChildItem 'desktop/src-tauri/binaries/orca-engine-*.exe')
+          if ($setup.Count -ne 1 -or $engine.Count -ne 1) { Write-Error "expected one setup and one engine .exe, found: $(($setup + $engine).Name -join ', ')"; exit 1 }
+          Test-Signed $setup[0]
+          Test-Signed $engine[0]
+          # sign.ps1 records a file only after verifying its signature, timestamp
+          # and (for eSigner) publisher, so the app and the uninstaller must be there.
+          $log = @(Get-Content (Join-Path $env:RUNNER_TEMP 'orca-signed.txt'))
+          if (-not ($log -match ' orcarouter-lite-desktop\.exe$')) { Write-Error 'the app exe was never signed'; exit 1 }
+          if (-not ($log -match ' ns[^ ]*\.tmp$')) { Write-Error 'the NSIS uninstaller was never signed'; exit 1 }
+          # Best effort: check the copies a user actually installs, from inside the setup.
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          $out = Join-Path $env:RUNNER_TEMP 'setup-contents'
+          if ($sevenZip) { & $sevenZip x -y "-o$out" $setup[0].FullName | Out-Null }
+          $inside = @(if (Test-Path $out) { Get-ChildItem $out -Recurse -Include 'orcarouter-lite-desktop.exe', 'orca-engine*.exe' })
+          if ($inside.Count -eq 0) {
+            Write-Host '::warning::could not unpack the setup to check the installed app and engine'
+          } else {
+            foreach ($f in $inside) { Test-Signed $f }
           }
       - name: collect the signed updater files
         if: env.UPDATER_CONFIG != ''
