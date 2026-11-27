@@ -1,7 +1,7 @@
 {
   "name": "orcarouter-lite-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OrcaRouter Lite menu-bar app",
   "license": "MIT",
   "type": "module",

@@ -1,6 +1,6 @@
 [package]
 name = "orcarouter-lite-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "OrcaRouter Lite menu-bar app: put a budget on every coding agent"
 authors = ["Continuum AI Corp"]
 license = "MIT"
