@@ -259,16 +259,22 @@ def _login(url: str, key: str, transport) -> int:
     return 0
 
 
+def _engine_alive(home: Path, transport) -> bool:
+    """True only when our engine answers its identity challenge. engine.json
+    outlives a crashed or killed engine, so its presence proves nothing."""
+    try:
+        info = dh.read_engine_info(home)
+        with httpx.Client(base_url=info["base_url"], transport=transport, timeout=3) as client:
+            return _verify_identity(client, info["secret"])
+    except (dh.EngineNotRunning, KeyError, TypeError, httpx.HTTPError):
+        return False
+
+
 def _disconnect_all(transport) -> int:
     """Through the engine when it's running (it also revokes the agents' keys);
     otherwise restore the files directly, as an uninstaller has to."""
     home = dh.default_home()
-    try:
-        dh.read_engine_info(home)
-        running = True
-    except (dh.EngineNotRunning, KeyError, TypeError):
-        running = False
-    if running:
+    if _engine_alive(home, transport):
         body = _request("POST", "/v1/app/agents/disconnect-all", transport=transport)
         if body is None:
             return 1

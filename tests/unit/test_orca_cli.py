@@ -428,6 +428,28 @@ def test_disconnect_all_works_without_the_engine(orca_home, tmp_path, monkeypatc
     assert "Claude Code" in out and "Cursor" in out
 
 
+def test_disconnect_all_restores_files_when_engine_json_is_stale(orca_home, tmp_path, monkeypatch, capsys):
+    # The engine crashed or was killed and left engine.json behind: nothing
+    # answers on its port, so restore the files directly instead of failing.
+    from packages.desktop import agents as ag
+
+    home = tmp_path / "userhome"
+    (home / ".claude").mkdir(parents=True)
+    original = b'{"theme": "dark"}\n'
+    (home / ".claude" / "settings.json").write_bytes(original)
+    monkeypatch.setattr(orca_cli.Path, "home", classmethod(lambda cls: home))
+    ag.connect_agent("claude-code", home=home, state_dir=orca_home / "agents", base_url="http://127.0.0.1:8765",
+                     api_key="sk-orca-x")
+    _running(orca_home)
+
+    def refused(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    assert orca_cli.main(["disconnect", "--all"], transport=httpx.MockTransport(refused)) == 0
+    assert (home / ".claude" / "settings.json").read_bytes() == original
+    assert "Claude Code" in capsys.readouterr().out
+
+
 def test_disconnect_needs_an_agent_or_all(orca_home, capsys):
     assert orca_cli.main(["disconnect"]) == 2
 
