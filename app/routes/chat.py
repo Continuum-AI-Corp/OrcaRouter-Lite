@@ -463,7 +463,7 @@ async def execute_chat(
     # app/route_notes.py); the served outcome may refine it.
     route_intent: str | None = None
 
-    async def _refuse(status: int, error_type: str, detail: str, note: str) -> None:
+    async def _refuse(status: int, error_type: str, detail: str, note: str | None) -> None:
         """Log a request the engine refuses before calling anyone, then raise.
 
         These refusals are events the desktop panel reports (a request that
@@ -515,6 +515,17 @@ async def execute_chat(
             # Not servable but allowed: agent fallback below routes it as auto.
             body = body.model_copy(update={"model": servable or target})
             was_auto = False
+
+    # A model on this computer, named the way its runtime names it
+    # (qwen2.5:1.5b) or with its runtime prefix (ollama/...): send it there,
+    # or say why it can't be, rather than let agent fallback below swap in a
+    # cloud model of the same family, which can be a paid one.
+    if not was_auto:
+        local = desktop_routing.local_match(ctx, body.model)
+        if local.serve_as:
+            body = body.model_copy(update={"model": local.serve_as})
+        elif local.refuse_type:
+            await _refuse(422, local.refuse_type, local.detail or "", None)
 
     # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
     # claude-sonnet-4-6) is the model that was asked for, not a substitute.

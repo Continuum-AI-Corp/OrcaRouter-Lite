@@ -182,6 +182,95 @@ def is_paid_hosted(model: str) -> bool:
     return model in PAID_HOSTED_NAMES or (twin(model, PAID_HOSTED_NAMES) is not None)
 
 
+LOCAL_NOT_ENABLED_TYPE = "local_model_not_enabled"
+LOCAL_RUNTIME_UNAVAILABLE_TYPE = "local_runtime_unavailable"
+_RUNTIME_PREFIXES = tuple(f"{rid}/" for rid, *_ in local_models.RUNTIMES)
+
+
+def _local_key(name: str) -> str:
+    """A local model name as people write it: Ollama's implicit :latest tag
+    and llama.cpp's .gguf file extension are optional, case doesn't matter."""
+    key = name.lower()
+    for suffix in (":latest", ".gguf"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+    return key
+
+
+@dataclass(frozen=True)
+class LocalMatch:
+    """What a request for a model on this computer means.
+
+    serve_as: the deployed local model to send it to (a bare runtime name
+    such as `qwen2.5:1.5b` names `ollama/qwen2.5:1.5b`).
+    refuse_type / detail: why it can't be served, so it isn't quietly
+    replaced by a cloud model of the same family (which can cost money).
+    """
+
+    serve_as: str | None = None
+    refuse_type: str | None = None
+    detail: str | None = None
+
+
+def local_match(ctx: RoutingContext, model: str) -> LocalMatch:
+    """Resolve a request that names a model on this computer.
+
+    Desktop only, and only for names nothing is deployed under: a deployed
+    name (cloud or local) is served as asked.
+    - `ollama/…`, `lmstudio/…`, `llamacpp/…` always mean this computer:
+      if that model isn't turned on, or its runtime doesn't list it, the
+      request is refused with a message saying so.
+    - A bare name the runtime itself uses (what the user typed in Ollama,
+      LM Studio or opencode) is sent to that local model when it's turned
+      on, and refused when it's on this computer but turned off.
+    """
+    if not ctx.desktop or model in ctx.deployable:
+        return LocalMatch()
+    found = local_models.last_models()
+    if model.startswith(_RUNTIME_PREFIXES):
+        known = next((m for m in found if m.id == model), None)
+        if known is not None:
+            return LocalMatch(refuse_type=LOCAL_NOT_ENABLED_TYPE, detail=local_not_enabled_detail(model))
+        runtime = model.split("/", 1)[0]
+        return LocalMatch(refuse_type=LOCAL_RUNTIME_UNAVAILABLE_TYPE, detail=local_missing_detail(model, runtime))
+    key = _local_key(model)
+    matches = [m for m in found if _local_key(m.name) == key]
+    on = [m.id for m in matches if m.id in ctx.deployable]
+    if on:
+        return LocalMatch(serve_as=on[0])
+    if matches:
+        return LocalMatch(refuse_type=LOCAL_NOT_ENABLED_TYPE, detail=local_not_enabled_detail(matches[0].id))
+    return LocalMatch()
+
+
+def _runtime_label(runtime: str) -> tuple[str, str | None]:
+    """A runtime's display name and, when it was probed, its address."""
+    name = next((n for rid, n, *_ in local_models.RUNTIMES if rid == runtime), runtime)
+    probed = next((r for r in local_models.last() if r.id == runtime), None)
+    return name, (probed.url if probed else None)
+
+
+def local_not_enabled_detail(model_id: str) -> str:
+    return (
+        f"{model_id} is on this computer but isn't turned on in Orca. Turn it on under "
+        "\"On this computer\" in Orca, then try again."
+    )
+
+
+def local_missing_detail(model_id: str, runtime: str) -> str:
+    name, _url = _runtime_label(runtime)
+    probed = next((r for r in local_models.last() if r.id == runtime), None)
+    if probed is not None and probed.running:
+        return f"{name} doesn't list {model_id.split('/', 1)[1]}. Download it in {name}, then refresh in Orca."
+    return local_unavailable_detail(runtime)
+
+
+def local_unavailable_detail(runtime: str) -> str:
+    name, url = _runtime_label(runtime)
+    where = f" at {url}" if url else ""
+    return f"{name} isn't running{where}. Start it, then try again."
+
+
 MAPPED_UNAVAILABLE_TYPE = "mapped_model_unavailable"
 
 # Model-name marks of an agent's background requests (Claude Code's titles
