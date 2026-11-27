@@ -1351,9 +1351,15 @@ function fitWindow() {
   });
 }
 
+// In a plain browser the key comes from the address, not from the app.
+const BROWSER_KEY_HINT =
+  "Open this page as panel.html#key= followed by the contents of ~/.orcarouter-lite/app.key, or use the Orca app.";
+
 async function refresh() {
   if (!engine.hasKey) {
-    showOffline("auth", "Something went wrong opening this window. Quit and reopen Orca.");
+    showOffline("auth", native.available()
+      ? "Something went wrong opening this window. Quit and reopen Orca."
+      : BROWSER_KEY_HINT);
     return;
   }
   const token = seq.next();
@@ -1378,7 +1384,9 @@ async function refresh() {
     if (!seq.isLatest(token)) return;
     const kind = classifyError(err);
     if (kind === "offline") showOffline("stopped");
-    else if (kind === "auth") showOffline("auth", "Orca couldn't sign in to its engine. Quit and reopen Orca.");
+    else if (kind === "auth") showOffline("auth", native.available()
+      ? "Orca couldn't sign in to its engine. Quit and reopen Orca."
+      : `The key in the address isn't this engine's. ${BROWSER_KEY_HINT}`);
     else toast("err", "Couldn't refresh", err.message);
   }
 }

@@ -95,8 +95,10 @@ uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca connect
 uvx --from git+https://github.com/Continuum-AI-Corp/OrcaRouter-Lite orca status
 ```
 
-`orca up` serves the panel at `http://127.0.0.1:8765/desktop/panel.html`; to build the
-menu-bar app itself, see [`desktop/`](./desktop/README.md). Once the first release is out,
+`orca up` serves the panel at
+`http://127.0.0.1:8765/desktop/panel.html#key=<contents of ~/.orcarouter-lite/app.key>`
+(the key signs the page in to the engine; without it the panel shows "Orca can't sign in").
+To build the menu-bar app itself, see [`desktop/`](./desktop/README.md). Once the first release is out,
 macOS users can also `brew install --cask continuum-ai-corp/tap/orcarouter-lite`.
 
 Today's spend in Claude Code's status bar: add this to `~/.claude/settings.json`.
