@@ -5,11 +5,32 @@ name: desktop
 #   test     node --test (view logic) + cargo test (tray/notification rules)
 #   bundle   on pull requests, v* tags and manual runs: freeze the engine with
 #            PyInstaller, then `tauri build` → .dmg (macOS), .deb/.AppImage
-#            (Linux), .msi/.exe (Windows). Pull requests get unsigned
+#            (Linux), NSIS setup .exe (Windows). Pull requests get unsigned
 #            artifacts; tags attach signed installers to the GitHub release.
 #
 # macOS signing and notarisation run only when the APPLE_* secrets exist;
 # without them the .dmg is built unsigned (Gatekeeper will warn on first open).
+#
+# WINDOWS SIGNING (desktop/src-tauri/windows/sign.ps1, Tauri's signCommand).
+# Release tags sign with the company's SSL.com eSigner certificate (OV, "CONTINUUM
+# AI PTE. LTD."), the same one OrcaRouter-O2 signs Orca Connect with. The yearly
+# eSigner allowance is shared between products, so only the four .exe files are
+# signed (app, orca-engine, uninstaller, setup): 4 signings per release, and a
+# rerun of a tag spends 4 more. Pull requests sign the same files with a
+# throwaway self-signed certificate and never reach eSigner.
+#
+# One-time setup by a repository admin:
+#   1. Settings → Environments → New environment "desktop-release":
+#      - Required reviewers: the release owners.
+#      - Deployment branches and tags: "Selected" → tag pattern "v*" only.
+#      - Environment secrets (NOT repository secrets; a repository secret is
+#        readable by any workflow, including one on an unmerged branch a tag
+#        points at): ES_USERNAME, ES_PASSWORD, ES_CREDENTIAL_ID, ES_TOTP_SECRET,
+#        the same four values OrcaRouter-O2's connect-release environment holds.
+#   CodeSignTool is pinned by SHA-256 in sign.ps1; upgrading it means a new
+#   version AND a new hash (RELEASING.md).
+# A tag build without the secrets fails at "Windows signing" instead of shipping an
+# unsigned installer.
 
 on:
   push:
@@ -85,6 +106,9 @@ jobs:
           - { name: Linux, os: ubuntu-22.04 }
           - { name: Windows, os: windows-2022 }
     runs-on: ${{ matrix.os }}
+    # Only the Windows build of a release tag enters the reviewed environment
+    # that holds the eSigner secrets; every other build runs without one.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') && matrix.os == 'windows-2022') && 'desktop-release' || '' }}
     timeout-minutes: 75
     permissions:
       contents: write
@@ -207,36 +231,45 @@ jobs:
           fi
           python ../packaging/updater/updater_config.py --pubkey-file "$pub" --out "$RUNNER_TEMP/tauri.updater.conf.json"
           echo "UPDATER_CONFIG=$RUNNER_TEMP/tauri.updater.conf.json" >> "$GITHUB_ENV"
-      # Windows code signing: the real certificate on tags when the secrets
-      # WINDOWS_CERTIFICATE (base64 .pfx) and WINDOWS_CERTIFICATE_PASSWORD are
-      # set; a throwaway self-signed one on pull requests, so the signing step
-      # is exercised. Tags without a certificate stay unsigned.
-      - name: Windows signing certificate
+      # Windows code signing through Tauri's signCommand (see the header and
+      # desktop/src-tauri/windows/sign.ps1): eSigner on release tags, a
+      # throwaway self-signed certificate everywhere else.
+      - name: Windows signing
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          ES_USERNAME: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_USERNAME || '' }}
+          ES_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_PASSWORD || '' }}
+          ES_CREDENTIAL_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_CREDENTIAL_ID || '' }}
+          ES_TOTP_SECRET: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_TOTP_SECRET || '' }}
         run: |
-          if ($env:WINDOWS_CERTIFICATE) {
-            $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-            $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
-            Remove-Item $pfx
-          } elseif (-not $env:GITHUB_REF.StartsWith("refs/tags/v")) {
-            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=OrcaRouter Lite CI (untrusted)" -CertStoreLocation Cert:\CurrentUser\My
+          $script = (Join-Path $env:GITHUB_WORKSPACE 'desktop/src-tauri/windows/sign.ps1').Replace('\', '/')
+          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) {
+            $env:ORCA_SIGN_MODE = 'esigner'
           } else {
-            Write-Host "::notice::No Windows certificate: the installers are unsigned."
-            exit 0
+            $env:ORCA_SIGN_MODE = 'selfsigned'
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=OrcaRouter Lite CI (untrusted)" -CertStoreLocation Cert:\CurrentUser\My
+            "ORCA_SIGN_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
+          pwsh -NoProfile -File $script -Setup
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "ORCA_SIGN_MODE=$env:ORCA_SIGN_MODE" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $conf = Join-Path $env:RUNNER_TEMP "tauri.windows-sign.conf.json"
-          @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } |
-            ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $conf
+          # Forward slashes: Tauri embeds this command in the NSIS script that
+          # signs the uninstaller, where backslashes would be escaped twice.
+          @{ bundle = @{ windows = @{ signCommand = @{ cmd = "pwsh"; args = @("-NoProfile", "-File", $script, "%1") } } } } |
+            ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $conf
           "WINDOWS_SIGN_CONFIG=$conf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: tauri build
         working-directory: desktop
         shell: bash
+        env:
+          # sign.ps1 runs inside `tauri build`; only a release tag hands it the
+          # eSigner secrets (from the desktop-release environment).
+          ES_USERNAME: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_USERNAME || '' }}
+          ES_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_PASSWORD || '' }}
+          ES_CREDENTIAL_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_CREDENTIAL_ID || '' }}
+          ES_TOTP_SECRET: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.ES_TOTP_SECRET || '' }}
         run: |
           args=()
           if [ -n "$UPDATER_CONFIG" ]; then args+=(--config "$UPDATER_CONFIG"); fi
@@ -249,15 +282,41 @@ jobs:
           app=$(ls -d "desktop/src-tauri/target/release/bundle/macos/"*.app | head -1)
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv "$app" 2>&1 | grep -E "^(Identifier|Signature|Authority|TeamIdentifier)" || true
-      - name: check the Windows installers are signed
+      - name: check the Windows installer and the app inside are signed
         if: runner.os == 'Windows' && env.WINDOWS_SIGN_CONFIG != ''
         shell: pwsh
         run: |
-          $files = Get-ChildItem desktop/src-tauri/target/release/bundle/msi/*.msi, desktop/src-tauri/target/release/bundle/nsis/*.exe
-          foreach ($f in $files) {
+          pwsh -NoProfile -File desktop/src-tauri/windows/sign.ps1 -Report
+          function Test-Signed($f) {
             $sig = Get-AuthenticodeSignature $f.FullName
             if (-not $sig.SignerCertificate) { Write-Error "$($f.Name) is not signed"; exit 1 }
+            if (-not $sig.TimeStamperCertificate) { Write-Error "$($f.Name) has no timestamp"; exit 1 }
+            if ($env:ORCA_SIGN_MODE -eq 'esigner' -and $sig.Status -ne 'Valid') { Write-Error "$($f.Name): $($sig.Status) $($sig.StatusMessage)"; exit 1 }
             Write-Host "$($f.Name): signed by $($sig.SignerCertificate.Subject) ($($sig.Status))"
+          }
+          # The setup, and the engine sidecar (Tauri signs it in place in binaries/).
+          # target/release/orcarouter-lite-desktop.exe is NOT checked: Tauri signs
+          # the app after patching it for each package type and then restores the
+          # unsigned, unpatched binary, so only the copy inside the setup is signed.
+          $setup = @(Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
+          $engine = @(Get-ChildItem 'desktop/src-tauri/binaries/orca-engine-*.exe')
+          if ($setup.Count -ne 1 -or $engine.Count -ne 1) { Write-Error "expected one setup and one engine .exe, found: $(($setup + $engine).Name -join ', ')"; exit 1 }
+          Test-Signed $setup[0]
+          Test-Signed $engine[0]
+          # sign.ps1 records a file only after verifying its signature, timestamp
+          # and (for eSigner) publisher, so the app and the uninstaller must be there.
+          $log = @(Get-Content (Join-Path $env:RUNNER_TEMP 'orca-signed.txt'))
+          if (-not ($log -match ' orcarouter-lite-desktop\.exe$')) { Write-Error 'the app exe was never signed'; exit 1 }
+          if (-not ($log -match ' ns[^ ]*\.tmp$')) { Write-Error 'the NSIS uninstaller was never signed'; exit 1 }
+          # Best effort: check the copies a user actually installs, from inside the setup.
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          $out = Join-Path $env:RUNNER_TEMP 'setup-contents'
+          if ($sevenZip) { & $sevenZip x -y "-o$out" $setup[0].FullName | Out-Null }
+          $inside = @(if (Test-Path $out) { Get-ChildItem $out -Recurse -Include 'orcarouter-lite-desktop.exe', 'orca-engine*.exe' })
+          if ($inside.Count -eq 0) {
+            Write-Host '::warning::could not unpack the setup to check the installed app and engine'
+          } else {
+            foreach ($f in $inside) { Test-Signed $f }
           }
       - name: collect the signed updater files
         if: env.UPDATER_CONFIG != ''
@@ -292,7 +351,6 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
             desktop/src-tauri/target/release/bundle/deb/*.deb
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage
-            desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
       - name: attach to the GitHub release
@@ -310,7 +368,6 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg \
             desktop/src-tauri/target/release/bundle/deb/*.deb \
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage \
-            desktop/src-tauri/target/release/bundle/msi/*.msi \
             desktop/src-tauri/target/release/bundle/nsis/*.exe
 
   updater-manifest:

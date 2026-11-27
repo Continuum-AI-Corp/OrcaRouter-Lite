@@ -20,7 +20,6 @@
       "dmg",
       "deb",
       "appimage",
-      "msi",
       "nsis"
     ],
     "category": "DeveloperTool",

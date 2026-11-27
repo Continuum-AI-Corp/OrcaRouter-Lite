@@ -4,9 +4,9 @@ Timed to the first signed release (roadmap V1 → V8). Post everything on the sa
 
 ## Before the day
 
-- [ ] **Signed release.** Apple Developer ID + notarization secrets, Windows code-signing certificate and the
+- [ ] **Signed release.** Apple Developer ID + notarization secrets, the `desktop-release` environment with the eSigner secrets and the
       updater key are set (RELEASING.md §4, §7, §8); a `v0.x` tag has produced `.dmg` (Apple silicon and
-      Intel), `.msi`/`-setup.exe`, `.deb`/`.AppImage`, `latest.json` and `orcarouter-lite.rb`.
+      Intel), `-setup.exe`, `.deb`/`.AppImage`, `latest.json` and `orcarouter-lite.rb`.
 - [ ] Open each installer on a clean machine: no Gatekeeper or SmartScreen warning, setup opens, an agent connects.
 - [ ] **Homebrew.** `Continuum-AI-Corp/homebrew-tap` exists; the release's cask is in `Casks/orcarouter-lite.rb`
       and the CLI formula in `Formula/orcarouter-lite.rb`; `brew install --cask continuum-ai-corp/tap/orcarouter-lite`

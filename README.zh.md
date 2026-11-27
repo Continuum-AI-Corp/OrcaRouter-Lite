@@ -47,7 +47,7 @@ Orca 应用常驻在菜单栏。它在 `127.0.0.1` 上运行路由器，把你�
 - **默认私密。** 提示词从你的 Agent 直接发送到你选择的 provider。没有遥测。
 - **支持团队网关。** `orca login https://ai-gw.example.com --key …`（或在设置中选择 "Join my company's gateway"）会让你的 Agent 指向平台团队运行的网关；`orca logout` 恢复原样。
 
-**安装。** 安装包（`.dmg`、`.deb`、`.AppImage`、`.msi`）由
+**安装。** 安装包（`.dmg`、`.deb`、`.AppImage`、`.exe`）由
 [`desktop.yml`](./.github/workflows/desktop.yml) 构建，并从下一个打标签的版本开始附加到每个 release。
 在那之前，同样的引擎和 CLI 只需一条命令即可使用：
 
