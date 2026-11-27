@@ -623,6 +623,18 @@ async def test_leave_gateway_restores_agents(desktop_app, seeded, desktop_dirs, 
     assert summary["gateway"] is None
 
 
+async def test_leaving_without_a_gateway_keeps_local_agents(desktop_app, seeded, desktop_dirs):
+    root, _ = seeded
+    home, _ = desktop_dirs
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+        before = (home / ".claude" / "settings.json").read_bytes()
+        r = await c.delete("/v1/app/gateway", headers=_auth(root))
+    assert r.status_code == 200
+    assert r.json()["gateway"] is None
+    assert (home / ".claude" / "settings.json").read_bytes() == before
+
+
 async def test_summary_reports_an_available_update(desktop_app, seeded, monkeypatch):
     from packages.desktop import updates
 

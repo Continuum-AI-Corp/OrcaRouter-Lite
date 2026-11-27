@@ -300,6 +300,10 @@ async def leave_gateway(
 ) -> dict:
     from packages.desktop import gateway as gw
 
+    if gw.load(ctx.state_dir.parent) is None:
+        # Not in a gateway: the connected agents point at this computer's
+        # own Orca, so leaving must not disconnect them.
+        return {"gateway": None, "agents": _agent_list(ctx)}
     for status in ag.detect_agents(home=ctx.home, state_dir=ctx.state_dir, which=ctx.which):
         if status.connected and status.setup == "auto":
             async with _agent_locks[status.id]:

@@ -324,6 +324,11 @@ def _logout() -> int:
 
     home = dh.default_home()
     base = gw.load(home)
+    if base is None:
+        # Agents connected to this computer's own Orca aren't part of a
+        # gateway sign-in; logging out of nothing must not disconnect them.
+        print("Not signed in to a team gateway. Nothing changed.")
+        return 0
     state_dir = home / "agents"
     restored = []
     for status in ag.detect_agents(home=Path.home(), state_dir=state_dir):

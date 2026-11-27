@@ -357,6 +357,18 @@ def test_logout_restores_agents(orca_home, tmp_path, monkeypatch, capsys):
     assert not (home / ".claude" / "settings.json").exists()
 
 
+def test_logout_without_a_gateway_leaves_agents_alone(orca_home, tmp_path, monkeypatch, capsys):
+    home = tmp_path / "user"
+    (home / ".claude").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text('{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8765"}}')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
+    assert orca_cli.main(["logout"]) == 0
+    assert "Not signed in" in capsys.readouterr().out
+    assert settings.read_text() == '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8765"}}'
+
+
 # ── orca link ───────────────────────────────────────────────────────────
 
 
