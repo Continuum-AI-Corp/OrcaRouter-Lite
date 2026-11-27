@@ -233,13 +233,27 @@ def _login(url: str, key: str, transport) -> int:
     from packages.desktop import agents as ag
     from packages.desktop import gateway as gw
 
+    home = dh.default_home()
+    if _engine_alive(home, transport):
+        # Same path as the panel: the engine also revokes each agent's local
+        # key once the agent uses the team's, which only it can do.
+        body = _request("POST", "/v1/app/gateway", transport=transport, json_body={"url": url, "key": key})
+        if body is None:
+            return 1
+        names = {a.get("id"): a.get("name") for a in body.get("agents", [])}
+        connected = [names.get(i) or i for i in body.get("connected", [])]
+        base = (body.get("gateway") or {}).get("url") or url
+        if connected:
+            print(f"Connected to {base}: {', '.join(connected)}. Restart open sessions to use it.")
+        else:
+            print(f"Signed in to {base}, but found no agent Orca can set up automatically.")
+        return 0
     try:
         base = gw.normalize_url(url)
         gw.verify(base, key, transport=transport)
     except gw.GatewayError as exc:
         _err(str(exc))
         return 1
-    home = dh.default_home()
     state_dir = home / "agents"
     state_dir.mkdir(parents=True, exist_ok=True)
     connected = []

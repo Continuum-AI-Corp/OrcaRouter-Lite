@@ -332,11 +332,26 @@ def test_login_points_installed_agents_at_the_team_gateway(orca_home, tmp_path, 
     home = tmp_path / "user"
     (home / ".claude").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
     rc = orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
     assert rc == 0, capsys.readouterr().err
     env = _json.loads((home / ".claude" / "settings.json").read_text())["env"]
     assert env == {"ANTHROPIC_BASE_URL": "https://gw.example.com", "ANTHROPIC_AUTH_TOKEN": "sk-orca-team"}
     assert "Claude Code" in capsys.readouterr().out
+
+
+def test_login_goes_through_a_running_engine_so_old_agent_keys_are_revoked(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={
+        "gateway": {"url": "https://gw.example.com"}, "connected": ["claude-code"],
+        "agents": [{"id": "claude-code", "name": "Claude Code"}]}))
+    assert orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=transport) == 0
+    req = seen[0]
+    assert (req.method, req.url.path) == ("POST", "/v1/app/gateway")
+    import json as _json
+
+    assert _json.loads(req.content) == {"url": "https://gw.example.com", "key": "sk-orca-team"}
+    assert "Connected to https://gw.example.com: Claude Code." in capsys.readouterr().out
 
 
 def test_login_with_a_bad_key_changes_nothing(orca_home, tmp_path, monkeypatch, capsys):
