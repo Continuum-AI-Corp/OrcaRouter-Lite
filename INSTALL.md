@@ -9,7 +9,7 @@ set up**. Everything lives in `~/.orcarouter-lite` (on Windows,
 
 - **Releases** (from the next release): the
   [latest release](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/releases/latest)
-  has `.dmg` (Apple silicon and Intel), `.msi`/`.exe` (Windows) and
+  has `.dmg` (Apple silicon and Intel), a setup `.exe` (Windows) and
   `.deb`/`.AppImage` (Linux).
 - **Before the first release:** open the latest green run of the
   [desktop workflow](https://github.com/Continuum-AI-Corp/OrcaRouter-Lite/actions/workflows/desktop.yml)
@@ -53,9 +53,9 @@ Orca lives in the menu bar; it has no Dock icon.
 
 ### Windows
 
-Run the `.msi` or the setup `.exe`. Until the project's code-signing
-certificate is set up, SmartScreen may say "Windows protected your PC": click
-**More info → Run anyway**. Orca lives in the notification area (click the `^`
+Run the setup `.exe`. It is signed by CONTINUUM AI PTE. LTD.; while a new
+release builds reputation, SmartScreen may still say "Windows protected your
+PC": click **More info → Run anyway**. Orca lives in the notification area (click the `^`
 next to the clock if you don't see it).
 
 ### Linux

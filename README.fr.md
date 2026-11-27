@@ -47,7 +47,7 @@ vos agents de code et affiche ce qu'ils dépensent.
 - **Privé par défaut.** Les prompts vont directement de vos agents au fournisseur de votre choix. Aucune télémétrie.
 - **Compatible avec la gateway de votre équipe.** `orca login https://ai-gw.example.com --key …` (ou "Join my company's gateway" dans la configuration) dirige vos agents vers la gateway gérée par votre équipe plateforme ; `orca logout` les rétablit.
 
-**Installation.** Les installeurs (`.dmg`, `.deb`, `.AppImage`, `.msi`) sont construits par
+**Installation.** Les installeurs (`.dmg`, `.deb`, `.AppImage`, `.exe`) sont construits par
 [`desktop.yml`](./.github/workflows/desktop.yml) et joints à chaque release, à partir de la
 prochaine version taguée. En attendant, le même moteur et la même CLI sont à une commande près :
 

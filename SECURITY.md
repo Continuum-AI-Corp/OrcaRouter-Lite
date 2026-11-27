@@ -157,9 +157,8 @@ person on one computer:
   if that folder isn't writable), or `~/.local/bin/orca` if you decline.
   Linux: a link at `~/.local/bin/orca`. Windows: a one-line
   `~/.orcarouter-lite/bin/orca.cmd` and that folder added to your user PATH
-  (`HKCU\Environment`), both removed by the setup `.exe`'s uninstaller (the
-  `.msi` uninstaller leaves them: delete the folder and its PATH entry by
-  hand). It never replaces an `orca` that isn't Orca's, and if your PATH
+  (`HKCU\Environment`), both removed by the uninstaller. It never replaces
+  an `orca` that isn't Orca's, and if your PATH
   can't be read it changes nothing.
 - **The engine stops with the app.** The app holds a pipe to the engine; when
   the app exits for any reason, the engine exits too.

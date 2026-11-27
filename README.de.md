@@ -47,7 +47,7 @@ Coding-Agenten damit und zeigt, was sie ausgeben.
 - **Standardmäßig privat.** Prompts gehen direkt von Ihren Agenten an den Provider Ihrer Wahl. Keine Telemetrie.
 - **Funktioniert mit dem Gateway Ihres Teams.** `orca login https://ai-gw.example.com --key …` (oder "Join my company's gateway" in der Einrichtung) richtet Ihre Agenten auf das Gateway aus, das Ihr Plattform-Team betreibt; `orca logout` stellt den vorherigen Zustand wieder her.
 
-**Installation.** Installer (`.dmg`, `.deb`, `.AppImage`, `.msi`) werden von
+**Installation.** Installer (`.dmg`, `.deb`, `.AppImage`, `.exe`) werden von
 [`desktop.yml`](./.github/workflows/desktop.yml) gebaut und ab der nächsten getaggten Version an
 jedes Release angehängt. Bis dahin sind dieselbe Engine und CLI nur einen Befehl entfernt:
 

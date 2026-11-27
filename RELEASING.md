@@ -9,7 +9,7 @@ the one-time setup each one needs and the steps to cut a release.
 |---|---|---|
 | Container image | `ghcr.io/continuum-ai-corp/orcarouter-lite` | `release.yml` — `image` job (cosign-signed, SBOM + provenance) |
 | Python package | [pypi.org/p/orcarouter-lite](https://pypi.org/p/orcarouter-lite) | `release.yml` — `pypi` job |
-| Desktop installers (`.dmg`, `.deb`, `.AppImage`, `.msi`, `.exe`) | GitHub release | `desktop.yml` — `bundle` job |
+| Desktop installers (`.dmg`, `.deb`, `.AppImage`, Windows setup `.exe`) | GitHub release | `desktop.yml` — `bundle` job |
 | Homebrew cask | GitHub release asset `orcarouter-lite.rb`, copied to the tap | `desktop.yml` — `homebrew-cask` job, then manual copy |
 | Homebrew formula (CLI only) | GitHub release asset `orcarouter-lite-formula.rb`, copied to the tap | `release.yml` — `pypi` job, then manual copy |
 | winget manifests | GitHub release assets `OrcaRouter.Lite*.yaml`, submitted to `microsoft/winget-pkgs` | `desktop.yml` — `winget-manifest` job, then a manual pull request |
@@ -138,17 +138,59 @@ nightly job fails instead of publishing a report of failures.
 
 ### 7. Windows code signing
 
-Without a certificate the `.msi` and `.exe` are built unsigned and SmartScreen
-warns on first run. Add repository secrets:
+Windows ships one installer, the NSIS setup `.exe`. There is no `.msi`: Tauri's
+MSI has no uninstall hook, so uninstalling it left agents pointing at a removed
+engine, and every extra installer costs more signings. Release tags sign it with the
+company's SSL.com eSigner certificate (OV, publisher "CONTINUUM AI PTE. LTD."),
+the same certificate OrcaRouter-O2 signs Orca Connect with. Signing runs inside
+`tauri build` through `desktop/src-tauri/windows/sign.ps1` (Tauri's
+`signCommand`).
 
-| Secret | What it is |
-|---|---|
-| `WINDOWS_CERTIFICATE` | base64 of the code-signing certificate exported as `.pfx` |
-| `WINDOWS_CERTIFICATE_PASSWORD` | the `.pfx` export password |
+**Signings cost.** The eSigner plan is a yearly allowance of signings shared by
+every product on the certificate (check "Unused Signings" on the SSL.com order
+page). Only the four `.exe` files are signed: the app, the `orca-engine`
+sidecar, the uninstaller and the setup. That is **4 signings per release**, and
+the build prints the count ("Files sent to the signer"). A signing that
+succeeded still counts when a later step fails, so re-running a tag spends 4
+more. NSIS plugin DLLs are deliberately left unsigned.
 
-The Windows job imports it, signs both installers with SHA-256 and a DigiCert
-timestamp, and checks each file carries a signature. Pull requests sign with a
-throwaway self-signed certificate so that path stays tested.
+One-time setup by a repository admin:
+
+1. **Environment.** Settings → Environments → New environment
+   `desktop-release`, with required reviewers (the release owners) and
+   deployment tags limited to `v*`. Only the Windows build of a release tag
+   uses it, so every release waits for one approval before signing.
+2. **Environment secrets** of `desktop-release` (not repository secrets, which
+   any workflow can read, including one on an unmerged branch a tag points at),
+   the same four values as OrcaRouter-O2's `connect-release` environment:
+
+   | Secret | What it is |
+   |---|---|
+   | `ES_USERNAME` | SSL.com account user name |
+   | `ES_PASSWORD` | SSL.com account password |
+   | `ES_CREDENTIAL_ID` | eSigner credential id of the code-signing order |
+   | `ES_TOTP_SECRET` | eSigner TOTP secret (the base32 seed, not a 6-digit code) |
+
+3. **Pin CodeSignTool.** `sign.ps1` downloads SSL.com's CodeSignTool
+   (`$CodeSignToolVersion`) and refuses to run it unless its SHA-256 matches
+   `$CodeSignToolSha256`, because it is handed all four secrets. Download the
+   zip from <https://github.com/SSLcom/CodeSignTool/releases> on a trusted
+   machine, review it, then commit its hash:
+
+   ```powershell
+   (Get-FileHash CodeSignTool-v1.3.2.zip -Algorithm SHA256).Hash.ToLower()
+   ```
+
+A tag build without the secrets or the pin fails at the "Windows signing" step
+instead of publishing an unsigned installer. After signing, every file is
+checked for a valid chain, a timestamp and the publisher, and the setup, app and
+engine `.exe` are checked again before upload. Pull requests and manual runs
+sign the same four files with a throwaway self-signed certificate, so the whole
+path runs on every change without spending signings.
+
+An OV certificate removes "Unknown publisher" at once; SmartScreen's "Windows
+protected your PC" can still show for a new release until it builds reputation
+(shared across everything signed with this certificate).
 
 ### 8. In-app updates
 

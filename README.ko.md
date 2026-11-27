@@ -47,7 +47,7 @@ Orca 앱은 메뉴 바에 상주합니다. `127.0.0.1`에서 라우터를 실행
 - **기본적으로 비공개.** 프롬프트는 에이전트에서 선택한 공급자로 바로 전송됩니다. 텔레메트리는 없습니다.
 - **팀 게이트웨이와 함께 사용.** `orca login https://ai-gw.example.com --key …`(또는 초기 설정의 "Join my company's gateway")로 플랫폼 팀이 운영하는 게이트웨이에 에이전트를 연결하고, `orca logout`으로 원래대로 복원합니다.
 
-**설치.** 설치 파일(`.dmg`, `.deb`, `.AppImage`, `.msi`)은
+**설치.** 설치 파일(`.dmg`, `.deb`, `.AppImage`, `.exe`)은
 [`desktop.yml`](./.github/workflows/desktop.yml)로 빌드되며, 다음 태그 버전부터 각 릴리스에
 첨부됩니다. 그때까지는 같은 엔진과 CLI를 명령 한 줄로 사용할 수 있습니다.
 

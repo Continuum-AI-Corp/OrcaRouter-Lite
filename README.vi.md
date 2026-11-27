@@ -47,7 +47,7 @@ của bạn vào đó và cho bạn thấy chúng tiêu bao nhiêu.
 - **Riêng tư theo mặc định.** Prompt đi thẳng từ agent của bạn tới provider bạn chọn. Không có telemetry.
 - **Dùng được với gateway của đội.** `orca login https://ai-gw.example.com --key …` (hoặc "Join my company's gateway" trong phần thiết lập) trỏ các agent của bạn tới gateway do đội platform vận hành; `orca logout` khôi phục lại như cũ.
 
-**Cài đặt.** Bộ cài (`.dmg`, `.deb`, `.AppImage`, `.msi`) được build bởi
+**Cài đặt.** Bộ cài (`.dmg`, `.deb`, `.AppImage`, `.exe`) được build bởi
 [`desktop.yml`](./.github/workflows/desktop.yml) và đính kèm vào mỗi bản phát hành, bắt đầu từ
 phiên bản được gắn tag tiếp theo. Cho đến lúc đó, cùng engine và CLI ấy chỉ cách bạn một lệnh:
 

@@ -44,7 +44,7 @@ O app Orca fica na sua barra de menus. Ele roda o roteador em `127.0.0.1`, conec
 - **Privado por padrão.** Os prompts vão direto dos seus agentes para o provedor que você escolher. Sem telemetria.
 - **Funciona com o gateway do seu time.** `orca login https://ai-gw.example.com --key …` (ou "Join my company's gateway" na configuração inicial) aponta seus agentes para o gateway que o seu time de plataforma mantém; `orca logout` os restaura.
 
-**Instalação.** Os instaladores (`.dmg`, `.deb`, `.AppImage`, `.msi`) são gerados pelo [`desktop.yml`](./.github/workflows/desktop.yml) e anexados a cada release, a partir da próxima versão com tag. Até lá, o mesmo engine e a mesma CLI estão a um comando de distância:
+**Instalação.** Os instaladores (`.dmg`, `.deb`, `.AppImage`, `.exe`) são gerados pelo [`desktop.yml`](./.github/workflows/desktop.yml) e anexados a cada release, a partir da próxima versão com tag. Até lá, o mesmo engine e a mesma CLI estão a um comando de distância:
 
 **Só precisa do app:** ele traz o próprio motor e um arquivo SQLite local; não há servidor nem banco de dados para configurar. Download, primeira execução, iniciar com o sistema e desinstalação: [INSTALL.md](./INSTALL.md) (em inglês).
 

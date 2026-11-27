@@ -47,7 +47,7 @@ di coding e mostra quanto spendono.
 - **Privata per impostazione predefinita.** I prompt vanno direttamente dai tuoi agenti al provider che scegli. Nessuna telemetria.
 - **Funziona con il gateway del tuo team.** `orca login https://ai-gw.example.com --key …` (o "Join my company's gateway" nella configurazione iniziale) indirizza i tuoi agenti al gateway gestito dal tuo team di piattaforma; `orca logout` li ripristina.
 
-**Installazione.** Gli installer (`.dmg`, `.deb`, `.AppImage`, `.msi`) vengono generati da
+**Installazione.** Gli installer (`.dmg`, `.deb`, `.AppImage`, `.exe`) vengono generati da
 [`desktop.yml`](./.github/workflows/desktop.yml) e allegati a ogni release, a partire dalla
 prossima versione taggata. Fino ad allora, lo stesso motore e la stessa CLI sono a un comando di distanza:
 
