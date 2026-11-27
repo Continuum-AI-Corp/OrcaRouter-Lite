@@ -35,7 +35,7 @@ from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
-from packages.desktop import hosted_state, prefs
+from packages.desktop import hosted_state, local_models, prefs
 from packages.desktop.agents import CODEX_AUTO_MODEL
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_catalog import is_free_hosted
@@ -203,6 +203,11 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
         hosted_state.mark_free_unavailable(str(exc))
         if desktop:
             detail = desktop_routing.free_unavailable_detail(str(exc))
+    if exc.error_type == desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE:
+        local_models.expire()
+        if desktop and exc.deployment_id:
+            runtime = exc.deployment_id.split("::", 1)[-1].split("/", 1)[0]
+            detail = desktop_routing.local_unavailable_detail(runtime)
     if exc.error_type == route_notes.OUT_OF_CREDIT:
         hosted_state.mark_out_of_credit()
         if desktop:
@@ -525,7 +530,8 @@ async def execute_chat(
         if local.serve_as:
             body = body.model_copy(update={"model": local.serve_as})
         elif local.refuse_type:
-            await _refuse(422, local.refuse_type, local.detail or "", None)
+            status = 503 if local.refuse_type == desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE else 422
+            await _refuse(status, local.refuse_type, local.detail or "", None)
 
     # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
     # claude-sonnet-4-6) is the model that was asked for, not a substitute.

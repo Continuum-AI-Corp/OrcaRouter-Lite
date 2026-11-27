@@ -504,6 +504,10 @@ _ENGINE_ERROR_STATUS = {
     # `upstream_error` deliberately stays generic (500 api_error): it is the
     # bucket for failures we could not classify at all.
     "upstream_timeout": 529,
+    # Ollama / LM Studio / llama.cpp isn't running. A 5xx would have the
+    # agent back off and retry for minutes; nothing changes until the user
+    # starts it, so it's a plain bad request on this surface.
+    "local_runtime_unavailable": 400,
 }
 
 

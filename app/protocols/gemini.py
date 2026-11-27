@@ -567,6 +567,10 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     "payment_required": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
+    # Ollama / LM Studio / llama.cpp isn't running. A 5xx would have the
+    # agent back off and retry for minutes; nothing changes until the user
+    # starts it, so it's a plain bad request on this surface.
+    "local_runtime_unavailable": 400,
 }
 
 

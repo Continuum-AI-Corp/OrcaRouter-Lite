@@ -118,6 +118,24 @@ def free_refusal_watcher(on_refusal):
     return _Watcher()
 
 
+# Deployment ids of the models on this computer (packages/desktop/local_models.py).
+LOCAL_DEPLOYMENT_PREFIX = "local::"
+LOCAL_RUNTIME_UNAVAILABLE = "local_runtime_unavailable"
+
+
+def _connect_failure(exc: BaseException) -> bool:
+    """The request never reached the server: nothing listened at the address
+    (connection refused, which Windows reports as a connect timeout)."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _translate_error(exc: Exception) -> UpstreamProviderError:
     import litellm
 
@@ -127,6 +145,12 @@ def _translate_error(exc: Exception) -> UpstreamProviderError:
         # Not a rate limit to retry nor an empty wallet: this account can't
         # use OrcaRouter's free models (the message says why and what to do).
         return UpstreamProviderError(refused, http_status=403, error_type="free_unavailable")
+    failed = str(getattr(exc, "failed_deployment_id", "") or "")
+    if failed.startswith(LOCAL_DEPLOYMENT_PREFIX) and _connect_failure(exc):
+        # Ollama / LM Studio / llama.cpp isn't running: not a slow upstream
+        # (LiteLLM calls it a timeout or a connection error depending on the
+        # runtime and the platform), and nothing a retry fixes until it starts.
+        return UpstreamProviderError(msg, http_status=503, error_type=LOCAL_RUNTIME_UNAVAILABLE, deployment_id=failed)
     if isinstance(exc, litellm.ContextWindowExceededError):
         return UpstreamProviderError(msg, http_status=422, error_type="context_length_exceeded")
     if isinstance(exc, litellm.NotFoundError):

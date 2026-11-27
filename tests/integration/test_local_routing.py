@@ -144,7 +144,7 @@ async def test_a_prefixed_model_of_a_runtime_that_is_not_running_says_so(engine)
     _found(TINY, lmstudio_running=False)
     engine.router = FakeRouter([*local(TINY.id), *CLOUD])
     r = await engine.chat(await engine.agent_key("opencode"), {**PING, "model": "lmstudio/qwen2.5-1.5b-instruct"})
-    assert r.status_code == 422, r.text
+    assert r.status_code == 503, r.text
     assert r.headers["x-orca-error-type"] == "local_runtime_unavailable"
     assert "LM Studio isn't running at 127.0.0.1:1234" in r.text
     assert engine.router.calls == []
@@ -155,6 +155,7 @@ async def test_a_prefixed_model_the_running_runtime_does_not_list_says_so(engine
     engine.router = FakeRouter([*local(TINY.id), *CLOUD])
     r = await engine.chat(await engine.agent_key("opencode"), {**PING, "model": "ollama/nope:7b"})
     assert r.status_code == 422, r.text
+    assert r.headers["x-orca-error-type"] == "model_not_found"
     assert "Ollama doesn't list nope:7b" in r.text
 
 
@@ -164,3 +165,34 @@ async def test_a_cloud_name_still_falls_back_as_before(engine):
     r = await engine.chat(await engine.agent_key("opencode"), {**PING, "model": "qwen3.6-max"})
     assert r.status_code == 200, r.text
     assert engine.router.calls[-1]["model"] == "qwen3.5-flash"
+
+
+# ── Issue 30: a local runtime that stopped is reported as not running ──
+
+def _runtime_down():
+    return UpstreamProviderError("litellm.Timeout: Request timed out", http_status=503,
+                                 error_type="local_runtime_unavailable", deployment_id=f"local::{CODER.id}")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_stopped_runtime_is_reported_as_not_running(engine, stream):
+    engine.router = FakeRouter(DEPS, strategy="balanced")
+    engine.router.failing["local"] = _runtime_down()
+    r = await engine.chat(engine.root_key, {**PING, "model": CODER.id}, stream=stream)
+    assert r.status_code == 503, r.text
+    assert r.headers["x-orca-error-type"] == "local_runtime_unavailable"
+    assert "Ollama isn't running at 127.0.0.1:11434" in r.text
+    assert "timed out" not in r.text
+    # the panel re-probes instead of showing Ollama as running for another 30 s
+    assert lm._cache[0] == 0.0
+
+
+async def test_a_stopped_runtime_is_a_bad_request_for_claude_code(engine):
+    engine.router = FakeRouter(DEPS, strategy="balanced")
+    engine.router.failing["local"] = _runtime_down()
+    body = {"model": CODER.id, "max_tokens": 16, "messages": [{"role": "user", "content": "ping"}]}
+    async with engine.client(engine.root_key) as c:
+        r = await c.post("/v1/messages", json=body)
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["type"] == "invalid_request_error"
+    assert "Ollama isn't running" in r.json()["error"]["message"]

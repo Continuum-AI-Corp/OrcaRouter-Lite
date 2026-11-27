@@ -232,7 +232,14 @@ def local_match(ctx: RoutingContext, model: str) -> LocalMatch:
         if known is not None:
             return LocalMatch(refuse_type=LOCAL_NOT_ENABLED_TYPE, detail=local_not_enabled_detail(model))
         runtime = model.split("/", 1)[0]
-        return LocalMatch(refuse_type=LOCAL_RUNTIME_UNAVAILABLE_TYPE, detail=local_missing_detail(model, runtime))
+        probed = next((r for r in local_models.last() if r.id == runtime), None)
+        if probed is not None and probed.running:
+            name = _runtime_label(runtime)[0]
+            return LocalMatch(
+                refuse_type="model_not_found",
+                detail=f"{name} doesn't list {model.split('/', 1)[1]}. Download it in {name}, then refresh in Orca.",
+            )
+        return LocalMatch(refuse_type=LOCAL_RUNTIME_UNAVAILABLE_TYPE, detail=local_unavailable_detail(runtime))
     key = _local_key(model)
     matches = [m for m in found if _local_key(m.name) == key]
     on = [m.id for m in matches if m.id in ctx.deployable]
@@ -255,14 +262,6 @@ def local_not_enabled_detail(model_id: str) -> str:
         f"{model_id} is on this computer but isn't turned on in Orca. Turn it on under "
         "\"On this computer\" in Orca, then try again."
     )
-
-
-def local_missing_detail(model_id: str, runtime: str) -> str:
-    name, _url = _runtime_label(runtime)
-    probed = next((r for r in local_models.last() if r.id == runtime), None)
-    if probed is not None and probed.running:
-        return f"{name} doesn't list {model_id.split('/', 1)[1]}. Download it in {name}, then refresh in Orca."
-    return local_unavailable_detail(runtime)
 
 
 def local_unavailable_detail(runtime: str) -> str:
