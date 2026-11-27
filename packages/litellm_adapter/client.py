@@ -148,6 +148,32 @@ def _record_failure(deployment_id: str | None, exc: Exception, *, now: float | N
         attempts.append((deployment_id, exc))
 
 
+# Models that think by default and then refuse a forced tool call
+# ("tool_choice 'required' / 'specified' is incompatible with thinking
+# enabled"). OrcaRouter's kimi upstreams refuse about half such requests;
+# with thinking turned off every one is served (issue 9).
+_NO_THINKING_WHEN_FORCED = ("kimi",)
+
+
+def _forced_tool_choice(tool_choice: object) -> bool:
+    return tool_choice == "required" or (isinstance(tool_choice, dict) and tool_choice.get("type") == "function")
+
+
+def adjust_for_forced_tools(kwargs: dict) -> dict | None:
+    """The request for one deployment, changed when that deployment needs it:
+    a kimi model asked to call a tool gets its thinking turned off. None
+    when nothing changes. Per deployment, so the other models in the same
+    fallback chain are sent the request as it was."""
+    model = str(kwargs.get("model") or "").lower()
+    if not _forced_tool_choice(kwargs.get("tool_choice")) or not any(m in model for m in _NO_THINKING_WHEN_FORCED):
+        return None
+    out = dict(kwargs)
+    out.pop("reasoning_effort", None)
+    out.pop("thinking", None)
+    out["extra_body"] = {**(out.get("extra_body") or {}), "thinking": {"type": "disabled"}}
+    return out
+
+
 def _ensure_attempt_recorder() -> None:
     global _recorder
     if _recorder is not None:
@@ -159,6 +185,9 @@ def _ensure_attempt_recorder() -> None:
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
             model_info = (kwargs.get("litellm_params") or {}).get("model_info") or {}
             _record_failure(model_info.get("id"), kwargs.get("exception"))
+
+        async def async_pre_call_deployment_hook(self, kwargs, call_type):
+            return adjust_for_forced_tools(kwargs)
 
     _recorder = _AttemptRecorder()
     litellm.callbacks = [*(litellm.callbacks or []), _recorder]
