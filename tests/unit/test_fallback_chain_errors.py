@@ -77,3 +77,16 @@ def test_recording_tags_the_exception_with_its_deployment():
     exc = _bad_request()
     c._record_failure("moonshot::kimi", exc)
     assert exc.failed_deployment_id == "moonshot::kimi"
+
+
+def test_models_that_failed_the_same_way_share_one_line():
+    a, b, k = _unavailable(), _unavailable(), _bad_request()
+    names = {"x::1": "glm-free", "x::2": "deepseek-free", "moonshot::kimi": "kimi-k2.6"}
+    _, summary = c._explain_chain(a, [("x::1", a), ("x::2", b), ("moonshot::kimi", k)], names)
+    assert "glm-free, deepseek-free: The upstream provider is temporarily unavailable" in summary
+
+
+def test_one_shared_reason_needs_no_summary():
+    a, b = _unavailable(), _unavailable()
+    names = {"x::1": "glm-free", "x::2": "deepseek-free"}
+    assert c._explain_chain(a, [("x::1", a), ("x::2", b)], names) == (a, None)

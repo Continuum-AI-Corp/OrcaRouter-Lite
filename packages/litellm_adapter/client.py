@@ -208,9 +208,12 @@ def _explain_chain(
         classify = exc
     else:
         classify = (cooling or real)[-1][1]
-    if len(by_name) == 1 and not _is_cooldown(exc):
-        return classify, None
-    parts = [f"{name}: {_reason(err)}" for name, err in by_name.items()]
+    by_reason: dict[str, list[str]] = {}
+    for name, err in by_name.items():
+        by_reason.setdefault(_reason(err), []).append(name)
+    if len(by_reason) == 1 and not _is_cooldown(exc):
+        return classify, None  # one reason for everything: the error already says it
+    parts = [f"{', '.join(names)}: {reason}" for reason, names in by_reason.items()]
     return classify, "Every model tried failed. " + "; ".join(parts)
 
 
