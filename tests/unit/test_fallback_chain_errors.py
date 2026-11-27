@@ -90,3 +90,15 @@ def test_one_shared_reason_needs_no_summary():
     a, b = _unavailable(), _unavailable()
     names = {"x::1": "glm-free", "x::2": "deepseek-free"}
     assert c._explain_chain(a, [("x::1", a), ("x::2", b)], names) == (a, None)
+
+
+def test_request_ids_do_not_split_one_reason():
+    def busy(rid):
+        return litellm.ServiceUnavailableError(
+            message=f"The upstream provider is temporarily unavailable. (request id: {rid})",
+            model="gemini-3.1-pro-preview", llm_provider="openai")
+    a, b, k = busy("111"), busy("222"), _bad_request()
+    names = {"g::1": "gemini-3.1-pro-preview", "g::2": "gemini-3.1-flash-lite", "moonshot::kimi": "kimi-k2.6"}
+    _, summary = c._explain_chain(a, [("g::1", a), ("g::2", b), ("moonshot::kimi", k)], names)
+    assert "gemini-3.1-pro-preview, gemini-3.1-flash-lite: The upstream provider is temporarily unavailable." in summary
+    assert "request id" not in summary

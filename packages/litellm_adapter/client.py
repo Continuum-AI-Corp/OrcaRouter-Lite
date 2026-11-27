@@ -172,7 +172,13 @@ def _reason(exc: BaseException) -> str:
     """The provider's own words, without LiteLLM's wrapping."""
     text = str(getattr(exc, "message", None) or exc).split("\n\nLiteLLM:", 1)[0]
     text = _LITELLM_PREFIX.sub("", text.strip()).strip()
+    # OrcaRouter tags each answer with its request id: drop it so the same
+    # failure on several models reads (and groups) as one reason.
+    text = _REQUEST_ID.sub("", text).strip()
     return text if len(text) <= 240 else text[:237] + "..."
+
+
+_REQUEST_ID = re.compile(r"\s*\(request id: [^)]*\)")
 
 
 def _explain_chain(
