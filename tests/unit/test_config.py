@@ -111,3 +111,15 @@ def test_settings_redis_optional(isolated_env, monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     s2 = Settings(_env_file=None)
     assert s2.redis_url == "redis://localhost:6379/0"
+
+
+def test_desktop_mode_ignores_an_orcarouter_key_from_the_environment(isolated_env, monkeypatch):
+    """The desktop engine inherits the user's shell; a stray ORCAROUTER_API_KEY
+    must not be used before Setup connects OrcaRouter."""
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-from-shell")
+    monkeypatch.setenv("ORCA_DESKTOP_MODE", "1")
+    from app.config import Settings
+
+    assert Settings(_env_file=None).orcarouter_api_key is None
+    monkeypatch.setenv("ORCA_DESKTOP_MODE", "0")
+    assert Settings(_env_file=None).orcarouter_api_key == "sk-orca-from-shell"

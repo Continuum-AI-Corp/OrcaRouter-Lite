@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Providers we accept from env vars. Must stay in sync with:
@@ -186,6 +186,16 @@ class Settings(BaseSettings):
     # 2x in-deployment retries (which would add ~30-90s of perceived latency).
     router_num_retries_default: int = 2
     router_num_retries_auto: int = 0
+
+    @model_validator(mode="after")
+    def _desktop_ignores_env_orcarouter_key(self) -> Settings:
+        # The desktop app connects OrcaRouter through Setup (stored, shown in
+        # the panel, revocable there). An ORCAROUTER_API_KEY that happens to
+        # be in the user's shell (SDK work, CI) must not silently make the
+        # engine spend on that account before Setup.
+        if self.orca_desktop_mode:
+            self.orcarouter_api_key = None
+        return self
 
     def env_provider_keys(self) -> dict[str, str]:
         """Return the configured ENV-sourced provider keys as {provider: key}."""
