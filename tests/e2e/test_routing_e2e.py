@@ -203,9 +203,13 @@ def test_2_h2_a_failure_with_no_backup_then_a_rescue_through_orcarouter(stack):
     _drop_key(stack, "orcarouter")
     _key(stack, "anthropic", "sk-ant-e2e")
     _upstream_state(stack, anthropic="overloaded")
+    before = len(_calls(stack, "anthropic"))
     r = _claude_code(stack)
     assert r.status_code >= 500, r.text
-    assert _calls(stack, "anthropic")[-1]["model"] == "claude-sonnet-4-6"
+    # The asked model first; the same key's other Claude models are tried as
+    # its backups (issue 19), and are overloaded too.
+    tried = [c["model"] for c in _calls(stack, "anthropic")[before:]]
+    assert tried[0] == "claude-sonnet-4-6", tried
     row = _last_row(stack)
     assert (row["route_note"], row["provider"], row["status_code"] >= 500) == ("no_fallback", "anthropic", True)
 
