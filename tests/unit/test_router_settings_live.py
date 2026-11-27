@@ -138,8 +138,12 @@ async def test_servers_never_look_for_local_models(built, db_session, monkeypatc
 
 
 async def test_switching_hosted_models_rebuilds_with_paid_models(built, db_session, monkeypatch):
-    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-x")
-    config.get_settings.cache_clear()
+    from packages.auth.encryption import encrypt_credential
+    from packages.db.models.provider_key import ProviderKey
+
+    # The desktop app ignores ORCAROUTER_API_KEY; Setup stores the key.
+    db_session.add(ProviderKey(provider="orcarouter", encrypted_key=encrypt_credential("sk-orca-x"),
+                               key_prefix="sk-orca-...", label="default", is_enabled=True))
     await _save(db_session)  # default: free
     await router_cache.get_router(db_session)
     assert "claude-sonnet-4.6" not in {d.model_name for d in built[-1]["deployments"]}
