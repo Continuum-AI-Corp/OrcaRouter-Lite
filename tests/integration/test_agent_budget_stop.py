@@ -1,5 +1,6 @@
 """D3: a daily budget per agent. Once an agent's spend today reaches its cap
-the engine refuses that agent's generation requests with 429, and only
+the engine refuses that agent's generation requests (400, or 429 on the
+Anthropic surface, never to be retried), and only
 that agent's: other agents and keys keep working. Independent of the
 workspace-wide budget mode."""
 
@@ -46,10 +47,13 @@ async def test_an_agent_at_its_cap_is_paused(app_with_models, seeded, desktop_di
         other = await c.post("/v1/chat/completions", headers=_auth(codex), json={})
         script = await c.post("/v1/chat/completions", headers=_auth(root), json={})
         models = await c.get("/v1/models", headers=_auth(claude))
-    assert stopped.status_code == 429
+    assert stopped.status_code == 400
+    assert stopped.json()["error"]["type"] == "budget_exceeded"
     assert ("Today's budget for Claude Code ($5.00) is used up, so Orca paused it. Raise it in Orca."
             in stopped.text)
     assert stopped_messages.status_code == 429
+    assert stopped_messages.json()["error"]["type"] == "rate_limit_error"
+    assert stopped_messages.headers["x-should-retry"] == "false"
     assert other.status_code == 200 and script.status_code == 200 and models.status_code == 200
 
 
@@ -89,7 +93,7 @@ async def test_spend_through_an_earlier_key_of_the_same_agent_counts(app_with_mo
         claude = await _agent_key(c, root, home)  # reconnect: old key revoked
         await c.put("/v1/app/settings", headers=_auth(root), json={"agent_budgets": {"claude-code": 300}})
         r = await c.post("/v1/chat/completions", headers=_auth(claude), json={})
-    assert r.status_code == 429
+    assert r.status_code == 400
 
 
 async def test_raising_the_cap_applies_at_once(app_with_models, seeded, desktop_dirs, db_session):
@@ -99,6 +103,6 @@ async def test_raising_the_cap_applies_at_once(app_with_models, seeded, desktop_
         claude = await _agent_key(c, root, home)
         await c.put("/v1/app/settings", headers=_auth(root), json={"agent_budgets": {"claude-code": 100}})
         await _agent_spend(db_session, "claude-code", 2_000_000)
-        assert (await c.post("/v1/chat/completions", headers=_auth(claude), json={})).status_code == 429
+        assert (await c.post("/v1/chat/completions", headers=_auth(claude), json={})).status_code == 400
         await c.put("/v1/app/settings", headers=_auth(root), json={"agent_budgets": {"claude-code": 1000}})
         assert (await c.post("/v1/chat/completions", headers=_auth(claude), json={})).status_code == 200

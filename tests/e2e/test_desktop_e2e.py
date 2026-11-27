@@ -9,7 +9,7 @@ in a throwaway HOME next to a fake OpenAI-compatible provider. The test:
    Responses for Codex, Gemini for Gemini CLI, Chat Completions for
    OpenCode, Command Code, Aider, Hermes, Pi, OMP, Kilo, OpenClaw, Kimi Code
    and Goose), all reaching the fake provider;
-3. checks spend is attributed to each agent, the budget stop returns 429,
+3. checks spend is attributed to each agent, the budget stop refuses agents,
    and agent keys can't reach the app API;
 4. disconnects everything and checks every config is back byte for byte and
    the agent keys no longer work;
@@ -494,11 +494,11 @@ def test_8_the_budget_stop_pauses_agents(stack):
         base, key, model = _opencode(stack["home"])
         r = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"},
                        json={"model": model, "messages": [{"role": "user", "content": "ping"}]}, timeout=30)
-        assert r.status_code == 429, r.text
+        assert r.status_code == 400, r.text
         base, token, model = _codex(stack["home"])
         r = httpx.post(f"{base}/responses", headers={"Authorization": f"Bearer {token}"},
                        json={"model": model, "input": "ping"}, timeout=30)
-        assert r.status_code == 429, r.text
+        assert r.status_code == 400, r.text
     finally:
         assert _app(stack, "PUT", "/v1/app/settings", json={"daily_budget_cents": None, "budget_mode": "alert"}).status_code == 200
 

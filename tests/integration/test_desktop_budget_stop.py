@@ -1,5 +1,6 @@
 """Optional hard stop: with budget_mode "stop", coding agents are refused
-(429) once today's spend reaches the daily budget. "alert" (the default)
+(400, or 429 on the Anthropic surface, marked not to be retried) once
+today's spend reaches the daily budget. "alert" (the default)
 never blocks. Only agent keys are stopped, and only on generation calls."""
 
 from __future__ import annotations
@@ -86,9 +87,19 @@ async def test_stop_mode_refuses_agents_at_the_limit(app_with_models, seeded, de
         await c.put("/v1/app/settings", headers=_auth(root), json={"daily_budget_cents": 100, "budget_mode": "stop"})
         await _spend(db_session, 1_000_000)  # $1.00 == the $1.00 budget
         r = await c.post("/v1/chat/completions", headers=_auth(agent), json={})
-    assert r.status_code == 429
+        messages = await c.post("/v1/messages", headers=_auth(agent), json={})
+        gemini = await c.post("/v1beta/models/gemini-2.5-flash:generateContent", headers=_auth(agent), json={})
+    assert r.status_code == 400
     assert "daily budget" in r.text.lower()
     assert "$1.00" in r.text
+    # Agents retry 429s on their own; each response tells them not to.
+    for resp in (r, messages, gemini):
+        assert resp.headers["x-should-retry"] == "false"
+        assert 0 < int(resp.headers["retry-after"]) <= 25 * 3600
+    assert messages.status_code == 429
+    assert messages.json()["error"]["type"] == "rate_limit_error"
+    assert gemini.status_code == 400
+    assert gemini.json()["error"]["status"] == "FAILED_PRECONDITION"
 
 
 async def test_alert_mode_never_blocks(app_with_models, seeded, desktop_dirs, db_session):
