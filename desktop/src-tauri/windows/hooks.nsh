@@ -16,6 +16,13 @@
     nsExec::ExecToLog '"$INSTDIR\orca-engine.exe" disconnect --all'
     Pop $R0
 
+    ; The login item Orca writes (per user; machine-wide when an older
+    ; version ran as administrator). The HKLM delete needs admin rights and
+    ; silently does nothing without them.
+    DetailPrint "Removing the login item..."
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+
     DetailPrint "Removing the orca command..."
     Delete "$PROFILE\.orcarouter-lite\bin\orca.cmd"
     RMDir "$PROFILE\.orcarouter-lite\bin"

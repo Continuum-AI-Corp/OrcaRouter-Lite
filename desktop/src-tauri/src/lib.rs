@@ -7,6 +7,8 @@
 pub mod engine;
 pub mod install;
 pub mod logic;
+#[cfg(windows)]
+mod login_item;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -350,16 +352,24 @@ fn finish_setup(window: WebviewWindow) -> Result<(), String> {
 /// Make the OS login item match the "start at login" setting (on unless the
 /// user turned it off). Runs once the engine is up and after setup saves.
 fn sync_start_at_login(app: &AppHandle, eng: &engine::Engine) {
-    use tauri_plugin_autostart::ManagerExt;
     let Ok(settings) = eng.settings() else {
         return;
     };
-    let launcher = app.autolaunch();
-    let enabled = launcher.is_enabled().unwrap_or(false);
-    let result = match logic::autostart_change(logic::wants_start_at_login(&settings), enabled) {
-        Some(true) => launcher.enable(),
-        Some(false) => launcher.disable(),
-        None => Ok(()),
+    let wanted = logic::wants_start_at_login(&settings);
+    // Windows keeps its own per-user item (see login_item.rs); the plugin
+    // would write it machine-wide whenever Orca runs as administrator.
+    #[cfg(windows)]
+    let result = login_item::sync(&app.package_info().name, wanted);
+    #[cfg(not(windows))]
+    let result = {
+        use tauri_plugin_autostart::ManagerExt;
+        let launcher = app.autolaunch();
+        let enabled = launcher.is_enabled().unwrap_or(false);
+        match logic::autostart_change(wanted, enabled) {
+            Some(true) => launcher.enable(),
+            Some(false) => launcher.disable(),
+            None => Ok(()),
+        }
     };
     if let Err(e) = result {
         eprintln!("orca: start at login: {e}");
