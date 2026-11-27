@@ -133,8 +133,8 @@ def _extract_credentials(scope) -> list[str]:
     return candidates
 
 
-_ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error"}
-_GOOGLE_STATUSES = {401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 503: "UNAVAILABLE"}
+_ANTHROPIC_ERROR_TYPES = {401: "authentication_error", 403: "permission_error", 429: "rate_limit_error"}
+_GOOGLE_STATUSES = {400: "FAILED_PRECONDITION", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 503: "UNAVAILABLE"}
 
 
 def protocol_for_scope(scope) -> str:
@@ -185,7 +185,9 @@ def _error_payload(protocol: str, status: int, message: str, error_type: str) ->
     return json.dumps(body).encode()
 
 
-async def _send_error(send, scope, status: int, message: str, error_type: str) -> None:
+async def _send_error(
+    send, scope, status: int, message: str, error_type: str, headers: dict[str, str] | None = None
+) -> None:
     body = _error_payload(protocol_for_scope(scope), status, message, error_type)
     await send({
         "type": "http.response.start",
@@ -193,9 +195,28 @@ async def _send_error(send, scope, status: int, message: str, error_type: str) -
         "headers": [
             [b"content-type", b"application/json"],
             [b"content-length", str(len(body)).encode()],
+            *([k.encode(), v.encode()] for k, v in (headers or {}).items()),
         ],
     })
     await send({"type": "http.response.body", "body": body})
+
+
+async def _send_budget_stop(send, scope, reason: str) -> None:
+    """Refuse a paused agent so it stops at once and shows `reason`.
+
+    Agents retry 429s on their own (Claude Code retried 18 times in two
+    minutes, looking hung), and each agent honours a different signal:
+    - Anthropic SDK / Claude Code: a 429 with `x-should-retry: false` is
+      shown once and not retried (a 400 is re-sent in several variants).
+    - Codex retries 429 or replaces our text with its own quota message,
+      and Gemini CLI retries 429 even with the header; both stop on a 400
+      and print the message.
+    """
+    from packages.desktop import budget
+
+    status = 429 if protocol_for_scope(scope) == "anthropic" else 400
+    headers = {"x-should-retry": "false", "retry-after": str(budget.seconds_until_reset())}
+    await _send_error(send, scope, status, reason, "budget_exceeded", headers)
 
 
 # Specificity of AuthError messages from validate_api_key. A later
@@ -293,7 +314,7 @@ class AuthMiddleware:
         if key_context.name.startswith(AGENT_KEY_PREFIX):
             reason = await _desktop_budget_stop(path, key_context)
             if reason:
-                await _send_error(send, scope, 429, reason, "budget_exceeded")
+                await _send_budget_stop(send, scope, reason)
                 return
         scope.setdefault("state", {})["key_context"] = key_context
         scope.setdefault("state", {})["workspace_id"] = key_context.workspace_id

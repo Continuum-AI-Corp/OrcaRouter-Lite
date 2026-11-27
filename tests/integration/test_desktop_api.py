@@ -399,7 +399,12 @@ async def test_summary_counts_failures_avoided_and_savings(desktop_app, seeded, 
     assert s["week"]["saved_microcents"] == max(0, baseline - 300_000)
 
 
-async def test_summary_reports_provider_health(desktop_app, seeded, db_session):
+async def test_summary_reports_provider_health(desktop_app, seeded, db_session, monkeypatch):
+    from app import config
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-0123456789")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai-0123456789")
+    config.get_settings.cache_clear()
     root, _ = seeded
     root_id = await _key_id(db_session, "default")
     now = datetime.now(timezone.utc)
@@ -407,13 +412,15 @@ async def test_summary_reports_provider_health(desktop_app, seeded, db_session):
         _log(root_id, 1, now - timedelta(minutes=3), provider="anthropic"),
         _log(root_id, 0, now - timedelta(minutes=2), provider="openai", status=429),
         _log(root_id, 0, now - timedelta(minutes=1), provider="openai", status=500),
+        # A provider deleted since, and a failure no provider was attributed to.
+        _log(root_id, 0, now - timedelta(minutes=1), provider="deepseek"),
+        _log(root_id, 0, now - timedelta(minutes=1), provider="unknown", status=503),
     ])
     await db_session.commit()
     async with _client(desktop_app) as c:
         r = await c.get("/v1/app/summary", headers=_auth(root))
     health = {p["provider"]: p["state"] for p in r.json()["providers"]}
-    assert health["anthropic"] == "healthy"
-    assert health["openai"] == "degraded"
+    assert health == {"anthropic": "healthy", "openai": "degraded"}
 
 
 # ── desktop UI served by the engine ─────────────────────────────────────
@@ -614,6 +621,18 @@ async def test_leave_gateway_restores_agents(desktop_app, seeded, desktop_dirs, 
     assert r.status_code == 200
     assert not (home / ".claude" / "settings.json").exists()
     assert summary["gateway"] is None
+
+
+async def test_leaving_without_a_gateway_keeps_local_agents(desktop_app, seeded, desktop_dirs):
+    root, _ = seeded
+    home, _ = desktop_dirs
+    async with _client(desktop_app) as c:
+        await c.post("/v1/app/agents/claude-code/connect", headers=_auth(root))
+        before = (home / ".claude" / "settings.json").read_bytes()
+        r = await c.delete("/v1/app/gateway", headers=_auth(root))
+    assert r.status_code == 200
+    assert r.json()["gateway"] is None
+    assert (home / ".claude" / "settings.json").read_bytes() == before
 
 
 async def test_summary_reports_an_available_update(desktop_app, seeded, monkeypatch):

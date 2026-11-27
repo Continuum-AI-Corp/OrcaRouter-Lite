@@ -100,11 +100,15 @@ def build_deployments(
             model_groups = [bare_id]
             if wire_id in HOSTED_MODEL_ALIASES:
                 model_groups.append(wire_id)
+            # LiteLLM strips a leading `<custom_llm_provider>/` (here "openai/")
+            # before sending, so OpenAI's own models need it twice to reach
+            # OrcaRouter as `openai/gpt-5.5` rather than an unserved bare id.
+            litellm_model = f"openai/{wire_id}" if provider == "openai" else wire_id
             for model_group in model_groups:
                 deployments.append(
                     ProviderDeployment(
                         model_name=model_group,
-                        litellm_model=wire_id,
+                        litellm_model=litellm_model,
                         api_key=hosted_key,
                         api_base=settings.orcarouter_base_url,
                         provider=HOSTED_PROVIDER_NAME,
@@ -302,6 +306,8 @@ async def get_router(session) -> object:
             enable_pre_call_checks=settings.router_pre_call_checks,
             num_retries=inputs.num_retries,
         )
+        if settings.orca_desktop_mode:
+            _watch_free_refusals()
         _cached_inputs = inputs
         return _cached_client
 
@@ -311,3 +317,22 @@ def invalidate_router() -> None:
     global _cached_client, _cached_inputs
     _cached_client = None
     _cached_inputs = None
+
+
+_free_watcher = None
+
+
+def _watch_free_refusals() -> None:
+    """Register (once) the LiteLLM callback that notes OrcaRouter refusing its
+    free models for this account, including on an attempt a later model in
+    the same request rescued, so auto stops trying them for a while."""
+    global _free_watcher
+    if _free_watcher is not None:
+        return
+    import litellm
+
+    from packages.desktop import hosted_state
+    from packages.litellm_adapter.client import free_refusal_watcher
+
+    _free_watcher = free_refusal_watcher(hosted_state.mark_free_unavailable)
+    litellm.callbacks = [*(litellm.callbacks or []), _free_watcher]

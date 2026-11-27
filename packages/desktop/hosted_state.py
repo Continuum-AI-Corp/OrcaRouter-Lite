@@ -16,8 +16,14 @@ from __future__ import annotations
 import time
 
 OUT_OF_CREDIT_SECONDS = 600.0
+FREE_UNAVAILABLE_SECONDS = 600.0
 
 _until: float = 0.0
+# OrcaRouter refused its free models for this account (not eligible yet, or
+# the free allowance is used up): auto skips them for a while instead of
+# trying, failing and cooling them down on every request.
+_free_until: float = 0.0
+_free_reason: str | None = None
 
 
 def mark_out_of_credit(*, now: float | None = None) -> None:
@@ -34,6 +40,23 @@ def out_of_credit(*, now: float | None = None) -> bool:
     return (time.monotonic() if now is None else now) < _until
 
 
+def mark_free_unavailable(reason: str, *, now: float | None = None) -> None:
+    global _free_until, _free_reason
+    _free_until = (time.monotonic() if now is None else now) + FREE_UNAVAILABLE_SECONDS
+    _free_reason = reason
+
+
+def free_unavailable(*, now: float | None = None) -> bool:
+    return (time.monotonic() if now is None else now) < _free_until
+
+
+def free_unavailable_reason() -> str | None:
+    """OrcaRouter's own words for the refusal (it says what to do about it)."""
+    return _free_reason
+
+
 def reset() -> None:
-    global _until
+    global _until, _free_until, _free_reason
     _until = 0.0
+    _free_until = 0.0
+    _free_reason = None

@@ -328,3 +328,24 @@ def test_usable_providers_from_db_skips_undecryptable_rows():
         ),
     ]
     assert usable_providers_from_db(rows) == {"openai"}
+
+
+def test_hosted_deployments_send_orcarouters_own_model_id(monkeypatch):
+    """LiteLLM strips a leading `<custom_llm_provider>/` from the model name.
+    Hosted entries use custom_llm_provider="openai", so `openai/gpt-5.5` used
+    to go out as bare `gpt-5.5`, which OrcaRouter doesn't serve ("No capacity
+    for model gpt-5.5"). Every hosted model must reach OrcaRouter under its
+    full wire id, OpenAI's included."""
+    import litellm
+
+    from app.config import Settings
+    from app.router_cache import build_deployments
+
+    monkeypatch.setenv("ORCAROUTER_API_KEY", "sk-orca-hosted-xyz")
+    deps = build_deployments(env_keys={}, db_keys=[], settings=Settings(_env_file=None))
+    hosted = [d for d in deps if d.provider == "orcarouter"]
+    assert any(d.deployment_id == "hosted::openai/gpt-5.5" for d in hosted)
+    for d in hosted:
+        wire_id = d.deployment_id.removeprefix("hosted::")
+        sent, _provider, *_ = litellm.get_llm_provider(model=d.litellm_model, custom_llm_provider=d.custom_llm_provider)
+        assert sent == wire_id, (d.model_name, d.litellm_model, sent)

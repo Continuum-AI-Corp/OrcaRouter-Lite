@@ -561,10 +561,16 @@ _STREAM_ERROR_TYPE_TO_CODE = {
     # (the user has to allow paid models), or OrcaRouter is out of credit.
     # Neither succeeds on retry.
     "needs_paid_model": 403,
+    # OrcaRouter refused its free models for this account: no retry helps.
+    "free_unavailable": 403,
     "out_of_credit": 403,  # PERMISSION_DENIED: Google has no 402
     "payment_required": 403,
     "upstream_timeout": 503,
     "upstream_error": 503,
+    # Ollama / LM Studio / llama.cpp isn't running. A 5xx would have the
+    # agent back off and retry for minutes; nothing changes until the user
+    # starts it, so it's a plain bad request on this surface.
+    "local_runtime_unavailable": 400,
 }
 
 

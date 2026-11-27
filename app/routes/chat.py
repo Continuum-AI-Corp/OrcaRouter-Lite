@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import desktop_routing, prompt_cache, route_notes, router_cache
+from app.agent_model_fallback import backup_models as agent_backup_models
 from app.agent_model_fallback import fallback_preferences, is_agent_key
 from app.auto_routing import (
     _VERSION_SUFFIX_RE,
@@ -35,7 +36,8 @@ from app.quality_scores import resolve_model_metrics
 from app.schemas import ChatCompletionRequest
 from packages.auth.types import KeyContext
 from packages.db.models.request_log import RequestLog
-from packages.desktop import hosted_state, prefs
+from packages.desktop import hosted_state, local_models, prefs
+from packages.desktop.agents import CODEX_AUTO_MODEL
 from packages.litellm_adapter.catalog import CATALOG, CATALOG_BY_ID
 from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
@@ -47,6 +49,9 @@ from packages.litellm_adapter.hosted_fallback import (
 from packages.litellm_adapter.types import UpstreamProviderError
 
 logger = structlog.get_logger()
+# Model names an agent was connected with that mean model="auto".
+AUTO_ALIASES = frozenset({CODEX_AUTO_MODEL})
+
 router = APIRouter(prefix="/v1", tags=["Chat Completions"])
 
 # Relays the engine's translated error type (rate_limit_error,
@@ -194,11 +199,27 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
     minutes auto and agent fallback keep to own keys. In the desktop app the
     message then says what to do about it in plain words.
     """
-    detail = f"Upstream provider error: {exc}"
+    summary = getattr(exc, "attempts_summary", None)
+    # Several models failed: say what each said, not only the first one's
+    # error (often just "cooling down") as LiteLLM reports it.
+    detail = f"Upstream provider error: {summary or exc}"
+    if exc.error_type == desktop_routing.FREE_UNAVAILABLE_TYPE:
+        hosted_state.mark_free_unavailable(str(exc))
+        if desktop:
+            detail = desktop_routing.free_unavailable_detail(str(exc))
+    if exc.error_type == desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE:
+        local_models.expire()
+        if desktop and exc.deployment_id:
+            runtime = exc.deployment_id.split("::", 1)[-1].split("/", 1)[0]
+            detail = desktop_routing.local_unavailable_detail(runtime)
     if exc.error_type == route_notes.OUT_OF_CREDIT:
         hosted_state.mark_out_of_credit()
         if desktop:
             detail = desktop_routing.out_of_credit_detail(get_settings().orcarouter_billing_url)
+    if summary and desktop and exc.error_type in (
+        desktop_routing.FREE_UNAVAILABLE_TYPE, route_notes.OUT_OF_CREDIT, desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE,
+    ):
+        detail = f"{detail} {summary}"
     # The type travels in a header: the generic HTTP status alone loses it
     # (model_not_found is 422 here but 404 on the Anthropic/Gemini surfaces),
     # and the native routes map it to their own status/error taxonomy.
@@ -232,6 +253,49 @@ def _stream_hosted_fallback(stream_obj: object, client: object, requested_model:
     return hosted_bypass_of_local(
         deployments, served, requested_model=requested_model,
     )
+
+
+def _agent_backups(body, kc, ctx, strategy: str) -> list[str]:
+    """Same-vendor backups for an agent's pinned model that can take this
+    request (tools, images, JSON mode, context), closest model first."""
+    pool = desktop_routing.auto_deployable(ctx) - set(ctx.local_names)
+    if kc.model_allowlist is not None:
+        pool &= set(kc.model_allowlist)
+    by_id = {m.id: m for m in desktop_routing.candidates(ctx)}
+    body_dict = body.model_dump(exclude_none=True)
+    needs = required_capabilities(body_dict)
+    prompt_tokens = estimate_prompt_tokens(body_dict)
+    limits = desktop_routing.context_limits(ctx)
+
+    def can_serve(name: str) -> bool:
+        entry = by_id.get(name)
+        if entry is None:
+            return False
+        if "tools" in needs and not entry.supports_tools:
+            return False
+        if "vision" in needs and not entry.supports_vision:
+            return False
+        if "json_mode" in needs and not entry.supports_json_mode:
+            return False
+        return not (name in limits and prompt_tokens > limits[name])
+
+    return agent_backup_models(
+        body.model, {m for m in pool if can_serve(m)}, catalog=by_id.values(),
+        background=desktop_routing.is_background_model,
+    )
+
+
+def _backup_intent(backups: list[str], asked: str, *served: str | None) -> str | None:
+    """A backup that answered instead of the agent's model is a substitution.
+    `served` are the names the response gives for what answered (the model
+    group and the response's own model field, which can disagree)."""
+    if not backups:
+        return None
+    for name in served:
+        bare = (name or "").rsplit("/", 1)[-1]
+        if bare and bare != asked and bare in backups:
+            return route_notes.SUBSTITUTED
+    return None
 
 
 async def _build_log_row(
@@ -416,6 +480,10 @@ async def execute_chat(
     # Capture client intent before any mutation so the request log and the
     # `x-orca-requested-model` header always reflect what the user asked for,
     # not the post-resolution primary.
+    if body.model in AUTO_ALIASES:
+        # Codex is connected under a name it recognises (CODEX_AUTO_MODEL) so
+        # it keeps its file-editing tools; that name means auto.
+        body = body.model_copy(update={"model": "auto"})
     requested_model = body.model
     was_auto = body.model == "auto"
 
@@ -451,7 +519,7 @@ async def execute_chat(
     # app/route_notes.py); the served outcome may refine it.
     route_intent: str | None = None
 
-    async def _refuse(status: int, error_type: str, detail: str, note: str) -> None:
+    async def _refuse(status: int, error_type: str, detail: str, note: str | None) -> None:
         """Log a request the engine refuses before calling anyone, then raise.
 
         These refusals are events the desktop panel reports (a request that
@@ -503,6 +571,18 @@ async def execute_chat(
             # Not servable but allowed: agent fallback below routes it as auto.
             body = body.model_copy(update={"model": servable or target})
             was_auto = False
+
+    # A model on this computer, named the way its runtime names it
+    # (qwen2.5:1.5b) or with its runtime prefix (ollama/...): send it there,
+    # or say why it can't be, rather than let agent fallback below swap in a
+    # cloud model of the same family, which can be a paid one.
+    if not was_auto:
+        local = desktop_routing.local_match(ctx, body.model)
+        if local.serve_as:
+            body = body.model_copy(update={"model": local.serve_as})
+        elif local.refuse_type:
+            status = 503 if local.refuse_type == desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE else 422
+            await _refuse(status, local.refuse_type, local.detail or "", None)
 
     # The same model under OrcaRouter's spelling (claude-sonnet-4.6 for
     # claude-sonnet-4-6) is the model that was asked for, not a substitute.
@@ -710,6 +790,7 @@ async def execute_chat(
     # cascades automatically when the primary deployment fails or is in
     # cooldown — no explicit retry loop needed in this handler.
     fallbacks_arg: list | None = None
+    agent_backups: list[str] = []
     if was_auto and len(candidates) > 1:
         fallbacks_arg = [{candidates[0]: candidates[1:]}]
     elif not was_auto and desktop:
@@ -720,6 +801,19 @@ async def execute_chat(
         backup = desktop_routing.twin(body.model, ctx.deployable)
         if backup is not None:
             fallbacks_arg = [{body.model: [backup]}]
+        elif is_agent_key(kc.name) and body.model not in ctx.local_names and not (
+            route_intent == route_notes.MAPPED
+            and agent_id in ctx.prefs.agent_models
+            and not ctx.prefs.agent_models[agent_id].fallback_to_auto
+        ):
+            # An agent's own model is deployed but may fail upstream (no
+            # capacity, 503). Rather than fail the agent with "no fallback
+            # was attempted", back it up with the same vendor's closest
+            # models it can use (paid ones only where paid models are on).
+            agent_backups = _agent_backups(body, kc, ctx, strategy)
+            logger.info("agent_model_backups", requested=body.model, backups=agent_backups)
+            if agent_backups:
+                fallbacks_arg = [{body.model: agent_backups}]
 
     # On the auto path, set num_retries=0 so a dead primary cascades to the
     # next fallback immediately. Default num_retries (configured on Router)
@@ -727,7 +821,7 @@ async def execute_chat(
     # before the user sees a working response.
     settings = get_settings()
     per_call_kwargs: dict = {}
-    if was_auto:
+    if was_auto or agent_backups:
         per_call_kwargs["num_retries"] = settings.router_num_retries_auto
     # Who a failed request is attributed to when no response says so: the
     # provider that was asked first (own key before OrcaRouter).
@@ -971,7 +1065,8 @@ async def execute_chat(
                     row_status = log_status(status_code, error_type)
                 if error_type is None:
                     note = route_notes.for_success(
-                        intent=route_intent, provider=agg_provider,
+                        intent=route_intent or _backup_intent(agent_backups, body.model, served_group, agg_model),
+                        provider=agg_provider,
                         served_model=served_group or agg_model or resolved_model,
                     )
                     _note_hosted_success(agg_provider, served_group or agg_model or resolved_model)
@@ -1323,7 +1418,9 @@ async def execute_chat(
         if error_type is None and status_code < 400:
             meta = response_dict.get("_orca_meta") or {}
             note = route_notes.for_success(
-                intent=route_intent, provider=meta.get("provider"),
+                intent=route_intent or _backup_intent(
+                    agent_backups, body.model, meta.get("model_group"), actual_resolved),
+                provider=meta.get("provider"),
                 served_model=meta.get("model_group") or actual_resolved or resolved_model,
             )
             _note_hosted_success(

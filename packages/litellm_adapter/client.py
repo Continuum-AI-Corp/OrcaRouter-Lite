@@ -8,11 +8,14 @@ solo dev to ship a working router.
 
 from __future__ import annotations
 
+import contextvars
+import re
 import time
 
 import httpx
 import structlog
 
+from packages.litellm_adapter.hosted_catalog import is_free_hosted
 from packages.litellm_adapter.hosted_fallback import (
     HOSTED_DEPLOYMENT_PREFIX,
     hidden_params_of,
@@ -68,10 +71,220 @@ def _build_allowed_fails_policy():
     )
 
 
+# OrcaRouter's words when it refuses its free models to a whole account.
+_NOT_ELIGIBLE = "not available to this account"
+_LITELLM_PREFIX = re.compile(r"^(?:litellm\.\w+: )?(?:\w+: )?(?:\w+Exception - )?")
+
+
+def free_refusal(exc: Exception) -> str | None:
+    """OrcaRouter's message when it refused a free model for the whole account
+    (not eligible for free models yet, or the free allowance is used up);
+    None for anything else, a passing free rate limit included."""
+    failed = str(getattr(exc, "failed_deployment_id", "") or "")
+    if not failed.startswith(HOSTED_DEPLOYMENT_PREFIX) or not is_free_hosted(failed[len(HOSTED_DEPLOYMENT_PREFIX):]):
+        return None
+    body = getattr(exc, "body", None)
+    body = body if isinstance(body, dict) else {}
+    # LiteLLM prefixes the upstream text with its own exception names.
+    message = _LITELLM_PREFIX.sub("", str(body.get("message") or exc)).strip()
+    status = getattr(exc, "status_code", None)
+    if status == 402 or body.get("code") == "free_quota_exhausted":
+        return message
+    if status == 429 and _NOT_ELIGIBLE in message:
+        return message
+    return None
+
+
+def free_refusal_watcher(on_refusal):
+    """A LiteLLM callback calling `on_refusal(message)` whenever a free model
+    is refused for the account, also mid-fallback when a later model answers
+    (the final error alone would miss those)."""
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _Watcher(CustomLogger):
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            exc = kwargs.get("exception")
+            if exc is None:
+                return
+            if not getattr(exc, "failed_deployment_id", None):
+                model_info = (kwargs.get("litellm_params") or {}).get("model_info") or {}
+                try:
+                    exc.failed_deployment_id = model_info.get("id")
+                except AttributeError:
+                    return
+            message = free_refusal(exc)
+            if message:
+                on_refusal(message)
+
+    return _Watcher()
+
+
+# ── What each model in a failed fallback chain actually said (issue 18) ──
+#
+# LiteLLM raises the first model's error when every fallback fails too, and
+# its message names only the last fallback's error. When the first model was
+# merely cooling down, the user saw "cooling down" and none of the real
+# reasons. A failure callback records each attempt of the current request
+# (and each deployment's latest failure, for the ones skipped while cooling
+# down); LiteLLM runs it before the final exception is raised.
+
+_ATTEMPTS: contextvars.ContextVar[list | None] = contextvars.ContextVar("orca_attempts", default=None)
+_LAST_FAILURE: dict[str, tuple[float, Exception]] = {}
+LAST_FAILURE_TTL_SECONDS = 600.0
+_recorder = None
+
+
+def _record_failure(deployment_id: str | None, exc: Exception, *, now: float | None = None) -> None:
+    if not deployment_id or exc is None:
+        return
+    if not getattr(exc, "failed_deployment_id", None):
+        try:
+            exc.failed_deployment_id = deployment_id  # what _translate_error reads
+        except AttributeError:
+            pass
+    _LAST_FAILURE[deployment_id] = (time.monotonic() if now is None else now, exc)
+    attempts = _ATTEMPTS.get()
+    if attempts is not None:
+        attempts.append((deployment_id, exc))
+
+
+# Models that think by default and then refuse a forced tool call
+# ("tool_choice 'required' / 'specified' is incompatible with thinking
+# enabled"). OrcaRouter's kimi upstreams refuse about half such requests;
+# with thinking turned off every one is served (issue 9).
+_NO_THINKING_WHEN_FORCED = ("kimi",)
+
+
+def _forced_tool_choice(tool_choice: object) -> bool:
+    return tool_choice == "required" or (isinstance(tool_choice, dict) and tool_choice.get("type") == "function")
+
+
+def adjust_for_forced_tools(kwargs: dict) -> dict | None:
+    """The request for one deployment, changed when that deployment needs it:
+    a kimi model asked to call a tool gets its thinking turned off. None
+    when nothing changes. Per deployment, so the other models in the same
+    fallback chain are sent the request as it was."""
+    model = str(kwargs.get("model") or "").lower()
+    if not _forced_tool_choice(kwargs.get("tool_choice")) or not any(m in model for m in _NO_THINKING_WHEN_FORCED):
+        return None
+    out = dict(kwargs)
+    out.pop("reasoning_effort", None)
+    out.pop("thinking", None)
+    out["extra_body"] = {**(out.get("extra_body") or {}), "thinking": {"type": "disabled"}}
+    return out
+
+
+def _ensure_attempt_recorder() -> None:
+    global _recorder
+    if _recorder is not None:
+        return
+    import litellm
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _AttemptRecorder(CustomLogger):
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            model_info = (kwargs.get("litellm_params") or {}).get("model_info") or {}
+            _record_failure(model_info.get("id"), kwargs.get("exception"))
+
+        async def async_pre_call_deployment_hook(self, kwargs, call_type):
+            return adjust_for_forced_tools(kwargs)
+
+    _recorder = _AttemptRecorder()
+    litellm.callbacks = [*(litellm.callbacks or []), _recorder]
+
+
+def _is_cooldown(exc: BaseException) -> bool:
+    return "No deployments available" in str(exc)
+
+
+def _reason(exc: BaseException) -> str:
+    """The provider's own words, without LiteLLM's wrapping."""
+    text = str(getattr(exc, "message", None) or exc).split("\n\nLiteLLM:", 1)[0]
+    text = _LITELLM_PREFIX.sub("", text.strip()).strip()
+    # OrcaRouter tags each answer with its request id: drop it so the same
+    # failure on several models reads (and groups) as one reason.
+    text = _REQUEST_ID.sub("", text).strip()
+    return text if len(text) <= 240 else text[:237] + "..."
+
+
+_REQUEST_ID = re.compile(r"\s*\(request id: [^)]*\)")
+
+
+def _explain_chain(
+    exc: Exception,
+    attempts: list[tuple[str, Exception]],
+    names: dict[str, str],
+    *,
+    now: float | None = None,
+) -> tuple[Exception, str | None]:
+    """(the error to classify, a sentence listing what every model said).
+
+    The error to classify is the first model's, as before, unless that was
+    only "cooling down": then the latest real failure decides the type.
+    The sentence is None when there is nothing to add (one model tried).
+    """
+    now = time.monotonic() if now is None else now
+    real = [(d, e) for d, e in attempts if not _is_cooldown(e)]
+    cooling: list[tuple[str, Exception]] = []
+    if _is_cooldown(exc):
+        # Skipped this time: why each of the first model's deployments is
+        # cooling down (their last real failure, if recent).
+        for dep in getattr(exc, "cooldown_list", None) or []:
+            seen = _LAST_FAILURE.get(dep)
+            if seen and now - seen[0] <= LAST_FAILURE_TTL_SECONDS and all(d != dep for d, _ in real):
+                cooling.append((dep, seen[1]))
+    tried = cooling + real
+    by_name: dict[str, Exception] = {}
+    for dep, err in tried:
+        by_name[names.get(dep, dep)] = err  # one line per model, its latest failure
+    if not by_name:
+        return exc, None
+    if not _is_cooldown(exc):
+        classify = exc
+    else:
+        classify = (cooling or real)[-1][1]
+    by_reason: dict[str, list[str]] = {}
+    for name, err in by_name.items():
+        by_reason.setdefault(_reason(err), []).append(name)
+    if len(by_reason) == 1 and not _is_cooldown(exc):
+        return classify, None  # one reason for everything: the error already says it
+    parts = [f"{', '.join(names)}: {reason}" for reason, names in by_reason.items()]
+    return classify, "Every model tried failed. " + "; ".join(parts)
+
+
+# Deployment ids of the models on this computer (packages/desktop/local_models.py).
+LOCAL_DEPLOYMENT_PREFIX = "local::"
+LOCAL_RUNTIME_UNAVAILABLE = "local_runtime_unavailable"
+
+
+def _connect_failure(exc: BaseException) -> bool:
+    """The request never reached the server: nothing listened at the address
+    (connection refused, which Windows reports as a connect timeout)."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return True
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _translate_error(exc: Exception) -> UpstreamProviderError:
     import litellm
 
     msg = str(exc)
+    refused = free_refusal(exc)
+    if refused:
+        # Not a rate limit to retry nor an empty wallet: this account can't
+        # use OrcaRouter's free models (the message says why and what to do).
+        return UpstreamProviderError(refused, http_status=403, error_type="free_unavailable")
+    failed = str(getattr(exc, "failed_deployment_id", "") or "")
+    if failed.startswith(LOCAL_DEPLOYMENT_PREFIX) and _connect_failure(exc):
+        # Ollama / LM Studio / llama.cpp isn't running: not a slow upstream
+        # (LiteLLM calls it a timeout or a connection error depending on the
+        # runtime and the platform), and nothing a retry fixes until it starts.
+        return UpstreamProviderError(msg, http_status=503, error_type=LOCAL_RUNTIME_UNAVAILABLE, deployment_id=failed)
     if isinstance(exc, litellm.ContextWindowExceededError):
         return UpstreamProviderError(msg, http_status=422, error_type="context_length_exceeded")
     if isinstance(exc, litellm.NotFoundError):
@@ -197,6 +410,7 @@ class OrcaLiteLLMClient:
 
         self._router = Router(**router_kwargs)
         self._deployments = deployments
+        _ensure_attempt_recorder()
 
     async def acompletion(self, *, fallbacks: list | None = None, **kwargs):
         """Dispatch a chat completion through the LiteLLM Router.
@@ -226,10 +440,18 @@ class OrcaLiteLLMClient:
             kwargs["fallbacks"] = fallbacks
         is_streaming = bool(kwargs.get("stream"))
         started = time.perf_counter()
+        attempts: list = []
+        token = _ATTEMPTS.set(attempts)
         try:
             resp = await self._router.acompletion(**kwargs)
         except Exception as exc:
-            raise _translate_error(exc) from exc
+            names = {d.deployment_id: d.model_name for d in self._deployments if d.deployment_id}
+            classify, summary = _explain_chain(exc, attempts, names)
+            err = _translate_error(classify)
+            err.attempts_summary = summary
+            raise err from exc
+        finally:
+            _ATTEMPTS.reset(token)
 
         if is_streaming:
             # Stream wrappers are async iterables, not dicts. Return the raw

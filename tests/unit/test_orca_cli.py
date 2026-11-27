@@ -332,11 +332,26 @@ def test_login_points_installed_agents_at_the_team_gateway(orca_home, tmp_path, 
     home = tmp_path / "user"
     (home / ".claude").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
     rc = orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
     assert rc == 0, capsys.readouterr().err
     env = _json.loads((home / ".claude" / "settings.json").read_text())["env"]
     assert env == {"ANTHROPIC_BASE_URL": "https://gw.example.com", "ANTHROPIC_AUTH_TOKEN": "sk-orca-team"}
     assert "Claude Code" in capsys.readouterr().out
+
+
+def test_login_goes_through_a_running_engine_so_old_agent_keys_are_revoked(orca_home, capsys):
+    _running(orca_home)
+    transport, seen = _transport(lambda r: httpx.Response(200, json={
+        "gateway": {"url": "https://gw.example.com"}, "connected": ["claude-code"],
+        "agents": [{"id": "claude-code", "name": "Claude Code"}]}))
+    assert orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=transport) == 0
+    req = seen[0]
+    assert (req.method, req.url.path) == ("POST", "/v1/app/gateway")
+    import json as _json
+
+    assert _json.loads(req.content) == {"url": "https://gw.example.com", "key": "sk-orca-team"}
+    assert "Connected to https://gw.example.com: Claude Code." in capsys.readouterr().out
 
 
 def test_login_with_a_bad_key_changes_nothing(orca_home, tmp_path, monkeypatch, capsys):
@@ -355,6 +370,18 @@ def test_logout_restores_agents(orca_home, tmp_path, monkeypatch, capsys):
     orca_cli.main(["login", "https://gw.example.com", "--key", "sk-orca-team"], transport=_team_transport())
     assert orca_cli.main(["logout"]) == 0
     assert not (home / ".claude" / "settings.json").exists()
+
+
+def test_logout_without_a_gateway_leaves_agents_alone(orca_home, tmp_path, monkeypatch, capsys):
+    home = tmp_path / "user"
+    (home / ".claude").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text('{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8765"}}')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
+    assert orca_cli.main(["logout"]) == 0
+    assert "Not signed in" in capsys.readouterr().out
+    assert settings.read_text() == '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8765"}}'
 
 
 # ── orca link ───────────────────────────────────────────────────────────
@@ -414,6 +441,28 @@ def test_disconnect_all_works_without_the_engine(orca_home, tmp_path, monkeypatc
     assert not any(s.connected for s in ag.detect_agents(home=home, state_dir=orca_home / "agents"))
     out = capsys.readouterr().out
     assert "Claude Code" in out and "Cursor" in out
+
+
+def test_disconnect_all_restores_files_when_engine_json_is_stale(orca_home, tmp_path, monkeypatch, capsys):
+    # The engine crashed or was killed and left engine.json behind: nothing
+    # answers on its port, so restore the files directly instead of failing.
+    from packages.desktop import agents as ag
+
+    home = tmp_path / "userhome"
+    (home / ".claude").mkdir(parents=True)
+    original = b'{"theme": "dark"}\n'
+    (home / ".claude" / "settings.json").write_bytes(original)
+    monkeypatch.setattr(orca_cli.Path, "home", classmethod(lambda cls: home))
+    ag.connect_agent("claude-code", home=home, state_dir=orca_home / "agents", base_url="http://127.0.0.1:8765",
+                     api_key="sk-orca-x")
+    _running(orca_home)
+
+    def refused(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    assert orca_cli.main(["disconnect", "--all"], transport=httpx.MockTransport(refused)) == 0
+    assert (home / ".claude" / "settings.json").read_bytes() == original
+    assert "Claude Code" in capsys.readouterr().out
 
 
 def test_disconnect_needs_an_agent_or_all(orca_home, capsys):

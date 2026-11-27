@@ -39,8 +39,8 @@ async def test_today_counts_free_requests_and_paid_spend(desktop_app, seeded, db
     root, _ = seeded
     rid = await _key_id(db_session, "default")
     db_session.add_all([
-        _row(rid, provider="orcarouter", note="free", resolved="deepseek/deepseek-v4-pro-free"),
-        _row(rid, provider="orcarouter", note="free", resolved="qwen/qwen3.8-27b-free"),
+        _row(rid, provider="orcarouter", note="free", resolved="z-ai/glm-5.3-flash-free"),
+        _row(rid, provider="orcarouter", note="free", resolved="deepseek/deepseek-v4.1-flash-free"),
         _row(rid, provider="orcarouter", cost=500_000, resolved="claude-sonnet-4.6"),
         _row(rid, provider="anthropic", cost=300_000),
         _row(rid, provider="orcarouter", note="free", when=NOW - timedelta(days=2)),  # not today
@@ -341,8 +341,8 @@ async def test_free_requests_count_every_free_answer_whatever_its_note(desktop_a
     root, _ = seeded
     rid = await _key_id(db_session, "default")
     db_session.add_all([
-        _row(rid, provider="orcarouter", note="free", resolved="deepseek/deepseek-v4-pro-free"),
-        _row(rid, provider="orcarouter", note="mapped", resolved="qwen/qwen3.8-27b-free"),
+        _row(rid, provider="orcarouter", note="free", resolved="z-ai/glm-5.3-flash-free"),
+        _row(rid, provider="orcarouter", note="mapped", resolved="deepseek/deepseek-v4.1-flash-free"),
     ])
     await db_session.commit()
     async with _client(desktop_app) as c:
@@ -360,16 +360,16 @@ async def test_a_substitution_answered_by_a_free_or_local_model_is_shown(desktop
         cc = await _key_id(db_session, "agent:claude-code")
         db_session.add_all([
             _row(cc, requested="claude-sonnet-4-6", note="free", provider="orcarouter",
-                 resolved="deepseek/deepseek-v4-pro-free"),
+                 resolved="z-ai/glm-5.3-flash-free"),
             _row(cc, requested="claude-sonnet-4-6", note="local", provider="local", resolved="ollama/qwen3-coder:30b"),
             _row(cc, requested="auto", note="free", provider="orcarouter", resolved="orcarouter/free"),  # asked for auto
             _row(cc, requested="claude-sonnet-4-6", note="mapped", provider="orcarouter",
-                 resolved="qwen/qwen3.8-27b-free"),  # the user's own map
+                 resolved="deepseek/deepseek-v4.1-flash-free"),  # the user's own map
         ])
         await db_session.commit()
         agents = {a["id"]: a for a in (await _summary(c, root))["agents"]}
     assert agents["claude-code"]["substitutions"] == [
-        {"requested": "claude-sonnet-4-6", "served": "deepseek/deepseek-v4-pro-free", "count": 1},
+        {"requested": "claude-sonnet-4-6", "served": "z-ai/glm-5.3-flash-free", "count": 1},
         {"requested": "claude-sonnet-4-6", "served": "ollama/qwen3-coder:30b", "count": 1},
     ]
 

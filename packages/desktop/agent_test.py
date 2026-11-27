@@ -163,7 +163,7 @@ def read_endpoint(agent_id: str, *, home: Path, state_dir: Path) -> Endpoint:
     H, G = ag._HERMES_DIR, ag._GOOSE_DIR
 
     def load(rel: str, fmt: str) -> tuple[Path, dict]:
-        path = home / rel
+        path = ag.config_path(home, rel)
         return path, _load(path, fmt, home)
 
     if agent_id == "claude-code":

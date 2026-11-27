@@ -9,7 +9,7 @@ in a throwaway HOME next to a fake OpenAI-compatible provider. The test:
    Responses for Codex, Gemini for Gemini CLI, Chat Completions for
    OpenCode, Command Code, Aider, Hermes, Pi, OMP, Kilo, OpenClaw, Kimi Code
    and Goose), all reaching the fake provider;
-3. checks spend is attributed to each agent, the budget stop returns 429,
+3. checks spend is attributed to each agent, the budget stop refuses agents,
    and agent keys can't reach the app API;
 4. disconnects everything and checks every config is back byte for byte and
    the agent keys no longer work;
@@ -91,7 +91,10 @@ def stack(tmp_path_factory):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GEMINI_", "ORCAROUTER_", "DATABASE_",
                                 "CREDENTIAL_", "API_KEY_", "ORCA_", "OLLAMA_", "LMSTUDIO_", "LLAMACPP_",
-                                "ARTIFICIAL_"))}
+                                "ARTIFICIAL_"))
+           # Agent config folders: the engine would connect agents in the
+           # developer's real CODEX_HOME / CLAUDE_CONFIG_DIR / XDG_CONFIG_HOME.
+           and k not in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME")}
     up_port, engine_port, ollama_port, closed_port = _free_port(), _free_port(), _free_port(), _free_port()
     env.update({
         "HOME": str(home), "USERPROFILE": str(home), "ORCA_HOME": str(orca_home),
@@ -284,7 +287,7 @@ def test_4_gemini_cli_speaks_gemini(stack):
     assert r.status_code == 200, r.text
     assert r.json()["candidates"][0]["content"]["parts"][0]["text"] == "pong"
     settings = json.loads((stack["home"] / ".gemini/settings.json").read_text())
-    assert settings["security"]["auth"]["selectedType"] == "gateway"
+    assert settings["security"]["auth"]["selectedType"] == "gemini-api-key"
 
 
 CHAT_AGENTS = {"opencode": _opencode, "command-code": _command_code, "aider": _aider, "hermes": _hermes, "pi": _pi,
@@ -494,11 +497,11 @@ def test_8_the_budget_stop_pauses_agents(stack):
         base, key, model = _opencode(stack["home"])
         r = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"},
                        json={"model": model, "messages": [{"role": "user", "content": "ping"}]}, timeout=30)
-        assert r.status_code == 429, r.text
+        assert r.status_code == 400, r.text
         base, token, model = _codex(stack["home"])
         r = httpx.post(f"{base}/responses", headers={"Authorization": f"Bearer {token}"},
                        json={"model": model, "input": "ping"}, timeout=30)
-        assert r.status_code == 429, r.text
+        assert r.status_code == 400, r.text
     finally:
         assert _app(stack, "PUT", "/v1/app/settings", json={"daily_budget_cents": None, "budget_mode": "alert"}).status_code == 200
 

@@ -233,13 +233,27 @@ def _login(url: str, key: str, transport) -> int:
     from packages.desktop import agents as ag
     from packages.desktop import gateway as gw
 
+    home = dh.default_home()
+    if _engine_alive(home, transport):
+        # Same path as the panel: the engine also revokes each agent's local
+        # key once the agent uses the team's, which only it can do.
+        body = _request("POST", "/v1/app/gateway", transport=transport, json_body={"url": url, "key": key})
+        if body is None:
+            return 1
+        names = {a.get("id"): a.get("name") for a in body.get("agents", [])}
+        connected = [names.get(i) or i for i in body.get("connected", [])]
+        base = (body.get("gateway") or {}).get("url") or url
+        if connected:
+            print(f"Connected to {base}: {', '.join(connected)}. Restart open sessions to use it.")
+        else:
+            print(f"Signed in to {base}, but found no agent Orca can set up automatically.")
+        return 0
     try:
         base = gw.normalize_url(url)
         gw.verify(base, key, transport=transport)
     except gw.GatewayError as exc:
         _err(str(exc))
         return 1
-    home = dh.default_home()
     state_dir = home / "agents"
     state_dir.mkdir(parents=True, exist_ok=True)
     connected = []
@@ -259,16 +273,22 @@ def _login(url: str, key: str, transport) -> int:
     return 0
 
 
+def _engine_alive(home: Path, transport) -> bool:
+    """True only when our engine answers its identity challenge. engine.json
+    outlives a crashed or killed engine, so its presence proves nothing."""
+    try:
+        info = dh.read_engine_info(home)
+        with httpx.Client(base_url=info["base_url"], transport=transport, timeout=3) as client:
+            return _verify_identity(client, info["secret"])
+    except (dh.EngineNotRunning, KeyError, TypeError, httpx.HTTPError):
+        return False
+
+
 def _disconnect_all(transport) -> int:
     """Through the engine when it's running (it also revokes the agents' keys);
     otherwise restore the files directly, as an uninstaller has to."""
     home = dh.default_home()
-    try:
-        dh.read_engine_info(home)
-        running = True
-    except (dh.EngineNotRunning, KeyError, TypeError):
-        running = False
-    if running:
+    if _engine_alive(home, transport):
         body = _request("POST", "/v1/app/agents/disconnect-all", transport=transport)
         if body is None:
             return 1
@@ -324,6 +344,11 @@ def _logout() -> int:
 
     home = dh.default_home()
     base = gw.load(home)
+    if base is None:
+        # Agents connected to this computer's own Orca aren't part of a
+        # gateway sign-in; logging out of nothing must not disconnect them.
+        print("Not signed in to a team gateway. Nothing changed.")
+        return 0
     state_dir = home / "agents"
     restored = []
     for status in ag.detect_agents(home=Path.home(), state_dir=state_dir):

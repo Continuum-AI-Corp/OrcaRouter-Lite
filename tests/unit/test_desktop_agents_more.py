@@ -6,9 +6,9 @@ disconnect puts every file back byte-for-byte when the user hasn't edited it,
 or reverts only our settings when they have.
 
 Config shapes come from the agents' own code:
-- Gemini CLI: GOOGLE_GEMINI_BASE_URL selects its "gateway" auth type, and a
-  saved `security.auth.selectedType` overrides the environment, so both
-  ~/.gemini/.env and ~/.gemini/settings.json are set.
+- Gemini CLI: "gemini-api-key" auth reads GEMINI_API_KEY and honours
+  GOOGLE_GEMINI_BASE_URL, and a saved `security.auth.selectedType` overrides
+  the environment, so both ~/.gemini/.env and ~/.gemini/settings.json are set.
 - Codex: only the Responses API (`wire_api = "responses"`); the key goes in
   `experimental_bearer_token` so no environment variable is needed.
 - OpenCode: a v1 `provider` entry with @ai-sdk/openai-compatible; the key is
@@ -117,7 +117,7 @@ def test_gemini_connect_sets_gateway_env_and_auth_type(home, state_dir):
     assert f"GOOGLE_GEMINI_BASE_URL={BASE}\n" in text  # the SDK appends /v1beta itself
     assert f"GEMINI_API_KEY={KEY}\n" in text
     s = json.loads(settings.read_text())
-    assert s["security"]["auth"]["selectedType"] == "gateway"
+    assert s["security"]["auth"]["selectedType"] == "gemini-api-key"
     assert s["ui"] == {"theme": "Dracula"}
     assert _status(home, state_dir, "gemini-cli").connected
 
@@ -201,7 +201,7 @@ def test_codex_connect_adds_a_responses_provider_and_selects_it(home, state_dir)
     assert "# my codex settings" in text
     data = tomllib.loads(text)
     assert data["model_provider"] == "orca"
-    assert data["model"] == "auto"
+    assert data["model"] == ag.CODEX_AUTO_MODEL  # a name Codex knows, routed as auto
     assert data["approval_policy"] == "on-request"
     assert data["projects"]["/home/me/app"]["trust_level"] == "trusted"
     assert data["model_providers"]["orca"] == {
@@ -567,3 +567,38 @@ def test_a_crash_mid_connect_still_leaves_a_restorable_backup(home, state_dir, m
     assert _status(home, state_dir, "gemini-cli").connected  # the backup was recorded first
     _disconnect("gemini-cli", home, state_dir)
     assert {p: p.read_bytes() for p in (settings, env)} == before
+
+
+# ── Issue 10: connectors follow the folder the agent itself reads ──
+
+@pytest.fixture
+def user_home(tmp_path, monkeypatch):
+    """tmp_path as the user's own home (Path.home())."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    return tmp_path
+
+
+@pytest.mark.parametrize("agent,var,rel,file", [
+    ("codex", "CODEX_HOME", "codex-home", "config.toml"),
+    ("claude-code", "CLAUDE_CONFIG_DIR", "claude-cfg", "settings.json"),
+    ("opencode", "XDG_CONFIG_HOME", "xdg", "opencode/opencode.json"),
+])
+def test_connect_writes_where_the_env_var_points(user_home, state_dir, monkeypatch, agent, var, rel, file):
+    root = user_home / "elsewhere" / rel
+    monkeypatch.setenv(var, str(root))
+    assert _status(user_home, state_dir, agent).config_path == str(root / file)
+    _connect(agent, user_home, state_dir)
+    assert (root / file).exists()
+    default = {"codex": ".codex/config.toml", "claude-code": ".claude/settings.json",
+               "opencode": ".config/opencode/opencode.json"}[agent]
+    assert not (user_home / default).exists()
+    _disconnect(agent, user_home, state_dir)
+    assert not (root / file).exists()  # it didn't exist before connect
+
+
+def test_another_home_ignores_the_env_vars(home, state_dir, monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "not-this"))
+    _connect("codex", home, state_dir)
+    assert (home / ".codex" / "config.toml").exists()
+    assert not (tmp_path / "not-this").exists()

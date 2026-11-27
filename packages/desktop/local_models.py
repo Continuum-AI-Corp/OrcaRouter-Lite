@@ -88,6 +88,15 @@ def remember(runtimes: list[Runtime]) -> None:
     _cache = (time.monotonic() + CACHE_SECONDS, list(runtimes))
 
 
+def expire() -> None:
+    """Make the next lookup re-probe (a runtime just stopped answering), so
+    the panel and the router see it as not running without waiting out the
+    cache."""
+    global _cache
+    if _cache is not None:
+        _cache = (0.0, _cache[1])
+
+
 def last() -> list[Runtime]:
     """The most recent discovery result, without probing (empty before any)."""
     return list(_cache[1]) if _cache else []

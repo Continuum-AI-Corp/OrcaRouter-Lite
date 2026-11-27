@@ -13,7 +13,7 @@ cached for a couple of seconds so a burst of agent calls costs one query.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,13 @@ def is_generation(path: str) -> bool:
 def _local_midnight_utc(now: datetime | None = None) -> datetime:
     local = (now or datetime.now(timezone.utc)).astimezone()
     return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def seconds_until_reset(now: datetime | None = None) -> int:
+    """Seconds until today's spend resets (local midnight), for retry-after."""
+    local = (now or datetime.now(timezone.utc)).astimezone()
+    tomorrow = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(1, int((tomorrow - local).total_seconds()))
 
 
 def _money(microcents: int) -> str:

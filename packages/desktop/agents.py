@@ -42,7 +42,7 @@ import shutil
 import tempfile
 import threading
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,6 +73,14 @@ class AgentConfigError(AgentError):
     pass
 
 
+# The model Orca connects Codex with. Codex chooses its tools (apply_patch for
+# editing files, the shell tool) from the model's catalog entry, matched by
+# prefix, and an unknown name such as "auto" gets none of them: Codex could
+# talk but not edit. A name starting with a model in Codex's catalog inherits
+# that model's tools and instructions; the engine routes it like "auto".
+CODEX_AUTO_MODEL = "gpt-5.5-orca-auto"
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     id: str
@@ -92,6 +100,41 @@ class AgentSpec:
 
 
 PROVIDER_ID = "orca"  # the provider entry we add to agents that list providers
+
+# Agents that let the user move their config folder with an environment
+# variable: Claude Code (CLAUDE_CONFIG_DIR), Codex (CODEX_HOME), and the
+# agents under ~/.config (OpenCode, Kilo Code, Goose: XDG_CONFIG_HOME).
+# Without this Orca showed "connected" while the agent read another folder.
+_CONFIG_ROOT_VARS: tuple[tuple[str, str], ...] = (
+    (".claude", "CLAUDE_CONFIG_DIR"),
+    (".codex", "CODEX_HOME"),
+    (".config", "XDG_CONFIG_HOME"),
+)
+
+
+def _is_user_home(home: Path) -> bool:
+    try:
+        return Path(home).resolve() == Path.home().resolve()
+    except OSError:
+        return False
+
+
+def config_path(home: Path, rel: str, env: Mapping[str, str] | None = None) -> Path:
+    """Where an agent's config file (or folder) `rel`, written relative to
+    the home folder, really is. The environment variables move it only for
+    the user's own home: a caller naming another home (a test, a sandbox)
+    means that folder."""
+    home = Path(home)
+    if not _is_user_home(home):
+        return home / rel
+    env = os.environ if env is None else env
+    head, _, rest = rel.replace("\\", "/").partition("/")
+    for prefix, var in _CONFIG_ROOT_VARS:
+        root = (env.get(var) or "").strip()
+        if root and head == prefix:
+            base = Path(os.path.expanduser(root))
+            return base / rest if rest else base
+    return home / rel
 
 _WINDOWS = os.name == "nt"
 # Hermes keeps its home in %LOCALAPPDATA% on Windows; Goose in %APPDATA%.
@@ -811,16 +854,18 @@ def _desired_values(
         }
         return {".codex/config.toml": {
             "model_provider": PROVIDER_ID,
-            "model": "auto",
+            "model": CODEX_AUTO_MODEL,
             f"model_providers.{PROVIDER_ID}": provider,
         }}
     if agent_id == "gemini-cli":
-        # GOOGLE_GEMINI_BASE_URL selects Gemini CLI's "gateway" auth; a saved
-        # selectedType would override it, so set that too. The google-genai
+        # Gemini CLI's "gemini-api-key" auth reads GEMINI_API_KEY and honours
+        # GOOGLE_GEMINI_BASE_URL; a saved selectedType (e.g. oauth-personal)
+        # would override it, so set that too. "gateway" is not an auth type
+        # Gemini CLI accepts ("Invalid auth method selected"). The google-genai
         # SDK appends /v1beta itself.
         return {
             ".gemini/.env": {"GOOGLE_GEMINI_BASE_URL": base, "GEMINI_API_KEY": api_key},
-            ".gemini/settings.json": {"security.auth.selectedType": "gateway"},
+            ".gemini/settings.json": {"security.auth.selectedType": "gemini-api-key"},
         }
     if agent_id == "opencode":
         assert key_file is not None
@@ -944,11 +989,11 @@ def detect_agents(
         state = {}
     out: list[AgentStatus] = []
     for spec in AGENTS.values():
-        config_path = home / spec.config_file if spec.config_file else None
+        cfg_path = config_path(home, spec.config_file) if spec.config_file else None
         installed = (
-            any((home / d).is_dir() for d in spec.config_dirs)
+            any(config_path(home, d).is_dir() for d in spec.config_dirs)
             or any(which(b) for b in spec.binaries)
-            or bool(config_path and config_path.exists())
+            or bool(cfg_path and cfg_path.exists())
         )
         out.append(
             AgentStatus(
@@ -958,7 +1003,7 @@ def detect_agents(
                 setup=spec.setup,
                 connected=spec.id in state,
                 note=spec.note,
-                config_path=str(config_path) if config_path else None,
+                config_path=str(cfg_path) if cfg_path else None,
                 warn=spec.warn,
                 changed=spec.id in state and _entry_changed(spec, state[spec.id]),
             )
@@ -1118,7 +1163,7 @@ def connect_agent(
         # leaves all of them untouched.
         loaded: dict[str, tuple[Path, str, bytes | None, dict[str, Any]]] = {}
         for rel, fmt in spec.files:
-            path = home / rel
+            path = config_path(home, rel)
             raw = _read(path)
             loaded[rel] = (path, fmt, raw, _parse(raw or b"", fmt, path))
         desired = _desired_values(

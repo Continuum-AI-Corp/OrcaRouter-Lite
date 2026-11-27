@@ -36,7 +36,7 @@ async def test_payment_required_marks_orcarouter_out_of_credit(engine, stream):
 
 async def test_own_keys_keep_serving_auto_while_out_of_credit(engine):
     engine.router = FakeRouter([
-        *hosted("deepseek/deepseek-v4-pro-free", "orcarouter/free"), *own("openai", "gpt-4o-mini", "gpt-4.1"),
+        *hosted("z-ai/glm-5.3-flash-free", "orcarouter/free"), *own("openai", "gpt-4o-mini", "gpt-4.1"),
     ])
     hosted_state.mark_out_of_credit()
     r = await engine.chat(engine.root_key, PING)

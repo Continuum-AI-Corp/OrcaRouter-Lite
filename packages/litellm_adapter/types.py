@@ -46,10 +46,14 @@ class CompletionResponse:
 
 
 class UpstreamProviderError(Exception):
-    def __init__(self, message: str, *, http_status: int, error_type: str) -> None:
+    def __init__(self, message: str, *, http_status: int, error_type: str, deployment_id: str | None = None) -> None:
         super().__init__(message)
         self.http_status = http_status
         self.error_type = error_type
+        # The deployment that failed, when the error is about one in particular.
+        self.deployment_id = deployment_id
+        # When several models were tried: what each of them said.
+        self.attempts_summary: str | None = None
 
 
 @dataclass

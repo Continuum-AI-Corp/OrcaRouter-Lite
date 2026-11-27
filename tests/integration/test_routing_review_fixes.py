@@ -42,11 +42,11 @@ async def test_server_mode_adds_no_paid_orcarouter_backup_to_a_pinned_model(engi
 
 async def test_server_mode_auto_never_picks_zero_priced_free_models(engine, server_mode):
     engine.router = FakeRouter([
-        *hosted("deepseek/deepseek-v4-pro-free", "orcarouter/free"), *own("openai", "gpt-4o-mini"),
+        *hosted("z-ai/glm-5.3-flash-free", "orcarouter/free"), *own("openai", "gpt-4o-mini"),
     ])
     await engine.chat(engine.root_key, PING)
     tried = _chain(engine.router.calls[-1])
-    assert "deepseek/deepseek-v4-pro-free" not in tried and "orcarouter/free" not in tried
+    assert "z-ai/glm-5.3-flash-free" not in tried and "orcarouter/free" not in tried
 
 
 async def test_a_free_model_answer_does_not_clear_out_of_credit(engine):
@@ -83,10 +83,10 @@ async def test_with_paid_models_on_auto_still_goes_free_then_own_keys_then_paid_
     # before any paid OrcaRouter model.
     await engine.settings(hosted_models="all")
     engine.router = FakeRouter([
-        *hosted("deepseek/deepseek-v4-pro-free", "kimi-k2.6"), *own("openai", "gpt-4.1"),
+        *hosted("z-ai/glm-5.3-flash-free", "kimi-k2.6"), *own("openai", "gpt-4.1"),
     ])
     await engine.chat(engine.root_key, PING)
-    assert _chain(engine.router.calls[-1]) == ["deepseek/deepseek-v4-pro-free", "gpt-4.1", "kimi-k2.6"]
+    assert _chain(engine.router.calls[-1]) == ["z-ai/glm-5.3-flash-free", "gpt-4.1", "kimi-k2.6"]
 
 
 async def test_out_of_credit_with_nothing_else_able_to_serve_says_so(engine):

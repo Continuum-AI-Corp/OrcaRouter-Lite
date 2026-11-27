@@ -13,8 +13,8 @@ FREE = list(FREE_HOSTED_MODELS)
 
 
 def test_the_free_models_are_the_four_zero_priced_hosted_ones():
-    assert FREE == ["deepseek/deepseek-v4-pro-free", "deepseek/deepseek-v4-flash-free",
-                    "qwen/qwen3.8-27b-free", "orcarouter/free"]
+    assert FREE == ["z-ai/glm-5.3-flash-free", "deepseek/deepseek-v4-flash-free",
+                    "deepseek/deepseek-v4.1-flash-free", "orcarouter/free"]
 
 
 def test_auto_may_pick_free_models_but_not_unpriced_rows():
@@ -76,7 +76,7 @@ def test_free_mode_builds_only_free_hosted_deployments(monkeypatch):
     free = build_deployments(env_keys={"openai": "sk-o"}, db_keys=[], settings=s, hosted_models="free")
     hosted_names = {d.model_name for d in free if d.provider == "orcarouter"}
     assert set(FREE) <= hosted_names
-    assert not hosted_names - set(FREE) - {"deepseek-v4-pro-free", "deepseek-v4-flash-free", "qwen3.8-27b-free",
+    assert not hosted_names - set(FREE) - {"glm-5.3-flash-free", "deepseek-v4-flash-free", "deepseek-v4.1-flash-free",
                                            "free"}
     assert any(d.provider == "openai" for d in free)  # own keys unaffected
     everything = build_deployments(env_keys={}, db_keys=[], settings=s, hosted_models="all")

@@ -492,6 +492,8 @@ _ENGINE_ERROR_STATUS = {
     # (the user has to allow paid models), or OrcaRouter is out of credit.
     # Neither succeeds on retry.
     "needs_paid_model": 403,
+    # OrcaRouter refused its free models for this account: no retry helps.
+    "free_unavailable": 403,
     "out_of_credit": 402,  # billing_error
     # A provider's own 402 (no balance left on the user's key).
     "payment_required": 402,
@@ -502,6 +504,10 @@ _ENGINE_ERROR_STATUS = {
     # `upstream_error` deliberately stays generic (500 api_error): it is the
     # bucket for failures we could not classify at all.
     "upstream_timeout": 529,
+    # Ollama / LM Studio / llama.cpp isn't running. A 5xx would have the
+    # agent back off and retry for minutes; nothing changes until the user
+    # starts it, so it's a plain bad request on this surface.
+    "local_runtime_unavailable": 400,
 }
 
 

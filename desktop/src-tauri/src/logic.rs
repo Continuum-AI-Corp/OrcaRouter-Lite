@@ -198,6 +198,37 @@ pub fn autostart_change(wanted: bool, currently_enabled: bool) -> Option<bool> {
     (wanted != currently_enabled).then_some(wanted)
 }
 
+/// Windows login item: what to do with the current user's `Run` value.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LoginItemAction {
+    Write,
+    Remove,
+    Nothing,
+}
+
+/// The `Run` command for this executable. Quoted, because the default
+/// install path (`...\AppData\Local\OrcaRouter Lite\...`) has a space.
+pub fn login_item_command(exe: &str) -> String {
+    format!("\"{exe}\" --background")
+}
+
+/// Compare the registered command, not just whether one exists: a value left
+/// by an older install points at an exe that may be gone or replaced.
+pub fn login_item_action(wanted: bool, registered: Option<&str>, desired: &str) -> LoginItemAction {
+    match (wanted, registered) {
+        (true, Some(current)) if current == desired => LoginItemAction::Nothing,
+        (true, _) => LoginItemAction::Write,
+        (false, Some(_)) => LoginItemAction::Remove,
+        (false, None) => LoginItemAction::Nothing,
+    }
+}
+
+/// Whether a `Run` value (under our product name) launches this app, at any
+/// path, so a stale machine-wide one can be removed without touching anything else.
+pub fn is_orca_login_command(command: &str) -> bool {
+    command.to_ascii_lowercase().contains("orcarouter-lite-desktop.exe")
+}
+
 /// What to tell the user when the engine exits during startup: the last
 /// line it wrote (its own explanation, e.g. a locked keychain), or a pointer
 /// to the log when it wrote nothing.
@@ -1722,6 +1753,29 @@ mod tests {
         assert_eq!(autostart_change(false, true), Some(false));
         assert_eq!(autostart_change(true, true), None);
         assert_eq!(autostart_change(false, false), None);
+    }
+
+    #[test]
+    fn the_login_item_is_rewritten_when_it_points_elsewhere() {
+        let exe = r"C:\Users\a\AppData\Local\OrcaRouter Lite\orcarouter-lite-desktop.exe";
+        let want = login_item_command(exe);
+        assert_eq!(want, format!("\"{exe}\" --background"));
+        assert_eq!(login_item_action(true, None, &want), LoginItemAction::Write);
+        assert_eq!(login_item_action(true, Some(&want), &want), LoginItemAction::Nothing);
+        // An older install's path, or the plugin's old unquoted form.
+        let old = r"C:\old\orcarouter-lite-desktop.exe --background";
+        assert_eq!(login_item_action(true, Some(old), &want), LoginItemAction::Write);
+        let unquoted = format!("{exe} --background");
+        assert_eq!(login_item_action(true, Some(&unquoted), &want), LoginItemAction::Write);
+        assert_eq!(login_item_action(false, Some(old), &want), LoginItemAction::Remove);
+        assert_eq!(login_item_action(false, None, &want), LoginItemAction::Nothing);
+    }
+
+    #[test]
+    fn only_orca_login_commands_count_as_ours() {
+        assert!(is_orca_login_command(r"E:\tmp\builds\OrcaRouter-Lite-Desktop.exe --background"));
+        assert!(is_orca_login_command(r#""C:\x y\orcarouter-lite-desktop.exe" --background"#));
+        assert!(!is_orca_login_command(r"C:\Program Files\Other\other.exe"));
     }
 
     // ── review fixes ──

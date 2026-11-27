@@ -37,7 +37,7 @@ from tests.e2e.test_desktop_e2e import _claude, _free_port, _opencode, _stop, _w
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.e2e
 ANTHROPIC_HEADERS = {"anthropic-version": "2023-06-01"}
-FREE = {"deepseek/deepseek-v4-pro-free", "deepseek/deepseek-v4-flash-free", "qwen/qwen3.8-27b-free",
+FREE = {"z-ai/glm-5.3-flash-free", "deepseek/deepseek-v4-flash-free", "deepseek/deepseek-v4.1-flash-free",
         "orcarouter/free"}
 
 
@@ -55,7 +55,10 @@ def stack(tmp_path_factory):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("OPENAI_", "ANTHROPIC_", "GOOGLE_", "GEMINI_", "ORCAROUTER_", "DATABASE_",
                                 "CREDENTIAL_", "API_KEY_", "ORCA_", "MOONSHOT_", "OLLAMA_", "LMSTUDIO_",
-                                "LLAMACPP_", "ROUTER_", "ARTIFICIAL_"))}
+                                "LLAMACPP_", "ROUTER_", "ARTIFICIAL_"))
+           # Agent config folders: the engine would connect agents in the
+           # developer's real CODEX_HOME / CLAUDE_CONFIG_DIR / XDG_CONFIG_HOME.
+           and k not in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME")}
     env.update({
         "HOME": str(home), "USERPROFILE": str(home), "ORCA_HOME": str(orca_home),
         "ORCA_KEYCHAIN": "0", "ORCA_NO_UPDATE_CHECK": "1", "PYTHONPATH": str(ROOT),
@@ -200,9 +203,13 @@ def test_2_h2_a_failure_with_no_backup_then_a_rescue_through_orcarouter(stack):
     _drop_key(stack, "orcarouter")
     _key(stack, "anthropic", "sk-ant-e2e")
     _upstream_state(stack, anthropic="overloaded")
+    before = len(_calls(stack, "anthropic"))
     r = _claude_code(stack)
     assert r.status_code >= 500, r.text
-    assert _calls(stack, "anthropic")[-1]["model"] == "claude-sonnet-4-6"
+    # The asked model first; the same key's other Claude models are tried as
+    # its backups (issue 19), and are overloaded too.
+    tried = [c["model"] for c in _calls(stack, "anthropic")[before:]]
+    assert tried[0] == "claude-sonnet-4-6", tried
     row = _last_row(stack)
     assert (row["route_note"], row["provider"], row["status_code"] >= 500) == ("no_fallback", "anthropic", True)
 

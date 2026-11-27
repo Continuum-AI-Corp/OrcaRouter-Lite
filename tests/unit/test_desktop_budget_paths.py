@@ -33,3 +33,17 @@ def test_generation_routes_are_stopped(path):
 ])
 def test_free_routes_are_not(path):
     assert is_generation(path) is False
+
+
+def test_seconds_until_reset_counts_to_the_next_local_midnight():
+    from datetime import datetime, timezone
+
+    from packages.desktop.budget import seconds_until_reset
+
+    local_now = datetime.now().astimezone()
+    almost_midnight = local_now.replace(hour=23, minute=59, second=30, microsecond=0)
+    assert seconds_until_reset(almost_midnight) == 30
+    just_after = local_now.replace(hour=0, minute=0, second=10, microsecond=0)
+    assert seconds_until_reset(just_after) == 24 * 3600 - 10
+    assert seconds_until_reset(almost_midnight.astimezone(timezone.utc)) == 30
+    assert 0 < seconds_until_reset() <= 25 * 3600  # never zero, DST-safe bound
