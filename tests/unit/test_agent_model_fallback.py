@@ -50,3 +50,24 @@ def test_server_keys_and_non_desktop_engines_stay_strict():
 
 def test_nothing_deployable_is_left_to_the_normal_error():
     assert _prefs("claude-sonnet-4-6", set()) is None
+
+
+# ── Issue 19: backups for a deployed agent model that fails upstream ──
+
+def test_backups_are_the_same_vendor_closest_name_first():
+    from app.agent_model_fallback import backup_models
+    from packages.litellm_adapter.catalog import CATALOG
+
+    pool = {"claude-sonnet-4-5", "claude-sonnet-4.6", "claude-haiku-4.5", "claude-opus-4.7", "gpt-4o-mini"}
+    out = backup_models("claude-sonnet-4-5", pool, catalog=CATALOG)
+    assert out[0] == "claude-sonnet-4.6"
+    assert "claude-sonnet-4-5" not in out and "gpt-4o-mini" not in out
+    assert backup_models("gemini-3.1-pro-preview-customtools",
+                         {"gemini-3.1-pro-preview", "gemini-2.5-flash"}, catalog=CATALOG)[0] == "gemini-3.1-pro-preview"
+
+
+def test_no_backups_for_an_unknown_vendor():
+    from app.agent_model_fallback import backup_models
+    from packages.litellm_adapter.catalog import CATALOG
+
+    assert backup_models("my-custom-model", {"gpt-4o-mini"}, catalog=CATALOG) == []
