@@ -823,12 +823,14 @@ def _desired_values(
             f"model_providers.{PROVIDER_ID}": provider,
         }}
     if agent_id == "gemini-cli":
-        # GOOGLE_GEMINI_BASE_URL selects Gemini CLI's "gateway" auth; a saved
-        # selectedType would override it, so set that too. The google-genai
+        # Gemini CLI's "gemini-api-key" auth reads GEMINI_API_KEY and honours
+        # GOOGLE_GEMINI_BASE_URL; a saved selectedType (e.g. oauth-personal)
+        # would override it, so set that too. "gateway" is not an auth type
+        # Gemini CLI accepts ("Invalid auth method selected"). The google-genai
         # SDK appends /v1beta itself.
         return {
             ".gemini/.env": {"GOOGLE_GEMINI_BASE_URL": base, "GEMINI_API_KEY": api_key},
-            ".gemini/settings.json": {"security.auth.selectedType": "gateway"},
+            ".gemini/settings.json": {"security.auth.selectedType": "gemini-api-key"},
         }
     if agent_id == "opencode":
         assert key_file is not None

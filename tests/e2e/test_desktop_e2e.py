@@ -284,7 +284,7 @@ def test_4_gemini_cli_speaks_gemini(stack):
     assert r.status_code == 200, r.text
     assert r.json()["candidates"][0]["content"]["parts"][0]["text"] == "pong"
     settings = json.loads((stack["home"] / ".gemini/settings.json").read_text())
-    assert settings["security"]["auth"]["selectedType"] == "gateway"
+    assert settings["security"]["auth"]["selectedType"] == "gemini-api-key"
 
 
 CHAT_AGENTS = {"opencode": _opencode, "command-code": _command_code, "aider": _aider, "hermes": _hermes, "pi": _pi,

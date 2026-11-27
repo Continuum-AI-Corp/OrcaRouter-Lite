@@ -6,9 +6,9 @@ disconnect puts every file back byte-for-byte when the user hasn't edited it,
 or reverts only our settings when they have.
 
 Config shapes come from the agents' own code:
-- Gemini CLI: GOOGLE_GEMINI_BASE_URL selects its "gateway" auth type, and a
-  saved `security.auth.selectedType` overrides the environment, so both
-  ~/.gemini/.env and ~/.gemini/settings.json are set.
+- Gemini CLI: "gemini-api-key" auth reads GEMINI_API_KEY and honours
+  GOOGLE_GEMINI_BASE_URL, and a saved `security.auth.selectedType` overrides
+  the environment, so both ~/.gemini/.env and ~/.gemini/settings.json are set.
 - Codex: only the Responses API (`wire_api = "responses"`); the key goes in
   `experimental_bearer_token` so no environment variable is needed.
 - OpenCode: a v1 `provider` entry with @ai-sdk/openai-compatible; the key is
@@ -117,7 +117,7 @@ def test_gemini_connect_sets_gateway_env_and_auth_type(home, state_dir):
     assert f"GOOGLE_GEMINI_BASE_URL={BASE}\n" in text  # the SDK appends /v1beta itself
     assert f"GEMINI_API_KEY={KEY}\n" in text
     s = json.loads(settings.read_text())
-    assert s["security"]["auth"]["selectedType"] == "gateway"
+    assert s["security"]["auth"]["selectedType"] == "gemini-api-key"
     assert s["ui"] == {"theme": "Dracula"}
     assert _status(home, state_dir, "gemini-cli").connected
 
