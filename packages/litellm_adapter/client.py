@@ -8,6 +8,7 @@ solo dev to ship a working router.
 
 from __future__ import annotations
 
+import contextvars
 import re
 import time
 
@@ -116,6 +117,101 @@ def free_refusal_watcher(on_refusal):
                 on_refusal(message)
 
     return _Watcher()
+
+
+# ── What each model in a failed fallback chain actually said (issue 18) ──
+#
+# LiteLLM raises the first model's error when every fallback fails too, and
+# its message names only the last fallback's error. When the first model was
+# merely cooling down, the user saw "cooling down" and none of the real
+# reasons. A failure callback records each attempt of the current request
+# (and each deployment's latest failure, for the ones skipped while cooling
+# down); LiteLLM runs it before the final exception is raised.
+
+_ATTEMPTS: contextvars.ContextVar[list | None] = contextvars.ContextVar("orca_attempts", default=None)
+_LAST_FAILURE: dict[str, tuple[float, Exception]] = {}
+LAST_FAILURE_TTL_SECONDS = 600.0
+_recorder = None
+
+
+def _record_failure(deployment_id: str | None, exc: Exception, *, now: float | None = None) -> None:
+    if not deployment_id or exc is None:
+        return
+    if not getattr(exc, "failed_deployment_id", None):
+        try:
+            exc.failed_deployment_id = deployment_id  # what _translate_error reads
+        except AttributeError:
+            pass
+    _LAST_FAILURE[deployment_id] = (time.monotonic() if now is None else now, exc)
+    attempts = _ATTEMPTS.get()
+    if attempts is not None:
+        attempts.append((deployment_id, exc))
+
+
+def _ensure_attempt_recorder() -> None:
+    global _recorder
+    if _recorder is not None:
+        return
+    import litellm
+    from litellm.integrations.custom_logger import CustomLogger
+
+    class _AttemptRecorder(CustomLogger):
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            model_info = (kwargs.get("litellm_params") or {}).get("model_info") or {}
+            _record_failure(model_info.get("id"), kwargs.get("exception"))
+
+    _recorder = _AttemptRecorder()
+    litellm.callbacks = [*(litellm.callbacks or []), _recorder]
+
+
+def _is_cooldown(exc: BaseException) -> bool:
+    return "No deployments available" in str(exc)
+
+
+def _reason(exc: BaseException) -> str:
+    """The provider's own words, without LiteLLM's wrapping."""
+    text = str(getattr(exc, "message", None) or exc).split("\n\nLiteLLM:", 1)[0]
+    text = _LITELLM_PREFIX.sub("", text.strip()).strip()
+    return text if len(text) <= 240 else text[:237] + "..."
+
+
+def _explain_chain(
+    exc: Exception,
+    attempts: list[tuple[str, Exception]],
+    names: dict[str, str],
+    *,
+    now: float | None = None,
+) -> tuple[Exception, str | None]:
+    """(the error to classify, a sentence listing what every model said).
+
+    The error to classify is the first model's, as before, unless that was
+    only "cooling down": then the latest real failure decides the type.
+    The sentence is None when there is nothing to add (one model tried).
+    """
+    now = time.monotonic() if now is None else now
+    real = [(d, e) for d, e in attempts if not _is_cooldown(e)]
+    cooling: list[tuple[str, Exception]] = []
+    if _is_cooldown(exc):
+        # Skipped this time: why each of the first model's deployments is
+        # cooling down (their last real failure, if recent).
+        for dep in getattr(exc, "cooldown_list", None) or []:
+            seen = _LAST_FAILURE.get(dep)
+            if seen and now - seen[0] <= LAST_FAILURE_TTL_SECONDS and all(d != dep for d, _ in real):
+                cooling.append((dep, seen[1]))
+    tried = cooling + real
+    by_name: dict[str, Exception] = {}
+    for dep, err in tried:
+        by_name[names.get(dep, dep)] = err  # one line per model, its latest failure
+    if not by_name:
+        return exc, None
+    if not _is_cooldown(exc):
+        classify = exc
+    else:
+        classify = (cooling or real)[-1][1]
+    if len(by_name) == 1 and not _is_cooldown(exc):
+        return classify, None
+    parts = [f"{name}: {_reason(err)}" for name, err in by_name.items()]
+    return classify, "Every model tried failed. " + "; ".join(parts)
 
 
 # Deployment ids of the models on this computer (packages/desktop/local_models.py).
@@ -276,6 +372,7 @@ class OrcaLiteLLMClient:
 
         self._router = Router(**router_kwargs)
         self._deployments = deployments
+        _ensure_attempt_recorder()
 
     async def acompletion(self, *, fallbacks: list | None = None, **kwargs):
         """Dispatch a chat completion through the LiteLLM Router.
@@ -305,10 +402,18 @@ class OrcaLiteLLMClient:
             kwargs["fallbacks"] = fallbacks
         is_streaming = bool(kwargs.get("stream"))
         started = time.perf_counter()
+        attempts: list = []
+        token = _ATTEMPTS.set(attempts)
         try:
             resp = await self._router.acompletion(**kwargs)
         except Exception as exc:
-            raise _translate_error(exc) from exc
+            names = {d.deployment_id: d.model_name for d in self._deployments if d.deployment_id}
+            classify, summary = _explain_chain(exc, attempts, names)
+            err = _translate_error(classify)
+            err.attempts_summary = summary
+            raise err from exc
+        finally:
+            _ATTEMPTS.reset(token)
 
         if is_streaming:
             # Stream wrappers are async iterables, not dicts. Return the raw

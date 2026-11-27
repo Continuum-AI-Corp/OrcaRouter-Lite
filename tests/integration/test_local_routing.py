@@ -196,3 +196,18 @@ async def test_a_stopped_runtime_is_a_bad_request_for_claude_code(engine):
     assert r.status_code == 400, r.text
     assert r.json()["error"]["type"] == "invalid_request_error"
     assert "Ollama isn't running" in r.json()["error"]["message"]
+
+
+# ── Issue 18: the error names what every model in the chain said ──
+
+async def test_the_error_lists_what_each_model_said(engine):
+    engine.router = FakeRouter(DEPS, strategy="cheapest")
+    err = UpstreamProviderError("No deployments available for selected model", http_status=503,
+                                error_type="upstream_error")
+    err.attempts_summary = "Every model tried failed. gpt-4o-mini: overloaded; gpt-4o: tool_choice not supported"
+    engine.router.failing["openai"] = err
+    engine.router.failing["local"] = err
+    r = await engine.chat(engine.root_key, PING)
+    assert r.status_code == 503
+    assert "gpt-4o: tool_choice not supported" in r.text
+    assert "No deployments available" not in r.text

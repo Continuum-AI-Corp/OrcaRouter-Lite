@@ -198,7 +198,10 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
     minutes auto and agent fallback keep to own keys. In the desktop app the
     message then says what to do about it in plain words.
     """
-    detail = f"Upstream provider error: {exc}"
+    summary = getattr(exc, "attempts_summary", None)
+    # Several models failed: say what each said, not only the first one's
+    # error (often just "cooling down") as LiteLLM reports it.
+    detail = f"Upstream provider error: {summary or exc}"
     if exc.error_type == desktop_routing.FREE_UNAVAILABLE_TYPE:
         hosted_state.mark_free_unavailable(str(exc))
         if desktop:
@@ -212,6 +215,10 @@ def _upstream_failure(exc: UpstreamProviderError, *, desktop: bool) -> HTTPExcep
         hosted_state.mark_out_of_credit()
         if desktop:
             detail = desktop_routing.out_of_credit_detail(get_settings().orcarouter_billing_url)
+    if summary and desktop and exc.error_type in (
+        desktop_routing.FREE_UNAVAILABLE_TYPE, route_notes.OUT_OF_CREDIT, desktop_routing.LOCAL_RUNTIME_UNAVAILABLE_TYPE,
+    ):
+        detail = f"{detail} {summary}"
     # The type travels in a header: the generic HTTP status alone loses it
     # (model_not_found is 422 here but 404 on the Anthropic/Gemini surfaces),
     # and the native routes map it to their own status/error taxonomy.
